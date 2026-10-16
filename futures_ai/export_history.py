@@ -38,7 +38,9 @@ def _login(sj, simulation: bool, key: str, sec: str):
   print(f"shioaji 版本：{version}")
   api = sj.Shioaji(simulation=simulation)
   try:
-    params = set(inspect.signature(api.login).parameters)
+    sig = inspect.signature(api.login).parameters
+    # A **kwargs signature accepts anything: fall back to trial-and-error instead of filtering.
+    params = set() if any(p.kind == p.VAR_KEYWORD for p in sig.values()) else set(sig)
   except (TypeError, ValueError):  # Compiled method without an inspectable signature.
     params = set()
   if params and "api_key" not in params:
