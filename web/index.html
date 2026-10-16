@@ -54,6 +54,7 @@
   <section class="card s6"><h2>每小時損益</h2><div class="scroll"><table id="hourly"></table></div></section>
   <section class="card s6"><h2>今日已平倉交易</h2><div class="scroll"><table id="trades"></table></div></section>
   <section class="card s12"><h2>今日下單狀況（含停利／停損觸價單）</h2><div class="scroll"><table id="orders"></table></div></section>
+  <section class="card s12"><h2>🧠 AI 學習日誌（每筆平倉後自動檢討：為什麼賺／賠、下次怎麼調整）</h2><div class="scroll"><table id="journal"></table></div></section>
   <section class="card s12"><h2>系統事件</h2><div class="scroll"><table id="events"></table></div></section>
 </main>
 <script>
@@ -64,6 +65,20 @@ const sideZh = s => s === 'B' ? '多' : '空';
 const t = s => (s || '').replace('T', ' ').slice(5, 19);
 const statusZh = { WORKING: '等待觸價', SUBMITTED: '已送出', FILLED: '已成交', TRIGGERED: '已觸發', CANCELLED: '已刪除', REJECTED: '失敗' };
 const typeZh = { MKT: '市價', STOP: '停損觸價單', TAKE: '停利觸價單' };
+
+const regimeZh = { trend: '趨勢盤', chop: '盤整盤' };
+function brainHtml(a) {
+  const b = a.brain; if (!b) return '';
+  const rows = ['trend', 'chop'].map(r => {
+    const st = b.stats[r], c = b.choices[r];
+    const cell = m => `${st[m].n} 筆／勝 ${st[m].wins}／<span class="${cls(st[m].pnl)}">${nt(st[m].pnl)}</span>`;
+    return `<tr><td>${regimeZh[r]}</td><td>${cell('native')}</td><td>${cell('flip')}</td><td><b>${c.label}</b></td></tr>`;
+  }).join('');
+  const pause = b.pause_until && new Date(b.pause_until) > new Date() ? `<div class="down">⏸ 冷靜期到 ${b.pause_until.slice(11, 16)}</div>` : '';
+  const skip = a.last_skip ? `<div class="mute">最近略過訊號：${a.last_skip.why}（${a.last_skip.ts.slice(11, 16)}）</div>` : '';
+  return `<div class="pos"><b>🧠 學習狀態</b>　停損 ×${b.sl_mult.toFixed(2)}　停利 ×${b.tp_mult.toFixed(2)}　連虧 ${b.loss_streak}${pause}
+    <table style="margin-top:6px"><tr><th>盤勢</th><th>${b.modes.native}</th><th>${b.modes.flip}</th><th>下次採用</th></tr>${rows}</table>${skip}</div>`;
+}
 
 function render(s) {
   document.getElementById('mode').textContent = s.mode_label;
@@ -100,7 +115,7 @@ function render(s) {
         <div><div class="mute">近 1h / 3h</div><div><span class="${cls(a.pnl_1h)}">${nt(a.pnl_1h)}</span> / <span class="${cls(a.pnl_3h)}">${nt(a.pnl_3h)}</span></div></div>
       </div>
       <div class="mute" style="margin-top:8px">每日虧損上限使用 ${a.daily_loss_used_pct.toFixed(0)}%</div><div class="bar"><div style="width:${Math.min(100, a.daily_loss_used_pct)}%"></div></div>
-      <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${pos}</section>`;
+      <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${pos}${brainHtml(a)}</section>`;
   }).join('');
 
   // Intraday curve
@@ -130,6 +145,8 @@ function render(s) {
   document.getElementById('orders').innerHTML = '<tr><th>時間</th><th>AI</th><th>用途</th><th>類型</th><th>買賣</th><th>口數</th><th>觸價</th><th>成交價</th><th>狀態</th><th>說明</th></tr>' +
     (s.orders_today.map(o => `<tr><td>${t(o.ts).slice(6)}</td><td>${o.ai_name}</td><td>${o.kind_zh}</td><td>${typeZh[o.order_type] || o.order_type}</td><td class="${o.side === 'B' ? 'up' : 'down'}">${o.side === 'B' ? '買' : '賣'}</td><td>${o.qty}</td><td>${o.trigger_price ?? ''}</td><td>${o.fill_price ?? ''}</td><td>${statusZh[o.status] || o.status}</td><td class="mute">${o.note || ''}</td></tr>`).join('') || '<tr><td colspan="10" class="mute">今日尚無委託</td></tr>');
 
+  document.getElementById('journal').innerHTML = '<tr><th>時間</th><th>AI</th><th>盤勢／策略</th><th>結果</th><th>檢討</th><th>調整</th></tr>' +
+    ((s.journal || []).map(j => `<tr><td class="mute">${t(j.ts).slice(6)}</td><td>${j.ai_name}</td><td>${j.regime_zh}／${j.mode_label}</td><td class="${cls(j.pnl)}">${nt(j.pnl)}</td><td style="white-space:normal">${j.diagnosis}</td><td style="white-space:normal" class="mute">${j.adjustments.join('<br>')}</td></tr>`).join('') || '<tr><td colspan="6" class="mute">下一筆平倉後開始產生檢討</td></tr>');
   document.getElementById('events').innerHTML = s.events.map(e => `<tr><td class="mute">${t(e.ts)}</td><td>${e.ai || ''}</td><td>${e.level}</td><td style="white-space:normal">${e.message}</td></tr>`).join('');
 }
 

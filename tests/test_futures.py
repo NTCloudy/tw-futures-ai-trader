@@ -190,3 +190,47 @@ class EngineRollTest(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class LearningTest(unittest.TestCase):
+
+  def setUp(self):
+    from futures_ai.learning import Brain
+    self.ledger = Ledger(":memory:")
+    self.brain = Brain(self.ledger, AggressiveMomentum())
+
+  def pos(self, side="B", entry=47000, sl=46985, tp=47020, mfe=2, mae=16, mode="native", regime="chop"):
+    return {"side": side, "entry_price": entry, "sl": sl, "tp": tp, "mfe": mfe, "mae": mae,
+            "entry_ts": "2026-10-16T10:00:00+08:00", "regime": regime, "mode": mode}
+
+  def test_quick_stop_in_chop_widens_stop_and_switches_after_losses(self):
+    now = at(2026, 10, 16, 10, 1)
+    lesson = self.brain.review(now, self.pos(), 46982, "SL", -240)
+    self.assertIn("假訊號", lesson["diagnosis"])
+    self.assertAlmostEqual(self.brain.state["sl_mult"], 1.1)
+    for _ in range(2):
+      self.brain.review(now, self.pos(), 46982, "SL", -240)
+    mode, why = self.brain.choose_mode("chop")
+    self.assertEqual(mode, "flip")  # native kept losing in chop -> try the flipped strategy
+    self.assertIsNotNone(self.brain.state["pause_until"])  # 3 losses in a row -> cool-down
+    self.assertTrue(self.brain.paused(now + timedelta(minutes=5)))
+    self.assertFalse(self.brain.paused(now + timedelta(minutes=20)))
+
+  def test_giveback_shrinks_take_profit(self):
+    lesson = self.brain.review(at(2026, 10, 16, 10, 10), self.pos(mfe=15), 46984, "SL", -220)
+    self.assertIn("停利設太遠", lesson["diagnosis"])
+    self.assertAlmostEqual(self.brain.state["tp_mult"], 0.9)
+
+  def test_flip_mode_inverts_side_and_blocks_when_both_lose(self):
+    st = self.brain.state["stats"]["chop"]
+    st["native"].update(n=3, ew=-200)
+    st["flip"].update(n=1, ew=-50)
+    bars = bars_from([(47000, 47003, 46997, 47000 + (i % 2) * 2) for i in range(25)])
+    sig, ctx = self.brain.adjust(Entry("B", 15, 20, "x"), bars)
+    self.assertEqual((ctx["regime"], ctx["mode"], sig.side), ("chop", "flip", "S"))
+    st["flip"].update(n=3, ew=-150)
+    sig, ctx = self.brain.adjust(Entry("B", 15, 20, "x"), bars)
+    self.assertIsNone(sig)
+    self.brain.daily_decay("2026-10-16")
+    self.brain.daily_decay("2026-10-19")  # next day halves evidence -> allowed to retry
+    self.assertIsNotNone(self.brain.adjust(Entry("B", 15, 20, "x"), bars)[0])

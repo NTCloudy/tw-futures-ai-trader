@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from .calendar import TPE, now_tpe, rollover_info, session_of, trading_day
 from .strategies import build_strategies
+from .learning import REGIME_ZH, Brain
 from .trader import KIND_ZH
 
 MODE_LABEL = {"local_paper": "本機模擬（TAIFEX 即時行情）", "sinopac_sim": "永豐模擬帳戶", "sinopac_live": "永豐真實帳戶"}
@@ -80,6 +81,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
         "pnl_3h": round(current - _value_at(series, now - timedelta(hours=3))),
         "pnl_6h": round(current - _value_at(series, now - timedelta(hours=6))),
         "hourly": hourly,
+        "brain": Brain(ledger, s).summary(),
+        "last_skip": ledger.get_state(f"skip:{ai_id}"),
         "curve": [{"ts": t.strftime("%H:%M"), "v": round(v)} for t, v in pts][-600:],
     }
     for k in combined:
@@ -95,6 +98,12 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     t["ai_name"] = names[t["ai"]].name if t["ai"] in names else t["ai"]
     t["exit_kind_zh"] = KIND_ZH.get(t["exit_kind"], t["exit_kind"])
   events = ledger.rows("SELECT * FROM events ORDER BY id DESC LIMIT 40")
+  journal = []
+  for ai_id, s in names.items():
+    for j in (ledger.get_state(f"brain:{ai_id}") or {}).get("journal", []):
+      journal.append({**j, "ai_name": s.name, "mode_label": getattr(s, "modes", {}).get(j["mode"], j["mode"]),
+                      "regime_zh": REGIME_ZH.get(j["regime"], j["regime"])})
+  journal.sort(key=lambda j: j["ts"], reverse=True)
 
   return {
       "generated_at": now.isoformat(timespec="seconds"),
@@ -107,5 +116,5 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                   "close": s_end.isoformat() if s_end else None},
       "market": market, "kill_switch": ledger.get_state("kill_switch", False),
       "ais": ais, "combined": {k: round(v) for k, v in combined.items()},
-      "orders_today": orders, "trades_today": trades, "events": events,
+      "orders_today": orders, "trades_today": trades, "events": events, "journal": journal[:40],
   }

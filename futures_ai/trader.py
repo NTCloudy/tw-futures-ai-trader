@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from .feed import Bar
+from .learning import Brain
 
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉"}
@@ -30,6 +31,7 @@ class AiTrader:
     self.pv = cfg["point_value"]
     self.qty = cfg["qty"]
     self.pending: dict[str, dict] = {}  # broker_order_id -> {"oid", "kind", "entry"}
+    self.brain = Brain(ledger, strategy)
 
   # ---------- persisted state ----------
   @property
@@ -114,7 +116,8 @@ class AiTrader:
     self.pos = {"side": side, "qty": self.qty, "entry_price": price, "entry_ts": t, "contract": info["code"],
                 "trading_day": info["td"], "session_key": e["session_key"], "sl": sl, "tp": tp,
                 "sl_oid": sl_oid, "tp_oid": tp_oid, "entry_cost": self.side_cost(price, self.qty),
-                "reason": e["reason"]}
+                "reason": e["reason"], "regime": e.get("regime", "chop"), "mode": e.get("mode", "native"),
+                "mfe": 0.0, "mae": 0.0}
     self.ledger.log(f"{'做多' if side == 'B' else '放空'}成交 {price:.0f}，同時掛停利觸價 {tp:.0f}／停損觸價 {sl:.0f}"
                     f"｜{e['reason']}", self.ai, "TRADE", ts)
 
@@ -136,6 +139,8 @@ class AiTrader:
     self._cancel_working(ts, info["code"], "部位已平倉，刪除剩餘委託")
     self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])}平倉 {price:.0f}，{points:+.0f} 點，"
                     f"淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
+    lesson = self.brain.review(ts, p, price, info["kind"], gross - cost)
+    self.ledger.log(f"🧠 檢討：{lesson['diagnosis']}｜{'；'.join(lesson['adjustments'])}", self.ai, "LEARN", ts)
 
   # ---------- decisions ----------
   def flatten(self, ts: datetime, code: str, quote: dict, kind: str) -> None:
@@ -151,6 +156,12 @@ class AiTrader:
     last = quote["last"]
     hi, lo = max(last, quote.get("hi") or last), min(last, quote.get("lo") or last)
     if p and not self.pending:
+      d = 1 if p["side"] == "B" else -1
+      fav = (hi - p["entry_price"]) * d if d == 1 else (p["entry_price"] - lo)
+      adv = (p["entry_price"] - lo) if d == 1 else (hi - p["entry_price"])
+      if fav > p.get("mfe", 0) or adv > p.get("mae", 0):  # Track best / worst excursion for the review.
+        p["mfe"], p["mae"] = max(p.get("mfe", 0), fav), max(p.get("mae", 0), adv)
+        self.pos = p
       sl_hit = lo <= p["sl"] if p["side"] == "B" else hi >= p["sl"]
       tp_hit = hi >= p["tp"] if p["side"] == "B" else lo <= p["tp"]
       if kill:
@@ -187,11 +198,18 @@ class AiTrader:
       le = datetime.fromisoformat(last_exit)
       if bars and le >= bars[0].end:
         since = sum(1 for b in bars if b.end > le)
-    sig = self.s.decide(bars, self.entries(session_key), since)
+    self.brain.daily_decay(td)
+    if self.brain.paused(ts):
+      return
+    raw = self.s.decide(bars, self.entries(session_key), since)
+    if raw is None:
+      return
+    sig, ctx = self.brain.adjust(raw, bars)
     if sig is None:
+      self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": ctx["why"]})
       return
     self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
     entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": sig.tp_pts, "reason": sig.reason,
-             "session_key": session_key}
+             "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"]}
     self._send_market(ts, td, code, "ENTRY", sig.side, quote, sig.reason, entry)
     self.process_fills(ts)

@@ -41,6 +41,7 @@ class OrbBreakout:
   name = "Alpha 開盤突破 AI"
   style = "開盤 15 分鐘區間突破 + VWAP 確認，順勢追價"
   color = "#38bdf8"
+  modes = {"native": "順勢突破", "flip": "假突破反向"}
 
   def __init__(self, range_minutes: int = 15, max_entries: int = 2, buffer_pts: float = 3):
     self.range_minutes = range_minutes
@@ -75,6 +76,7 @@ class VwapReversion:
   name = "Sigma VWAP 回歸 AI"
   style = "價格偏離 VWAP 過大且出現反轉K棒時逆勢進場，目標回歸均價"
   color = "#a855f7"
+  modes = {"native": "均值回歸", "flip": "趨勢延續"}
 
   def __init__(self, min_bars: int = 20, max_entries: int = 4, stretch_atr: float = 2.5):
     self.min_bars = min_bars
@@ -113,6 +115,7 @@ class AggressiveMomentum:
   name = "Gamma 激進動能 AI"
   style = "1 分K 動能當沖：EMA5/13 同向且突破前一根高/低點就進場，小停損快停利，每盤最多 30 次"
   color = "#f97316"
+  modes = {"native": "動能追價", "flip": "動能反轉"}
 
   def __init__(self, sl_pts: float = 15, tp_pts: float = 20, max_entries: int = 30):
     self.sl, self.tp, self.max_entries = sl_pts, tp_pts, max_entries
