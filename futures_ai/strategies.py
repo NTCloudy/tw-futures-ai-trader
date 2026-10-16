@@ -311,4 +311,4 @@ def build_strategies(params: dict | None = None) -> list:
           InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
                     **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0})),
           FixedBracket(TrendPullback(**params.get("sigma-vwap", {})), "cloudy-sigma", "Cloudy's strategy", "#a3e635",
-                       **params.get("cloudy-sigma", {"tp_pts": 100, "sl_pts": 50}))]
+                       **params.get("cloudy-sigma", {"tp_pts": 120, "sl_pts": 70}))]
