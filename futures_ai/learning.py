@@ -83,8 +83,10 @@ def clamp(x, lo, hi):
 
 class Brain:
 
-  def __init__(self, ledger, strategy):
+  def __init__(self, ledger, strategy, learning: bool = False):
     self.ledger = ledger
+    self.learning = learning
+    self.allow_flip = getattr(strategy, "allow_flip", True)
     self.ai = strategy.id
     self.modes = getattr(strategy, "modes", {"native": "原策略", "flip": "反向策略"})
     self.key = f"brain:{self.ai}"
@@ -113,11 +115,13 @@ class Brain:
     s = self.state["stats"][regime]
     nat, alt = s["native"], s["flip"]
     rz = REGIME_ZH[regime]
+    if not self.allow_flip:
+      return "native", f"{self.modes['native']}（此策略只順勢，不反向）"
     if nat["n"] < 3:
       return "native", f"{rz}樣本不足（{nat['n']} 筆），先用{self.modes['native']}"
     if nat["ew"] < 0 and alt["n"] < 2:
       return "flip", f"{self.modes['native']}在{rz}近期虧損（加權 {nat['ew']:+.0f}），改試{self.modes['flip']}"
-    if nat["ew"] <= BLOCK_EW and alt["ew"] <= BLOCK_EW and alt["n"] >= 2:
+    if nat["ew"] <= BLOCK_EW and alt["ew"] <= BLOCK_EW and alt["n"] >= 2 and not self.learning:
       return None, f"{rz}兩種策略都在虧（{nat['ew']:+.0f} / {alt['ew']:+.0f}），暫停在{rz}進場"
     if alt["ew"] > nat["ew"]:
       return "flip", f"{rz}中{self.modes['flip']}表現較好（{alt['ew']:+.0f} vs {nat['ew']:+.0f}）"
@@ -139,7 +143,7 @@ class Brain:
     reason = f"[{REGIME_ZH[regime]} ER {er:.2f}｜{self.modes[mode]}] {sig.reason}"
     if mode == "flip":
       reason += "（學習後反向操作）"
-    return Entry(side, sl, tp, reason), ctx
+    return Entry(side, sl, tp, reason, getattr(sig, "trail_pts", None)), ctx
 
   # ---------- review ----------
   def review(self, now: datetime, pos: dict, exit_price: float, exit_kind: str, pnl: float) -> dict:
@@ -186,7 +190,7 @@ class Brain:
         diag = "收盤前仍未達停利，強制平倉小賠"
       else:
         diag = f"{exit_kind} 出場虧損"
-      if st["loss_streak"] >= 3:
+      if st["loss_streak"] >= 3 and not self.learning:
         st["pause_until"] = (now + timedelta(minutes=15)).isoformat()
         adjust.append(f"連虧 {st['loss_streak']} 筆，冷靜 15 分鐘")
         st["loss_streak"] = 0

@@ -24,6 +24,10 @@ DEFAULTS: dict = {
     "max_entries_per_session": 12,
     "max_daily_loss_twd": 2000,
     "enforce_daily_loss": True,  # False = trial run: keep trading regardless of the daily loss.
+    # learning_mode (simulation only): removes daily-loss lock, per-session entry caps, re-entry
+    # cool-downs, loss-streak pauses and regime blocking so the AIs collect as much experience as
+    # possible. sinopac_live refuses to start while it is on, so every limit is back for real money.
+    "learning_mode": False,
     "commission_per_side_twd": 20,
     "tax_rate": 0.00002,  # 期交稅 十萬分之二 per side
     "paper_slippage_ticks": 1,

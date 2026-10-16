@@ -32,7 +32,8 @@ class AiTrader:
     self.pv = cfg["point_value"]
     self.qty = cfg["qty"]
     self.pending: dict[str, dict] = {}  # broker_order_id -> {"oid", "kind", "entry"}
-    self.brain = Brain(ledger, strategy)
+    self.learning = bool(cfg.get("learning_mode"))
+    self.brain = Brain(ledger, strategy, learning=self.learning)
 
   # ---------- persisted state ----------
   @property
@@ -119,7 +120,7 @@ class AiTrader:
                 "trading_day": info["td"], "session_key": e["session_key"], "sl": sl, "tp": tp,
                 "sl_oid": sl_oid, "tp_oid": tp_oid, "entry_cost": self.side_cost(price, self.qty),
                 "reason": e["reason"], "regime": e.get("regime", "chop"), "mode": e.get("mode", "native"),
-                "mfe": 0.0, "mae": 0.0}
+                "mfe": 0.0, "mae": 0.0, "trail": e.get("trail_pts")}
     self.ledger.log(f"{'做多' if side == 'B' else '放空'}成交 {price:.0f}，同時掛停利觸價 {tp:.0f}／停損觸價 {sl:.0f}"
                     f"｜{e['reason']}", self.ai, "TRADE", ts)
 
@@ -176,7 +177,16 @@ class AiTrader:
         self._fire(ts, quote, "TP", p["tp_oid"])
       elif minutes_to_close <= self.cfg["flatten_minutes_before_close"]:
         self.flatten(ts, code, quote, "SESSION_END")
-    if (self.cfg.get("enforce_daily_loss", True) and self.locked_day() != td
+      elif p.get("trail"):  # Ratchet the trailing stop (after the stop check, conservative).
+        tick = self.cfg["tick"]
+        best = p["entry_price"] + p["mfe"] if p["side"] == "B" else p["entry_price"] - p["mfe"]
+        new_sl = round((best - p["trail"] if p["side"] == "B" else best + p["trail"]) / tick) * tick
+        if (p["side"] == "B" and new_sl > p["sl"]) or (p["side"] == "S" and new_sl < p["sl"]):
+          p["sl"] = new_sl
+          self.pos = p
+          self.ledger.update_order(p["sl_oid"], ts.isoformat(timespec="seconds"), trigger_price=new_sl,
+                                   note=f"移動停損上調至 {new_sl:.0f}" if p["side"] == "B" else f"移動停損下調至 {new_sl:.0f}")
+    if (self.cfg.get("enforce_daily_loss", True) and not self.learning and self.locked_day() != td
         and self.today_pnl(td, last) <= -self.cfg["max_daily_loss_twd"]):
       self.ledger.set_state(f"lock:{self.ai}", td)
       self.ledger.log(f"今日損益已達 -NT$ {self.cfg['max_daily_loss_twd']:,}，停止今日交易", self.ai, "WARN", ts)
@@ -219,8 +229,9 @@ class AiTrader:
              minutes_to_close: float, fresh: bool, kill: bool) -> None:
     if self.pos or self.pending or kill or not fresh:
       return
-    locked = self.cfg.get("enforce_daily_loss", True) and self.locked_day() == td
-    if locked or minutes_to_close <= self.cfg["no_entry_minutes_before_close"]:
+    locked = self.cfg.get("enforce_daily_loss", True) and not self.learning and self.locked_day() == td
+    no_entry = self.cfg["flatten_minutes_before_close"] + 1 if self.learning else self.cfg["no_entry_minutes_before_close"]
+    if locked or minutes_to_close <= no_entry:
       return
     last_exit = self.ledger.get_state(f"last_exit:{self.ai}")
     since = None
@@ -229,11 +240,11 @@ class AiTrader:
       if bars and le >= bars[0].end:
         since = sum(1 for b in bars if b.end > le)
     self.brain.daily_decay(td)
-    if self.brain.paused(ts):
-      return
-    if self.entries(session_key) >= self.cfg["max_entries_per_session"]:
-      return
-    raw = self.s.decide(bars, self.entries(session_key), since)
+    if not self.learning:
+      if self.brain.paused(ts) or self.entries(session_key) >= self.cfg["max_entries_per_session"]:
+        return
+    # Learning mode: no per-session caps or re-entry cool-downs inside the strategies either.
+    raw = self.s.decide(bars, 0 if self.learning else self.entries(session_key), None if self.learning else since)
     if raw is None:
       return
     sig, ctx = self.brain.adjust(raw, bars)
@@ -243,6 +254,7 @@ class AiTrader:
       return
     self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
     entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": sig.tp_pts, "reason": sig.reason,
+             "trail_pts": getattr(sig, "trail_pts", None),
              "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"]}
     self._send_market(ts, td, code, "ENTRY", sig.side, quote, sig.reason, entry)
     self.process_fills(ts)

@@ -305,3 +305,39 @@ class ControlTest(unittest.TestCase):
     self.assertTrue(ledger.get_state("kill_switch"))
     self.assertIn(("PATCH", "/repos/NTCloudy/tw-futures-ai-trader/issues/7"), calls)
     self.assertNotIn(("PATCH", "/repos/NTCloudy/tw-futures-ai-trader/issues/8"), calls)
+
+
+class TrailingStopTest(unittest.TestCase):
+
+  def test_trailing_stop_ratchets_and_exits_in_profit(self):
+    c = cfg()
+    ledger = Ledger(":memory:")
+    tr = AiTrader(c, FakeStrategy(Entry("B", 40, 400, "trend", 30)), LocalPaperBroker(c), ledger)
+    bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
+    self.assertEqual(tr.pos["sl"], 46961)
+    tr.on_price(at(2026, 10, 16, 9, 11), "2026-10-16", "TMFJ6", {"last": 47090, "bid": 47089, "ask": 47091, "hi": 47101, "lo": 47080}, 200, False)
+    self.assertEqual(tr.pos["sl"], 47101 - 30)  # ratcheted to best price - trail
+    sl_order = ledger.order(tr.pos["sl_oid"])
+    self.assertEqual(sl_order["trigger_price"], 47071)
+    tr.on_price(at(2026, 10, 16, 9, 12), "2026-10-16", "TMFJ6", {"last": 47065, "bid": 47064, "ask": 47066}, 200, False)
+    self.assertIsNone(tr.pos)
+    t = ledger.rows("SELECT * FROM trades")[0]
+    self.assertEqual(t["exit_kind"], "SL")
+    self.assertGreater(t["pnl_twd"], 0)  # trailing stop locked in profit
+
+
+class LearningModeTest(unittest.TestCase):
+
+  def test_learning_mode_removes_caps_and_live_refuses_it(self):
+    from futures_ai.brokers import make_broker
+    c = cfg(learning_mode=True, max_entries_per_session=1)
+    ledger = Ledger(":memory:")
+    tr = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "x")), LocalPaperBroker(c), ledger)
+    tr.s.decide = lambda bars, n, since: Entry("B", 40, 80, "x")
+    ledger.set_state("cnt:alpha-orb:k", 50)
+    bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
+    self.assertIsNotNone(tr.pos)  # cap of 1 ignored in learning mode
+    with self.assertRaises(SystemExit):
+      make_broker(cfg(mode="sinopac_live", i_understand_real_money=True, learning_mode=True), "alpha-orb")

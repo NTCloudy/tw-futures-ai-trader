@@ -128,9 +128,9 @@ def signal(ai: str, p: dict, s: Session, i: int, since_exit: int | None):
     tp = sl * p["tp_mult"]
     buf = 3
     if x.c > hi + buf and prev.c <= hi + buf and x.c > s.vwap[i]:
-      return "B", sl, tp
+      return "B", sl, tp, None
     if x.c < lo - buf and prev.c >= lo - buf and x.c < s.vwap[i]:
-      return "S", sl, tp
+      return "S", sl, tp, None
     return None
   if ai == "sigma-vwap":
     if i + 1 < 20 or (since_exit is not None and since_exit < 5):
@@ -140,9 +140,9 @@ def signal(ai: str, p: dict, s: Session, i: int, since_exit: int | None):
     sl = clamp(a * p["sl_atr"], 25, 70)
     tp = clamp(abs(dev) * p["tp_frac"], sl, sl * 2)
     if dev >= p["stretch"] * a and x.c < x.o and x.c < prev.c:
-      return "S", sl, tp
+      return "S", sl, tp, None
     if dev <= -p["stretch"] * a and x.c > x.o and x.c > prev.c:
-      return "B", sl, tp
+      return "B", sl, tp, None
     return None
   if ai == "gamma-scalp":
     if i + 1 < 14 or (since_exit is not None and since_exit < 1):
@@ -152,9 +152,39 @@ def signal(ai: str, p: dict, s: Session, i: int, since_exit: int | None):
     sl = max(p["sl_min"], round(1.2 * s.atr[i]))
     tp = max(30, round(sl * p["tp_ratio"]))
     if fast > slow and x.c > prev.h and x.c > x.o:
-      return "B", sl, tp
+      return "B", sl, tp, None
     if fast < slow and x.c < prev.l and x.c < x.o:
-      return "S", sl, tp
+      return "S", sl, tp, None
+    return None
+  if ai == "sigma-pullback":
+    # Trend pullback: 5-min trend, price dips back to VWAP (+k*ATR) and closes back in trend direction.
+    if i + 1 < 20 or s.regime[i] != "trend" or s.direction[i] == 0:
+      return None
+    a = max(s.atr[i], 5.0)
+    vw = s.vwap[i]
+    sl = clamp(a * p["sl_atr"], 20, 80)
+    tp = sl * p["tp_mult"]
+    trail = a * p["trail_atr"] if p.get("trail_atr") else None
+    if s.direction[i] > 0 and x.l <= vw + p["pull_atr"] * a and x.c > vw and x.c > x.o:
+      return "B", sl, tp, trail
+    if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
+      return "S", sl, tp, trail
+    return None
+  if ai == "gamma-trend":
+    # Trend breakout: 5-min trend + close beyond the prior N-bar high/low; trailing stop rides the move.
+    n = p["lookback"]
+    if i < n + 1 or s.regime[i] != "trend":
+      return None
+    a = max(s.atr[i], 5.0)
+    hi = max(y.h for y in b[i - n: i])
+    lo = min(y.l for y in b[i - n: i])
+    sl = clamp(a * p["sl_atr"], 20, 100)
+    tp = sl * 4
+    trail = a * p["trail_atr"]
+    if s.direction[i] > 0 and x.c > hi and prev.c <= hi:
+      return "B", sl, tp, trail
+    if s.direction[i] < 0 and x.c < lo and prev.c >= lo:
+      return "S", sl, tp, trail
     return None
   raise ValueError(ai)
 
@@ -182,7 +212,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
       if pos:  # bracket check on this bar
-        side, entry, sl, tp, cost_in = pos
+        side, entry, sl, tp, cost_in, trail = pos
         d = 1 if side == "B" else -1
         exit_px = kind = None
         sl_hit = x.l <= sl if d == 1 else x.h >= sl
@@ -193,6 +223,10 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           exit_px, kind = (tp - 1) if d == 1 else (tp + 1), "TP"
         elif mtc <= cfg["flatten_minutes_before_close"] or i == len(b) - 1:
           exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "END"
+        if exit_px is None and trail:  # Ratchet the stop after this bar (conservative ordering).
+          new_sl = round(x.h - trail) if d == 1 else round(x.l + trail)
+          if (d == 1 and new_sl > sl) or (d == -1 and new_sl < sl):
+            pos = (side, entry, new_sl, tp, cost_in, trail)
         if exit_px is not None:
           net = (exit_px - entry) * d * pv - cost_in - side_cost(cfg, exit_px)
           pnl += net
@@ -202,7 +236,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           maxdd = max(maxdd, peak - pnl)
           pos = None
           last_exit_i = i
-          if kind == "SL" and ai == "sigma-vwap":
+          if kind == "SL" and ai in ("sigma-vwap", "sigma-pullback"):
             block_side, block_i = side, i
           continue
       if pos or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
@@ -211,7 +245,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
       sig = signal(ai, p, s, i, since)
       if not sig:
         continue
-      side, sl_pts, tp_pts = sig
+      side, sl_pts, tp_pts, trail = sig
       reg = s.regime[i]
       if reg not in p["regimes"]:
         continue
@@ -227,7 +261,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           continue
       entry = x.c + 2 if side == "B" else x.c - 2
       d = 1 if side == "B" else -1
-      pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry))
+      pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail)
       entries += 1
   return {"pnl": pnl, "trades": trades, "wins": wins, "maxdd": maxdd}
 
@@ -244,6 +278,12 @@ def grid(ai: str) -> list[dict]:
          for st, sa, tf, reg, fl in itertools.product([2.0, 2.5, 3.0], [1.2, 1.8], [0.5, 0.8],
                                                       [("trend", "chop"), ("chop",)], [(), ("trend",)])
          if not (fl and "trend" not in reg)]
+  elif ai == "sigma-pullback":
+    g = [dict(pull_atr=pa, sl_atr=sa, tp_mult=tm, trail_atr=ta, regimes=("trend",), flip=())
+         for pa, sa, tm, ta in itertools.product([0.3, 0.6, 1.0], [1.8, 2.5, 3.5], [2.5, 4.0], [None, 3.0, 5.0])]
+  elif ai == "gamma-trend":
+    g = [dict(lookback=lb, sl_atr=sa, trail_atr=ta, regimes=("trend",), flip=())
+         for lb, sa, ta in itertools.product([30, 60, 90], [3.0, 4.0, 6.0], [3.0, 5.0, 8.0])]
   else:
     g = [dict(sl_min=sm, tp_ratio=tr, max_entries=me, regimes=reg, flip=())
          for sm, tr, me, reg in itertools.product([20, 30], [1.5, 2.0], [4, 8, 12], [("trend",), ("trend", "chop")])]
@@ -265,13 +305,17 @@ def describe(ai: str, p: dict) -> str:
   return f"{core}｜只做{reg}盤{fl}"
 
 
-def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Session] | None = None, log=print) -> dict:
+LIVE_TO_SIM = {"alpha-orb": "alpha-orb", "sigma-vwap": "sigma-pullback", "gamma-scalp": "gamma-trend"}
+
+
+def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Session] | None = None, log=print,
+                 ais: tuple = ("alpha-orb", "sigma-pullback", "gamma-trend")) -> dict:
   sessions = sessions or load_sessions(cfg)
   days = sorted({s.td for s in sessions})
   by_day = {d: [s for s in sessions if s.td == d] for d in days}
   report = {"days": [str(days[0]), str(days[-1])] if days else None, "train_days": train_days,
             "test_days": test_days, "ais": {}}
-  for ai in ("alpha-orb", "sigma-vwap", "gamma-scalp"):
+  for ai in ais:
     windows, oos_pnl, oos_trades, oos_wins = [], 0.0, 0, 0
     start = train_days
     while start + test_days <= len(days):

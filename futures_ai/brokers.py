@@ -137,5 +137,7 @@ def make_broker(cfg: dict, ai_id: str):
   if mode in ("sinopac_sim", "sinopac_live") and ai_id == cfg["broker_ai"]:
     if mode == "sinopac_live" and not cfg.get("i_understand_real_money"):
       raise SystemExit("sinopac_live 需要在 config 設定 i_understand_real_money: true")
+    if mode == "sinopac_live" and (cfg.get("learning_mode") or not cfg.get("enforce_daily_loss", True)):
+      raise SystemExit("真實帳戶必須恢復所有風控：請設定 learning_mode: false、enforce_daily_loss: true")
     return ShioajiBroker(cfg, simulation=(mode == "sinopac_sim"))
   return LocalPaperBroker(cfg)

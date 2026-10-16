@@ -13,6 +13,7 @@ class Entry:
   sl_pts: float
   tp_pts: float
   reason: str
+  trail_pts: float | None = None  # trailing stop distance (None = fixed stop)
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -140,5 +141,81 @@ class AggressiveMomentum:
     return None
 
 
-def build_strategies() -> list:
-  return [OrbBreakout(), VwapReversion(), AggressiveMomentum()]
+def _trend(bars: list[Bar]):
+  from .learning import market_regime  # Local import avoids a module cycle.
+  return market_regime(bars)
+
+
+class TrendPullback:
+  """Sigma v2: in a 5-minute trend, buy the dip back to VWAP (sell the rally in a downtrend)."""
+
+  id = "sigma-vwap"  # Same slot/id as before so the account history continues.
+  name = "Sigma 趨勢回測 AI"
+  style = "5 分K 明確趨勢中，價格回測 VWAP 後收回趨勢方向就順勢進場；可用移動停損抱住趨勢"
+  color = "#a855f7"
+  modes = {"native": "順勢回測", "flip": "順勢回測"}
+  allow_flip = False
+  block_after_stop = True
+
+  def __init__(self, pull_atr: float = 0.6, sl_atr: float = 1.8, tp_mult: float = 4.0, trail_atr: float | None = None):
+    self.pull, self.sl_atr, self.tp_mult, self.trail_atr = pull_atr, sl_atr, tp_mult, trail_atr
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    if len(bars) < 20:
+      return None
+    regime, er, d = _trend(bars)
+    if regime != "trend" or d == 0:
+      return None
+    a = max(atr(bars), 5.0)
+    vw = vwap(bars)
+    x = bars[-1]
+    sl = clamp(a * self.sl_atr, 20, 80)
+    tp = sl * self.tp_mult
+    trail = a * self.trail_atr if self.trail_atr else None
+    if d > 0 and x.l <= vw + self.pull * a and x.c > vw and x.c > x.o:
+      return Entry("B", sl, tp, f"5 分K 多頭趨勢（ER {er:.2f}），回測 VWAP {vw:.0f} 後收紅，順勢做多", trail)
+    if d < 0 and x.h >= vw - self.pull * a and x.c < vw and x.c < x.o:
+      return Entry("S", sl, tp, f"5 分K 空頭趨勢（ER {er:.2f}），反彈 VWAP {vw:.0f} 後收黑，順勢放空", trail)
+    return None
+
+
+class TrendBreakout:
+  """Gamma v2: in a 5-minute trend, enter on a break of the prior N-bar high/low; trailing stop."""
+
+  id = "gamma-scalp"
+  name = "Gamma 趨勢突破 AI"
+  style = "5 分K 明確趨勢中，突破前 N 根 K 棒高點（或跌破低點）順勢進場，移動停損讓獲利奔跑"
+  color = "#f97316"
+  modes = {"native": "趨勢突破", "flip": "趨勢突破"}
+  allow_flip = False
+
+  def __init__(self, lookback: int = 90, sl_atr: float = 3.0, trail_atr: float = 8.0):
+    self.n, self.sl_atr, self.trail_atr = lookback, sl_atr, trail_atr
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    if len(bars) < self.n + 2:
+      return None
+    regime, er, d = _trend(bars)
+    if regime != "trend":
+      return None
+    a = max(atr(bars), 5.0)
+    window = bars[-self.n - 1:-1]
+    hi, lo = max(b.h for b in window), min(b.l for b in window)
+    x, prev = bars[-1], bars[-2]
+    sl = clamp(a * self.sl_atr, 20, 100)
+    if d > 0 and x.c > hi and prev.c <= hi:
+      return Entry("B", sl, sl * 4, f"5 分K 多頭趨勢（ER {er:.2f}），突破前 {self.n} 根高點 {hi:.0f}，移動停損 {a * self.trail_atr:.0f} 點", a * self.trail_atr)
+    if d < 0 and x.c < lo and prev.c >= lo:
+      return Entry("S", sl, sl * 4, f"5 分K 空頭趨勢（ER {er:.2f}），跌破前 {self.n} 根低點 {lo:.0f}，移動停損 {a * self.trail_atr:.0f} 點", a * self.trail_atr)
+    return None
+
+
+def build_strategies(params: dict | None = None) -> list:
+  """params: optional {ai_id: kwargs} chosen by walk-forward training (data/strategy_params.json)."""
+  if params is None:
+    import json
+    from .config import ROOT
+    f = ROOT / "data" / "strategy_params.json"
+    params = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+  return [OrbBreakout(**params.get("alpha-orb", {})), TrendPullback(**params.get("sigma-vwap", {})),
+          TrendBreakout(**params.get("gamma-scalp", {}))]

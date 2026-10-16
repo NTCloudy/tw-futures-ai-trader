@@ -266,7 +266,7 @@ function renderControl(s) {
   if (pendingKill !== null && pendingKill === stopped) pendingKill = null;
   if (pendingKill === null) {
     const m = s.margin_live;
-    document.getElementById('ebarSub').textContent = `LINE 通知：${s.line_enabled ? '已啟用' : '未設定'}｜期交所原始保證金 ${m ? m.initial.toLocaleString() : s.initial_margin.toLocaleString()}（每日自動更新）`;
+    document.getElementById('ebarSub').textContent = (s.learning_mode ? '🎓 學習模式：交易次數／每日虧損／冷靜期限制已解除（接真實帳戶前會全部恢復）｜' : '') + `LINE 通知：${s.line_enabled ? '已啟用' : '未設定'}｜期交所原始保證金 ${m ? m.initial.toLocaleString() : s.initial_margin.toLocaleString()}（每日自動更新）`;
   }
 }
 
