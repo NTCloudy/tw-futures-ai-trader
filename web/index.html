@@ -39,22 +39,25 @@
   .modal > div { background:#121a2d; border:1px solid #24304d; border-radius:14px; padding:20px; max-width:560px; line-height:1.7; font-size:14px; }
   .modal input { width:100%; padding:8px; border-radius:8px; border:1px solid #24304d; background:#0a0f1d; color:#e8edff; }
   .modal button { margin-top:10px; margin-right:8px; padding:8px 14px; border-radius:8px; border:0; cursor:pointer; font-weight:700; }
-  /* ---- layout with side panel ---- */
-  .layout { display:flex; align-items:flex-start; }
-  #side { position:sticky; top:62px; width:210px; flex:0 0 210px; height:calc(100vh - 62px); overflow-y:auto; border-right:1px solid var(--line); padding:14px 10px; background:#0c1222; }
+  /* ---- hover-to-open side panel (does not take layout space) ---- */
+  .layout { display:block; }
+  #side { position:fixed; left:0; top:62px; width:220px; height:calc(100vh - 62px); overflow-y:auto; z-index:40;
+          border-right:1px solid var(--line); padding:14px 10px 14px 10px; background:#0c1222; box-shadow:4px 0 20px rgba(0,0,0,.5);
+          transform:translateX(calc(-100% + 16px)); transition:transform .18s ease; }
+  #side::after { content:'目錄 ›'; position:absolute; right:0; top:50%; transform:translateY(-50%); writing-mode:vertical-rl;
+                 font-size:11px; color:#93c5fd; background:#16203a; padding:10px 2px; border-radius:6px 0 0 6px; width:16px; text-align:center; }
+  #side:hover, #side.open { transform:none; }
+  #side:hover::after, #side.open::after { display:none; }
+  #side:not(:hover):not(.open) > * { visibility:hidden; }
   #side a { display:block; padding:7px 10px; border-radius:8px; color:var(--mute); text-decoration:none; font-size:13px; margin-bottom:2px; }
   #side a:hover { background:#16203a; color:var(--fg); }
   #side a.active { background:#1d2a4a; color:#fff; font-weight:700; }
   #side .grp { font-size:11px; color:#5b6694; margin:12px 10px 4px; letter-spacing:1px; }
   #side .tools button { width:100%; margin-top:6px; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px; cursor:pointer; font-size:12px; }
-  .content { flex:1; min-width:0; overflow-x:hidden; }
+  .content { min-width:0; overflow-x:hidden; padding-left:16px; }
   .pos td, .pos th { white-space:normal; }
   #navToggle { display:none; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; }
-  @media (max-width: 900px) {
-    #side { position:fixed; left:0; top:0; height:100vh; z-index:40; transform:translateX(-100%); transition:transform .2s; box-shadow:4px 0 20px rgba(0,0,0,.5); }
-    #side.open { transform:none; }
-    #navToggle { display:inline-block; }
-  }
+  @media (hover: none) { #navToggle { display:inline-block; } }
   /* ---- collapsible sections ---- */
   section.card > h2 { cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center; }
   section.card > h2::after { content:'▾'; color:var(--mute); font-size:13px; margin-left:8px; }
@@ -379,6 +382,7 @@ side.querySelectorAll('a').forEach(a => a.addEventListener('click', (e) => {
   const target = document.querySelector(a.getAttribute('href'));
   if (target && target.classList.contains('collapsed')) { target.classList.remove('collapsed'); localStorage.setItem('collapsed:' + target.id, '0'); }
   side.classList.remove('open');
+  side.blur();
 }));
 const navObserver = new IntersectionObserver(entries => {
   entries.forEach(en => { if (en.isIntersecting) {
