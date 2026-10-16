@@ -372,3 +372,19 @@ class NightReportTest(unittest.TestCase):
     self.assertIn("昨晚交易", sent[0])
     n.maybe_send_night(at(2026, 10, 17, 9, 0))
     self.assertEqual(len(sent), 1)  # only once
+
+
+class InverseGammaTest(unittest.TestCase):
+
+  def test_inverse_takes_opposite_side_and_bypasses_trend_filter(self):
+    from futures_ai.strategies import InverseGamma, TrendBreakout
+    up = [(47000 + i * 6, 47010 + i * 6, 46998 + i * 6, 47006 + i * 6) for i in range(30)]
+    up[-1] = (up[-2][3], up[-2][3] + 80, up[-2][3] - 2, up[-2][3] + 75)
+    bars = bars_from(up)
+    g = TrendBreakout(lookback=12).decide(bars, 0, None)
+    d = InverseGamma({"lookback": 12}).decide(bars, 0, None)
+    self.assertEqual((g.side, d.side), ("B", "S"))
+    self.assertEqual(d.tp_pts, d.sl_pts * 3)
+    c = cfg()
+    tr = AiTrader(c, InverseGamma({"lookback": 12}), LocalPaperBroker(c), Ledger(":memory:"))
+    self.assertIsNone(tr._filter(d, bars))  # not blocked for being counter-trend

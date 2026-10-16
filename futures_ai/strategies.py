@@ -212,6 +212,32 @@ class TrendBreakout:
     return None
 
 
+class InverseGamma:
+  """Delta: whenever Gamma wants to go long, go short at that point (and vice versa).
+  Its own stop / take-profit are set to make money in the opposite direction."""
+
+  id = "delta-inverse"
+  name = "Delta 反向 Gamma AI"
+  style = "跟 Gamma 唱反調：Gamma 想做多就放空、想放空就做多（賭突破失敗），停損停利依反向方向設定"
+  color = "#eab308"
+  modes = {"native": "反向 Gamma", "flip": "反向 Gamma"}
+  allow_flip = False
+  skip_trend_filter = True  # By design it trades against the breakout direction.
+
+  def __init__(self, gamma_params: dict | None = None, sl_scale: float = 1.0, tp_mult: float = 3.0):
+    self.gamma = TrendBreakout(**(gamma_params or {}))
+    self.sl_scale, self.tp_mult = sl_scale, tp_mult
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    g = self.gamma.decide(bars, 0, None)
+    if g is None:
+      return None
+    side = "S" if g.side == "B" else "B"
+    sl = g.sl_pts * self.sl_scale
+    return Entry(side, sl, sl * self.tp_mult,
+                 f"Gamma 想{'做多' if g.side == 'B' else '放空'}，Delta 反向{'放空' if side == 'S' else '做多'}｜{g.reason.split('，移動停損')[0]}")
+
+
 def build_strategies(params: dict | None = None) -> list:
   """params: optional {ai_id: kwargs} chosen by walk-forward training (data/strategy_params.json)."""
   if params is None:
@@ -220,4 +246,5 @@ def build_strategies(params: dict | None = None) -> list:
     f = ROOT / "data" / "strategy_params.json"
     params = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
   return [OrbBreakout(**params.get("alpha-orb", {})), TrendPullback(**params.get("sigma-vwap", {})),
-          TrendBreakout(**params.get("gamma-scalp", {}))]
+          TrendBreakout(**params.get("gamma-scalp", {})),
+          InverseGamma(params.get("gamma-scalp", {}), **params.get("delta-inverse", {}))]

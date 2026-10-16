@@ -225,7 +225,7 @@ class AiTrader:
     """Universal guards applied after learning. Returns a skip reason or None."""
     regime, er, direction = market_regime(bars)
     against = (sig.side == "B" and direction < 0) or (sig.side == "S" and direction > 0)
-    if regime == "trend" and against:
+    if regime == "trend" and against and not getattr(self.s, "skip_trend_filter", False):
       return f"5 分K 強{'多' if direction > 0 else '空'}趨勢（ER {er:.2f}），不逆勢{'做多' if sig.side == 'B' else '放空'}"
     block = self.ledger.get_state(f"block:{self.ai}")
     if block and block["side"] == sig.side:
