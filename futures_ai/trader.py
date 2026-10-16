@@ -106,8 +106,9 @@ class AiTrader:
     e = info["entry"]
     side = e["side"]
     d = 1 if side == "B" else -1
-    sl = price - d * e["sl_pts"]
-    tp = price + d * e["tp_pts"]
+    tick = self.cfg["tick"]
+    sl = round((price - d * e["sl_pts"]) / tick) * tick  # Trigger prices must sit on the tick grid.
+    tp = round((price + d * e["tp_pts"]) / tick) * tick
     t = ts.isoformat(timespec="seconds")
     common = dict(ai=self.ai, ts=t, trading_day=info["td"], contract=info["code"], side=opposite(side),
                   qty=self.qty, status="WORKING", broker=self.broker.name)
