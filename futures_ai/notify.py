@@ -54,7 +54,7 @@ class LineNotifier:
     if self.last_event_id is None:
       rows = ledger.rows("SELECT COALESCE(MAX(id),0) m FROM events")
       self.last_event_id = rows[0]["m"]
-    self.pending: list[str] = []
+    self.pending: list[str] = ledger.get_state("notify_pending", []) or []  # Survives restarts.
     self.errors = 0
 
   def _send(self, text: str) -> None:
@@ -80,6 +80,7 @@ class LineNotifier:
         self.errors += 1
     if rows:
       self.ledger.set_state("notify_last_event", self.last_event_id)
+      self.ledger.set_state("notify_pending", self.pending)
     if self.errors >= 5:  # Repeated engine errors: likely data feed or network problem.
       self.urgent(f"⚠️ 引擎連續出現 {self.errors} 次錯誤，請檢查（行情或網路）")
       self.errors = 0
@@ -88,12 +89,14 @@ class LineNotifier:
     if self.pending and time.monotonic() - self.last_digest >= self.cfg["digest_minutes"] * 60:
       self._send(f"【微台 AI 交易摘要】{header}\n" + "\n".join(self.pending[-25:]))
       self.pending.clear()
+      self.ledger.set_state("notify_pending", [])
       self.last_digest = time.monotonic()
 
   def session_summary(self, text: str) -> None:
     if self.pending:
       text += "\n\n本盤交易：\n" + "\n".join(self.pending[-25:])
       self.pending.clear()
+      self.ledger.set_state("notify_pending", [])
     self._send(text)
     self.last_digest = time.monotonic()
 

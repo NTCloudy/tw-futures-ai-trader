@@ -87,6 +87,9 @@ def main(argv=None) -> int:
   sub.add_parser("sinopac-test", help="永豐模擬環境：登入 + 期貨下單測試（開通正式環境用）")
   pt = sub.add_parser("pretrain", help="背景學習：用期交所過去 N 個交易日的真實逐筆資料預先累積 AI 經驗（不顯示在儀表板）")
   pt.add_argument("--days", type=int, default=20)
+  tr = sub.add_parser("train", help="滾動前進測試 + 參數搜尋（練習期挑參數 → 沒看過的考試期驗證）")
+  tr.add_argument("--train-days", type=int, default=10)
+  tr.add_argument("--test-days", type=int, default=5)
   sub.add_parser("line-setup", help="設定 LINE 通知（Channel access token + 你的 User ID）")
   sub.add_parser("line-test", help="傳一則 LINE 測試訊息")
   rs = sub.add_parser("restore", help="從 GitHub 備份還原交易紀錄與 AI 學習資料（換電腦用）")
@@ -130,6 +133,10 @@ def main(argv=None) -> int:
     ledger.set_state("kill_switch", args.state == "on")
     ledger.log(f"緊急停止 {'啟動' if args.state == 'on' else '解除'}（CLI）", level="WARN")
     print(f"kill_switch = {args.state}")
+  elif args.cmd == "train":
+    from .wfo import save_report, walk_forward
+    rep = walk_forward(cfg, args.train_days, args.test_days)
+    print(f"報告：{save_report(rep)}")
   elif args.cmd == "pretrain":
     from .pretrain import merge_into_live, replay
     res = replay(cfg, args.days)
