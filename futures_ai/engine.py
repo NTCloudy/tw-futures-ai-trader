@@ -106,6 +106,18 @@ class Engine:
     except Exception as exc:
       print(f"margin refresh failed: {exc}")
 
+  def archive_history(self) -> None:
+    """TAIFEX only keeps ~30 trading days of tick files online; archive them daily so history grows."""
+    from datetime import timedelta as td_
+    from .pretrain import download
+    d = self.clock().date()
+    got = 0
+    for _ in range(45):
+      d -= td_(days=1)
+      if d.weekday() < 5 and download(d):
+        got += 1
+    self.ledger.log(f"歷史資料庫存：已保存 {got} 個交易日的期交所逐筆檔")
+
   def run_forever(self) -> None:
     from .control import GitHubControl
     from .notify import LineNotifier, summary_text
@@ -123,6 +135,7 @@ class Engine:
       if margin_day != td:
         margin_day = td
         self.refresh_margin()
+        self.archive_history()
       control.poll()
       try:
         new_status = self.step()
