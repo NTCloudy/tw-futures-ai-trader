@@ -74,9 +74,10 @@ class VwapReversion:
 
   id = "sigma-vwap"
   name = "Sigma VWAP 回歸 AI"
-  style = "價格偏離 VWAP 過大且出現反轉K棒時逆勢進場，目標回歸均價"
+  style = "價格偏離 VWAP 過大且出現反轉K棒時逆勢進場，目標回歸均價；5 分K 強趨勢時不逆勢，停損後須回到均價才再同向進場"
   color = "#a855f7"
   modes = {"native": "均值回歸", "flip": "趨勢延續"}
+  block_after_stop = True
 
   def __init__(self, min_bars: int = 20, max_entries: int = 4, stretch_atr: float = 2.5):
     self.min_bars = min_bars
@@ -113,11 +114,11 @@ class AggressiveMomentum:
 
   id = "gamma-scalp"
   name = "Gamma 激進動能 AI"
-  style = "1 分K 動能當沖：EMA5/13 同向且突破前一根高/低點就進場，小停損快停利，每盤最多 30 次"
+  style = "1 分K 動能當沖：EMA5/13 同向且突破前一根高/低點就進場；停損依波動調整（至少 20 點），停利 ≥ 1.5 倍停損"
   color = "#f97316"
   modes = {"native": "動能追價", "flip": "動能反轉"}
 
-  def __init__(self, sl_pts: float = 15, tp_pts: float = 20, max_entries: int = 30):
+  def __init__(self, sl_pts: float = 20, tp_pts: float = 30, max_entries: int = 30):
     self.sl, self.tp, self.max_entries = sl_pts, tp_pts, max_entries
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
@@ -128,10 +129,14 @@ class AggressiveMomentum:
     closes = [b.c for b in bars[-30:]]
     fast, slow = ema(closes, 5), ema(closes, 13)
     last, prev = bars[-1], bars[-2]
+    # Stops scale with 1-minute volatility so normal noise does not knock the trade out;
+    # take-profit >= 1.5x stop so a win clearly covers the ~6-point round-trip cost.
+    sl = max(self.sl, round(1.2 * atr(bars)))
+    tp = max(self.tp, round(sl * 1.5))
     if fast > slow and last.c > prev.h and last.c > last.o:
-      return Entry("B", self.sl, self.tp, f"EMA5 {fast:.0f} > EMA13 {slow:.0f}，收盤 {last.c:.0f} 突破前高 {prev.h:.0f}，激進追多")
+      return Entry("B", sl, tp, f"EMA5 {fast:.0f} > EMA13 {slow:.0f}，收盤 {last.c:.0f} 突破前高 {prev.h:.0f}，激進追多")
     if fast < slow and last.c < prev.l and last.c < last.o:
-      return Entry("S", self.sl, self.tp, f"EMA5 {fast:.0f} < EMA13 {slow:.0f}，收盤 {last.c:.0f} 跌破前低 {prev.l:.0f}，激進追空")
+      return Entry("S", sl, tp, f"EMA5 {fast:.0f} < EMA13 {slow:.0f}，收盤 {last.c:.0f} 跌破前低 {prev.l:.0f}，激進追空")
     return None
 
 

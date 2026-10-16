@@ -85,6 +85,8 @@ def main(argv=None) -> int:
   k = sub.add_parser("kill", help="緊急停止：平掉所有部位並停止新單")
   k.add_argument("state", choices=["on", "off"])
   sub.add_parser("sinopac-test", help="永豐模擬環境：登入 + 期貨下單測試（開通正式環境用）")
+  sub.add_parser("line-setup", help="設定 LINE 通知（Channel access token + 你的 User ID）")
+  sub.add_parser("line-test", help="傳一則 LINE 測試訊息")
   rs = sub.add_parser("restore", help="從 GitHub 備份還原交易紀錄與 AI 學習資料（換電腦用）")
   rs.add_argument("--force", action="store_true", help="覆蓋本機現有資料")
   args = ap.parse_args(argv)
@@ -92,6 +94,20 @@ def main(argv=None) -> int:
   cfg = load_config(args.config)
   if args.cmd == "restore":
     return restore(cfg, args.force)
+  if args.cmd in ("line-setup", "line-test"):
+    from .notify import load_cred, push, save_cred
+    if args.cmd == "line-setup":
+      import getpass
+      token = getpass.getpass("LINE Channel access token（輸入時不會顯示）：")
+      to = input("你的 LINE User ID（U 開頭）：")
+      save_cred(token, to)
+    cred = load_cred()
+    if not cred:
+      print("尚未設定，請先執行 line-setup")
+      return 1
+    push(cred, "【微台 AI】LINE 通知設定成功 ✅ 之後會收到交易摘要、收盤摘要與緊急停止通知。")
+    print("已送出測試訊息，請查看 LINE")
+    return 0
   ledger = Ledger(cfg["db_path"])
   if args.cmd == "run":
     if args.publish:

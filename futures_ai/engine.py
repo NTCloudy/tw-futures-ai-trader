@@ -57,6 +57,8 @@ class Engine:
     info = rollover_info(now, self.cfg["product"], self.cfg["roll_days_before"])
     code, td = info["contract"], info["trading_day"]
     snap = self.feed.snapshot(code, name, start, now)
+    if name == "day" and snap.cdate and snap.cdate != now.strftime("%Y%m%d"):
+      return "holiday"  # Exchange closed today (quote date is not today).
     if snap.quote_time is None or not snap.last:
       return "no-data"
     hi, lo = self._touched_range(snap)
@@ -91,12 +93,37 @@ class Engine:
     self._record_equity(now, snap.last)
     return "trading" if fresh else "stale"
 
+  def refresh_margin(self) -> None:
+    from .margin import fetch_margin
+    try:
+      m = fetch_margin(self.cfg["product"])
+      if m:
+        m["updated"] = self.clock().isoformat(timespec="seconds")
+        old = self.ledger.get_state("margin") or {}
+        self.ledger.set_state("margin", m)
+        if old.get("initial") and old["initial"] != m["initial"]:
+          self.ledger.log(f"期交所保證金調整：原始保證金 {old['initial']:,} → {m['initial']:,}", level="WARN")
+    except Exception as exc:
+      print(f"margin refresh failed: {exc}")
+
   def run_forever(self) -> None:
+    from .control import GitHubControl
+    from .notify import LineNotifier, summary_text
+    from .state import build_state
     self.ledger.log(f"引擎啟動：模式 {self.cfg['mode']}，AI：{', '.join(t.s.name for t in self.traders)}")
     for tr in self.traders:
       tr.broker.connect()
-    status = None
+    notifier = LineNotifier(self.cfg, self.ledger)
+    control = GitHubControl(self.cfg, self.ledger, notifier)
+    names = {t.ai: t.s.name for t in self.traders}
+    status, prev_session, margin_day = None, session_of(self.clock())[0], None
     while True:
+      now = self.clock()
+      td = now.strftime("%Y-%m-%d")
+      if margin_day != td:
+        margin_day = td
+        self.refresh_margin()
+      control.poll()
       try:
         new_status = self.step()
         if new_status != status:
@@ -106,6 +133,17 @@ class Engine:
         self.ledger.log(f"引擎錯誤：{exc}", level="ERROR")
         traceback.print_exc()
         new_status = "error"
+      sess = session_of(self.clock())[0]
+      try:
+        notifier.collect(names)
+        if prev_session and sess != prev_session:  # A session just closed.
+          label = "日盤" if prev_session == "day" else "夜盤"
+          notifier.session_summary(summary_text(build_state(self.cfg, self.ledger), label))
+        elif sess:
+          notifier.maybe_digest(f"{'日盤' if sess == 'day' else '夜盤'} {now.strftime('%H:%M')}")
+      except Exception as exc:
+        print(f"notify failed: {exc}")
+      prev_session = sess
       if self.publisher and time.monotonic() - self.last_publish >= self.cfg["publish"]["interval_seconds"]:
         self.last_publish = time.monotonic()
         try:

@@ -35,6 +35,7 @@ class Snapshot:
   bars: list[Bar] = field(default_factory=list)  # completed bars only
   quote_time: datetime | None = None  # exchange time of the latest quote
   live_bar: Bar | None = None  # in-progress bar (its high/low reveal prices touched between polls)
+  cdate: str | None = None  # exchange date of the quote (YYYYMMDD); used for holiday detection
 
 
 def _post(url: str, body: dict, timeout: int = 5) -> dict:
@@ -75,7 +76,7 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
   if ctime and len(ctime) >= 6 and ctime[:6].isdigit():
     t = datetime.combine(now.date(), time(int(ctime[:2]), int(ctime[2:4]), int(ctime[4:6])), TPE)
     qt = t - timedelta(days=1) if t > now + timedelta(minutes=5) else t
-  return Snapshot(code, last, num("CBidPrice1"), num("CAskPrice1"), completed, qt, live)
+  return Snapshot(code, last, num("CBidPrice1"), num("CAskPrice1"), completed, qt, live, q.get("CDate") or None)
 
 
 class TaifexFeed:

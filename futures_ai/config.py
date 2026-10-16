@@ -21,6 +21,7 @@ DEFAULTS: dict = {
     "initial_margin_twd": 35050,  # TAIFEX 原始保證金 for TMF; update when TAIFEX changes it.
     "capital_multiple": 1.5,  # Capital per AI = 1.5 x initial margin.
     "qty": 1,
+    "max_entries_per_session": 12,
     "max_daily_loss_twd": 2000,
     "enforce_daily_loss": True,  # False = trial run: keep trading regardless of the daily loss.
     "commission_per_side_twd": 20,
@@ -39,6 +40,8 @@ DEFAULTS: dict = {
         "ca_password_env": "SINOPAC_CA_PASSWORD",
         "person_id_env": "SINOPAC_PERSON_ID",
     },
+    "control_poll_seconds": 10,
+    "notify": {"line_enabled": True, "digest_minutes": 60},
     "publish": {
         "enabled": False,
         "repo": "NTCloudy/tw-futures-ai-trader",

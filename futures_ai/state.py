@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from .calendar import TPE, now_tpe, rollover_info, session_of, trading_day
 from .strategies import build_strategies
 from .learning import REGIME_ZH, Brain
+from .notify import load_cred
 from .trader import KIND_ZH
 
 MODE_LABEL = {"local_paper": "本機模擬（TAIFEX 即時行情）", "sinopac_sim": "永豐模擬帳戶", "sinopac_live": "永豐真實帳戶"}
@@ -112,6 +113,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
       "capital_per_ai": cap, "max_daily_loss": cfg["max_daily_loss_twd"],
       "enforce_daily_loss": cfg.get("enforce_daily_loss", True),
       "initial_margin": cfg["initial_margin_twd"],
+      "margin_live": ledger.get_state("margin"),
+      "line_enabled": bool(cfg["notify"].get("line_enabled")) and load_cred() is not None,
       "rollover": rollover_info(now, cfg["product"], cfg["roll_days_before"]),
       "session": {"name": sess, "open": s_start.isoformat() if s_start else None,
                   "close": s_end.isoformat() if s_end else None},

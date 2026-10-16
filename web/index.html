@@ -30,9 +30,37 @@
   svg { width:100%; height:200px; }
   button.kill { background:#dc2626; color:#fff; border:0; padding:9px 14px; border-radius:10px; font-weight:700; cursor:pointer; }
   .tag { padding:1px 7px; border-radius:6px; font-size:12px; border:1px solid var(--line); }
+  #ebar { position:sticky; top:0; z-index:20; display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:space-between; padding:10px 24px; background:#111827; border-bottom:2px solid #dc2626; }
+  #ebar.stopped { background:#450a0a; }
+  #ebar button { border:0; border-radius:10px; padding:10px 16px; font-weight:800; font-size:15px; cursor:pointer; }
+  #estop { background:#dc2626; color:#fff; } #eresume { background:#16a34a; color:#fff; }
+  #ebar a { color:#93c5fd; font-size:12px; }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.7); display:none; align-items:center; justify-content:center; z-index:50; }
+  .modal > div { background:#121a2d; border:1px solid #24304d; border-radius:14px; padding:20px; max-width:560px; line-height:1.7; font-size:14px; }
+  .modal input { width:100%; padding:8px; border-radius:8px; border:1px solid #24304d; background:#0a0f1d; color:#e8edff; }
+  .modal button { margin-top:10px; margin-right:8px; padding:8px 14px; border-radius:8px; border:0; cursor:pointer; font-weight:700; }
 </style>
 </head>
 <body>
+<div id="ebar">
+  <div><b id="ebarText">🟢 自動交易運作中</b> <span class="mute" id="ebarSub"></span></div>
+  <div>
+    <button id="estop">🛑 緊急停止（立即全部平倉並停止交易）</button>
+    <button id="eresume" style="display:none">▶️ 恢復自動交易</button>
+    <a href="#" id="esetup">一鍵權杖設定</a>
+  </div>
+</div>
+<div class="modal" id="modal"><div>
+  <h3 style="margin-top:0">送出緊急指令的方式</h3>
+  <p><b>方式一：GitHub Issue（不需設定）</b>。會開啟 GitHub 頁面，標題已填好，你只要按「<b>Submit new issue</b>」，約 10–20 秒生效。需要你登入 GitHub（NTCloudy）。</p>
+  <button id="mIssue" style="background:#dc2626;color:#fff">用 GitHub Issue 送出</button>
+  <hr style="border-color:#24304d">
+  <p><b>方式二：一鍵按鈕（設定一次就好）</b>：到 <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" style="color:#93c5fd">GitHub 建立 Fine-grained token</a>，Repository access 選 <b>Only select repositories → tw-futures-ai-trader</b>，Permissions 的 <b>Contents</b> 設成 <b>Read and write</b>，產生後貼在下面。權杖只會存在這台裝置的瀏覽器裡。</p>
+  <input id="mToken" type="password" placeholder="github_pat_...">
+  <button id="mSave" style="background:#2563eb;color:#fff">儲存權杖</button>
+  <button id="mClear" style="background:#334155;color:#fff">清除已存權杖</button>
+  <button id="mClose" style="background:#334155;color:#fff">關閉</button>
+</div></div>
 <header>
   <div>
     <h1>📈 微台指 AI 自動交易 <span id="mode" class="badge"></span></h1>
@@ -180,9 +208,75 @@ async function refresh() {
     if (s.publish_interval) interval = s.publish_interval;
     lastGen = s.generated_at;
     render(s);
+    renderControl(s);
     ageText();
   } catch (e) { document.getElementById('sub').textContent = '讀取狀態失敗：' + e; }
 }
+
+// ---------------- Emergency stop / resume ----------------
+const REPO = 'NTCloudy/tw-futures-ai-trader';
+let pendingKill = null, modalKill = true, lastState = null;
+const modal = document.getElementById('modal');
+
+function openIssue(kill) {
+  const body = kill ? '緊急停止：立即全部平倉並停止交易（由儀表板送出）' : '恢復自動交易（由儀表板送出）';
+  window.open(`https://github.com/${REPO}/issues/new?title=${kill ? 'STOP' : 'RESUME'}&body=${encodeURIComponent(body)}`, '_blank');
+  setPending(kill);
+}
+
+function setPending(kill) {
+  pendingKill = kill;
+  document.getElementById('ebarSub').textContent = kill ? '已送出停止指令，等待引擎確認（約 10–30 秒）…' : '已送出恢復指令，等待引擎確認…';
+}
+
+async function sendControl(kill) {
+  if (!ON_PAGES) {
+    await fetch('/api/kill', { method: 'POST', body: JSON.stringify({ on: kill }) });
+    setPending(kill); refresh(); return;
+  }
+  const tok = localStorage.getItem('gh_ctl_token');
+  if (!tok) { modalKill = kill; modal.style.display = 'flex'; return; }
+  try {
+    const h = { Authorization: 'Bearer ' + tok, Accept: 'application/vnd.github+json' };
+    const cur = await fetch(`https://api.github.com/repos/${REPO}/contents/control.json?ref=control&t=${Date.now()}`, { headers: h, cache: 'no-store' });
+    const j = await cur.json();
+    const content = btoa(JSON.stringify({ kill, ts: new Date().toISOString(), by: 'dashboard' }));
+    const r = await fetch(`https://api.github.com/repos/${REPO}/contents/control.json`, {
+      method: 'PUT', headers: h, body: JSON.stringify({ message: (kill ? 'STOP' : 'RESUME') + ' from dashboard', branch: 'control', sha: j.sha, content }) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    setPending(kill);
+  } catch (e) {
+    alert('一鍵送出失敗（' + e.message + '），改用 GitHub Issue 方式');
+    openIssue(kill);
+  }
+}
+
+function renderControl(s) {
+  lastState = s;
+  const stopped = !!s.kill_switch;
+  const bar = document.getElementById('ebar');
+  bar.className = stopped ? 'stopped' : '';
+  const openPos = s.ais.filter(a => a.position).length;
+  document.getElementById('ebarText').textContent = stopped
+    ? (openPos ? `⛔ 緊急停止中：正在平倉（剩 ${openPos} 個部位）` : '⛔ 緊急停止中：已全部平倉，不會再下新單')
+    : '🟢 自動交易運作中';
+  document.getElementById('estop').style.display = stopped ? 'none' : '';
+  document.getElementById('eresume').style.display = stopped ? '' : 'none';
+  if (pendingKill !== null && pendingKill === stopped) pendingKill = null;
+  if (pendingKill === null) {
+    const m = s.margin_live;
+    document.getElementById('ebarSub').textContent = `LINE 通知：${s.line_enabled ? '已啟用' : '未設定'}｜期交所原始保證金 ${m ? m.initial.toLocaleString() : s.initial_margin.toLocaleString()}（每日自動更新）`;
+  }
+}
+
+document.getElementById('estop').onclick = () => { if (confirm('確定緊急停止？\n所有 AI 會立刻市價平倉，並停止下新單，直到你按「恢復」。')) sendControl(true); };
+document.getElementById('eresume').onclick = () => { if (confirm('確定恢復自動交易？')) sendControl(false); };
+document.getElementById('esetup').onclick = (e) => { e.preventDefault(); modal.style.display = 'flex'; };
+document.getElementById('mIssue').onclick = () => { modal.style.display = 'none'; openIssue(modalKill); };
+document.getElementById('mSave').onclick = () => { const v = document.getElementById('mToken').value.trim(); if (v) { localStorage.setItem('gh_ctl_token', v); alert('已儲存，之後按緊急停止會一鍵送出'); modal.style.display = 'none'; } };
+document.getElementById('mClear').onclick = () => { localStorage.removeItem('gh_ctl_token'); alert('已清除'); };
+document.getElementById('mClose').onclick = () => { modal.style.display = 'none'; };
+
 refresh();
 setInterval(refresh, ON_PAGES ? 10000 : 3000);
 setInterval(ageText, 1000);

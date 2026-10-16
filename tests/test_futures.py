@@ -249,3 +249,48 @@ class TrialModeTest(unittest.TestCase):
     tr.on_price(at(2026, 10, 16, 9, 20), "2026-10-16", "TMFJ6", {"last": 46790, "bid": 46789, "ask": 46791}, 200, False)
     self.assertIsNotNone(tr.pos)  # -2100 unrealized but no forced exit in trial mode
     self.assertIsNone(tr.locked_day())
+
+
+class GuardsTest(unittest.TestCase):
+
+  def setUp(self):
+    self.cfg = cfg()
+    self.ledger = Ledger(":memory:")
+    self.tr = AiTrader(self.cfg, VwapReversion(), LocalPaperBroker(self.cfg), self.ledger)
+
+  def test_no_counter_trend_entry_in_strong_5min_trend(self):
+    up = [(47000 + i * 4, 47006 + i * 4, 46999 + i * 4, 47004 + i * 4) for i in range(60)]
+    why = self.tr._filter(Entry("S", 30, 45, "fade"), bars_from(up))
+    self.assertIn("不逆勢放空", why)
+    self.assertIsNone(self.tr._filter(Entry("B", 30, 45, "with trend"), bars_from(up)))
+
+  def test_same_direction_blocked_after_stop_until_vwap_touch(self):
+    flat = [(47000, 47004, 46996, 47000 + (i % 3) - 1) for i in range(40)]
+    bars = bars_from(flat)
+    self.ledger.set_state("block:sigma-vwap", {"side": "S", "ts": bars[-1].end.isoformat()})
+    self.assertIn("尚未回到均價", self.tr._filter(Entry("S", 30, 45, "x"), bars))
+    later = bars + bars_from([(47000, 47003, 46997, 47001)], start=bars[-1].end + timedelta(minutes=1))
+    self.assertIsNone(self.tr._filter(Entry("S", 30, 45, "x"), later))
+
+
+class ControlTest(unittest.TestCase):
+
+  def test_owner_issue_stop_sets_kill_switch(self):
+    from futures_ai.control import GitHubControl
+    ledger = Ledger(":memory:")
+    ctl = GitHubControl(cfg(), ledger)
+    calls = []
+
+    def fake(method, path, body=None, etag=None):
+      calls.append((method, path))
+      if "contents" in path:
+        return 304, etag, None
+      if method == "GET":
+        return 200, None, [{"title": "STOP", "number": 7, "created_at": "x", "user": {"login": "NTCloudy"}},
+                           {"title": "STOP", "number": 8, "created_at": "y", "user": {"login": "stranger"}}]
+      return 200, None, {}
+    ctl._req = fake
+    ctl.poll()
+    self.assertTrue(ledger.get_state("kill_switch"))
+    self.assertIn(("PATCH", "/repos/NTCloudy/tw-futures-ai-trader/issues/7"), calls)
+    self.assertNotIn(("PATCH", "/repos/NTCloudy/tw-futures-ai-trader/issues/8"), calls)

@@ -42,6 +42,41 @@ def efficiency_ratio(bars: list[Bar], n: int = 20) -> float:
   return abs(closes[-1] - closes[0]) / path if path else 0.0
 
 
+def to_5min(bars: list[Bar]) -> list[Bar]:
+  out: list[Bar] = []
+  for b in bars:
+    key = b.end.replace(second=0, microsecond=0)
+    bucket_end = key + timedelta(minutes=(5 - key.minute % 5) % 5)
+    if out and out[-1].end == bucket_end:
+      x = out[-1]
+      out[-1] = Bar(bucket_end, x.o, max(x.h, b.h), min(x.l, b.l), b.c, x.v + b.v)
+    else:
+      out.append(Bar(bucket_end, b.o, b.h, b.l, b.c, b.v))
+  return out
+
+
+def market_regime(bars: list[Bar]) -> tuple[str, float, int]:
+  """(regime, efficiency ratio, trend direction +1/-1/0) measured on 5-minute bars (last hour).
+
+  趨勢盤 when the 5-minute efficiency ratio is high, or price keeps printing new 1-hour extremes.
+  Falls back to 1-minute bars early in the session."""
+  b5 = to_5min(bars)
+  if len(b5) >= 6:
+    window = b5[-13:]
+    er = efficiency_ratio(window, n=len(window) - 1)
+    closes = [x.c for x in window]
+    direction = 1 if closes[-1] > closes[0] else -1 if closes[-1] < closes[0] else 0
+    hi, lo = max(x.h for x in window[:-2]), min(x.l for x in window[:-2])
+    new_extreme = (direction > 0 and max(x.h for x in window[-2:]) >= hi) or (direction < 0 and min(x.l for x in window[-2:]) <= lo)
+    trend = er >= 0.30 or (new_extreme and er >= 0.18)
+  else:
+    er = efficiency_ratio(bars)
+    closes = [x.c for x in bars[-21:]]
+    direction = 1 if closes and closes[-1] > closes[0] else -1 if closes and closes[-1] < closes[0] else 0
+    trend = er >= ER_TREND
+  return ("trend" if trend else "chop"), er, direction
+
+
 def clamp(x, lo, hi):
   return max(lo, min(hi, x))
 
@@ -61,8 +96,8 @@ class Brain:
   # ---------- regime & mode ----------
   @staticmethod
   def regime(bars: list[Bar]) -> tuple[str, float]:
-    er = efficiency_ratio(bars)
-    return ("trend" if er >= ER_TREND else "chop"), er
+    name, er, _ = market_regime(bars)
+    return name, er
 
   def daily_decay(self, trading_day: str) -> None:
     if self.state.get("decay_day") == trading_day:

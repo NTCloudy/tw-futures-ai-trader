@@ -10,7 +10,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from .feed import Bar
-from .learning import Brain
+from .learning import Brain, market_regime
+from .strategies import vwap
 
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉"}
@@ -140,6 +141,8 @@ class AiTrader:
     self._cancel_working(ts, info["code"], "部位已平倉，刪除剩餘委託")
     self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])}平倉 {price:.0f}，{points:+.0f} 點，"
                     f"淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
+    if info["kind"] == "SL" and getattr(self.s, "block_after_stop", False):
+      self.ledger.set_state(f"block:{self.ai}", {"side": p["side"], "ts": ts.isoformat()})
     lesson = self.brain.review(ts, p, price, info["kind"], gross - cost)
     self.ledger.log(f"🧠 檢討：{lesson['diagnosis']}｜{'；'.join(lesson['adjustments'])}", self.ai, "LEARN", ts)
 
@@ -197,6 +200,21 @@ class AiTrader:
       q["ask"] = trig if kind == "TP" else max(trig, quote.get("ask") or quote["last"])
     self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), q, KIND_ZH[kind])
 
+  def _filter(self, sig, bars: list[Bar]) -> str | None:
+    """Universal guards applied after learning. Returns a skip reason or None."""
+    regime, er, direction = market_regime(bars)
+    against = (sig.side == "B" and direction < 0) or (sig.side == "S" and direction > 0)
+    if regime == "trend" and against:
+      return f"5 分K 強{'多' if direction > 0 else '空'}趨勢（ER {er:.2f}），不逆勢{'做多' if sig.side == 'B' else '放空'}"
+    block = self.ledger.get_state(f"block:{self.ai}")
+    if block and block["side"] == sig.side:
+      vw = vwap(bars)
+      touched = any(b.end.isoformat() > block["ts"] and b.l <= vw <= b.h for b in bars)
+      if not touched:
+        return f"上一筆{'多' if sig.side == 'B' else '空'}單停損，價格尚未回到均價 {vw:.0f}，暫不同向進場"
+      self.ledger.set_state(f"block:{self.ai}", None)
+    return None
+
   def on_bar(self, ts: datetime, td: str, code: str, session_key: str, bars: list[Bar], quote: dict,
              minutes_to_close: float, fresh: bool, kill: bool) -> None:
     if self.pos or self.pending or kill or not fresh:
@@ -213,12 +231,15 @@ class AiTrader:
     self.brain.daily_decay(td)
     if self.brain.paused(ts):
       return
+    if self.entries(session_key) >= self.cfg["max_entries_per_session"]:
+      return
     raw = self.s.decide(bars, self.entries(session_key), since)
     if raw is None:
       return
     sig, ctx = self.brain.adjust(raw, bars)
-    if sig is None:
-      self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": ctx["why"]})
+    why = ctx["why"] if sig is None else self._filter(sig, bars)
+    if why:
+      self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": why})
       return
     self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
     entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": sig.tp_pts, "reason": sig.reason,
