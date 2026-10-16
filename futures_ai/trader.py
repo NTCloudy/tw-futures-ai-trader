@@ -184,7 +184,16 @@ class AiTrader:
     t = ts.isoformat(timespec="seconds")
     self.ledger.update_order(trigger_oid, t, status="TRIGGERED", note=f"{KIND_ZH[kind]}（成交價 {quote['last']:.0f}）")
     self._cancel_working(ts, p["contract"], f"{KIND_ZH[kind]}，刪除其他未成交委託")
-    self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), quote, KIND_ZH[kind])
+    # The trigger fires the instant the price touches it. Between two 3-second polls the price may
+    # already have moved on, so the paper fill is anchored at the trigger: take-profit fills at the
+    # trigger (minus slippage); a stop fills at the trigger or worse if the market gapped through it.
+    trig = p["tp"] if kind == "TP" else p["sl"]
+    q = dict(quote)
+    if p["side"] == "B":  # Exit is a sell.
+      q["bid"] = trig if kind == "TP" else min(trig, quote.get("bid") or quote["last"])
+    else:
+      q["ask"] = trig if kind == "TP" else max(trig, quote.get("ask") or quote["last"])
+    self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), q, KIND_ZH[kind])
 
   def on_bar(self, ts: datetime, td: str, code: str, session_key: str, bars: list[Bar], quote: dict,
              minutes_to_close: float, fresh: bool, kill: bool) -> None:

@@ -117,9 +117,9 @@ class OcoBracketTest(unittest.TestCase):
     self.assertEqual(self.ledger.working_orders("alpha-orb"), [])
     t = self.ledger.rows("SELECT * FROM trades")[0]
     self.assertEqual(t["exit_kind"], "TP")
-    self.assertEqual(t["points"], 47083 - 47001)  # sell at bid - 1 tick
-    cost = 2 * 20 + round(47001 * 10 * 0.00002) + round(47083 * 10 * 0.00002)
-    self.assertAlmostEqual(t["pnl_twd"], 82 * 10 - cost)
+    self.assertEqual(t["points"], 47080 - 47001)  # TP trigger 47081 - 1 tick slippage
+    cost = 2 * 20 + round(47001 * 10 * 0.00002) + round(47080 * 10 * 0.00002)
+    self.assertAlmostEqual(t["pnl_twd"], 79 * 10 - cost)
 
   def test_spike_between_polls_triggers_take_profit(self):
     self.enter()
@@ -127,7 +127,9 @@ class OcoBracketTest(unittest.TestCase):
     self.tr.on_price(at(2026, 10, 16, 9, 20), self.td, "TMFJ6",
                      {"last": 47060, "bid": 47059, "ask": 47061, "hi": 47090, "lo": 47055}, 200, False)
     self.assertIsNone(self.tr.pos)
-    self.assertEqual(self.ledger.rows("SELECT exit_kind FROM trades")[0]["exit_kind"], "TP")
+    t = self.ledger.rows("SELECT exit_kind, exit_price FROM trades")[0]
+    self.assertEqual(t["exit_kind"], "TP")
+    self.assertEqual(t["exit_price"], 47081 - 1)  # anchored at the trigger, minus 1 tick slippage
 
   def test_stop_loss_and_daily_loss_lock(self):
     self.tr.s.entry = Entry("B", 150, 300, "wide")
