@@ -40,7 +40,7 @@ def build_tp_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
     s.base_id, s.id, s.name = s.id, f"tp1-{s.id}", f"{s.name}（停利 {TWIN_TP_MULT:g} 倍）"
     s.tp_mult = TWIN_TP_MULT
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out + build_tp_twins(cfg, ledger)
+  return out
 
 
 def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:

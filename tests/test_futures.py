@@ -388,3 +388,13 @@ class InverseGammaTest(unittest.TestCase):
     c = cfg()
     tr = AiTrader(c, InverseGamma({"lookback": 12}), LocalPaperBroker(c), Ledger(":memory:"))
     self.assertIsNone(tr._filter(d, bars))  # not blocked for being counter-trend
+
+
+class ShadowBuildTest(unittest.TestCase):
+
+  def test_shadows_and_twins_build(self):
+    from futures_ai.shadows import build_shadows
+    sh = build_shadows(cfg(), Ledger(":memory:"))
+    ids = [t.ai for t in sh]
+    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 4)
+    self.assertTrue(all(t.s.tp_mult == 1.0 for t in sh if t.ai.startswith("tp1-")))
