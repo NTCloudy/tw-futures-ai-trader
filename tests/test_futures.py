@@ -152,6 +152,17 @@ class OcoBracketTest(unittest.TestCase):
                    {"last": 46800, "bid": 46799, "ask": 46800}, 200, True, False)
     self.assertIsNone(self.tr.pos)  # locked for the rest of the day
 
+  def test_kill_switch_flattens_cancels_triggers_and_blocks_entries(self):
+    self.enter()
+    self.tr.on_price(at(2026, 10, 16, 9, 15), self.td, "TMFJ6", {"last": 47010, "bid": 47009, "ask": 47011}, 200, True)
+    self.assertIsNone(self.tr.pos)
+    self.assertEqual(self.ledger.rows("SELECT exit_kind FROM trades")[0]["exit_kind"], "KILL")
+    self.assertEqual(self.ledger.working_orders("alpha-orb"), [])
+    self.tr.s.entry = Entry("B", 40, 80, "again")
+    self.tr.on_bar(at(2026, 10, 16, 9, 20), self.td, "TMFJ6", "2026-10-16-day", self.bars,
+                   {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, True)
+    self.assertIsNone(self.tr.pos)
+
   def test_session_end_flatten_and_no_late_entries(self):
     self.enter()
     self.tr.on_price(at(2026, 10, 16, 13, 41), self.td, "TMFJ6", {"last": 47010, "bid": 47009, "ask": 47011}, 4, False)
