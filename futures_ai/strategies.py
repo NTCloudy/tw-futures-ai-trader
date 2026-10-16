@@ -239,28 +239,35 @@ class InverseGamma:
 
 
 class InverseOf:
-  """Generic contrarian twin: whenever the base AI wants to go long, go short at that point (and
-  vice versa), with its own stop / take-profit set to make money in the opposite direction."""
+  """Contrarian twin that mirrors the base AI's ACTUAL trades: at the moment the base AI really
+  opens a long, this AI opens a short at that point (and vice versa). Stop distance follows the
+  base trade (x sl_scale); take-profit = stop x tp_mult, set to make money in the opposite direction.
+  If the base AI does not trade (already in a position, filtered, paused...), neither does this AI."""
 
   allow_flip = False
   skip_trend_filter = True
 
   def __init__(self, base, id: str, name: str, color: str, sl_scale: float = 1.0, tp_mult: float = 1.5):
     self.base = base
+    self.follow = base.id  # live AI whose real entries are mirrored
     self.id, self.name, self.color = id, name, color
-    self.style = f"跟 {base.name.split(' ')[0]} 唱反調：它想做多就放空、想放空就做多，停損停利依反向方向設定"
-    self.modes = {"native": f"反向 {base.name.split(' ')[0]}", "flip": f"反向 {base.name.split(' ')[0]}"}
+    who = base.name.split(" ")[0]
+    self.style = f"鏡像反向 {who}：{who} 實際做多的同一根 K 棒就放空、實際放空就做多；停損停利依反向方向設定"
+    self.modes = {"native": f"反向 {who}", "flip": f"反向 {who}"}
     self.sl_scale, self.tp_mult = sl_scale, tp_mult
+    self._mirrored: str | None = None
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
-    g = self.base.decide(bars, 0, None)
-    if g is None:
+    from .trader import ENTRY_BUS  # Local import avoids a module cycle.
+    ev = ENTRY_BUS.get(self.follow)
+    if not ev or not bars or ev.get("bar_end") != bars[-1].end.isoformat() or self._mirrored == ev["bar_end"]:
       return None
-    side = "S" if g.side == "B" else "B"
-    sl = g.sl_pts * self.sl_scale
+    self._mirrored = ev["bar_end"]
+    side = "S" if ev["side"] == "B" else "B"
+    sl = ev["sl_pts"] * self.sl_scale
     who = self.base.name.split(" ")[0]
     return Entry(side, sl, sl * self.tp_mult,
-                 f"{who} 想{'做多' if g.side == 'B' else '放空'}，反向{'放空' if side == 'S' else '做多'}｜{g.reason}")
+                 f"{who} 剛{'做多' if ev['side'] == 'B' else '放空'}成交 {ev['price']:.0f}，鏡像反向{'放空' if side == 'S' else '做多'}")
 
 
 def build_strategies(params: dict | None = None) -> list:
@@ -278,4 +285,5 @@ def build_strategies(params: dict | None = None) -> list:
                     **params.get("eps-inverse-alpha", {"sl_scale": 1.0, "tp_mult": 1.5})),
           InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
                     **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0})),
-          InverseGamma(params.get("gamma-scalp", {}), **params.get("delta-inverse", {}))]
+          InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
+                    **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0}))]

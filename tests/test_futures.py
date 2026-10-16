@@ -374,22 +374,6 @@ class NightReportTest(unittest.TestCase):
     self.assertEqual(len(sent), 1)  # only once
 
 
-class InverseGammaTest(unittest.TestCase):
-
-  def test_inverse_takes_opposite_side_and_bypasses_trend_filter(self):
-    from futures_ai.strategies import InverseGamma, TrendBreakout
-    up = [(47000 + i * 6, 47010 + i * 6, 46998 + i * 6, 47006 + i * 6) for i in range(30)]
-    up[-1] = (up[-2][3], up[-2][3] + 80, up[-2][3] - 2, up[-2][3] + 75)
-    bars = bars_from(up)
-    g = TrendBreakout(lookback=12).decide(bars, 0, None)
-    d = InverseGamma({"lookback": 12}).decide(bars, 0, None)
-    self.assertEqual((g.side, d.side), ("B", "S"))
-    self.assertEqual(d.tp_pts, d.sl_pts * 3)
-    c = cfg()
-    tr = AiTrader(c, InverseGamma({"lookback": 12}), LocalPaperBroker(c), Ledger(":memory:"))
-    self.assertIsNone(tr._filter(d, bars))  # not blocked for being counter-trend
-
-
 class ShadowBuildTest(unittest.TestCase):
 
   def test_shadows_and_twins_build(self):
@@ -402,14 +386,23 @@ class ShadowBuildTest(unittest.TestCase):
 
 class InverseOfTest(unittest.TestCase):
 
-  def test_inverse_alpha_and_sigma_flip_side(self):
-    from futures_ai.strategies import build_strategies
-    ids = [s.id for s in build_strategies({})]
-    self.assertIn("eps-inverse-alpha", ids)
-    self.assertIn("zeta-inverse-sigma", ids)
-    from futures_ai.strategies import InverseOf, OrbBreakout
-    rng = [(47100, 47110, 47095, 47105)] * 3 + [(47105, 47109, 47104, 47108)]
-    bars = bars_from(rng + [(47108, 47130, 47107, 47125)])
-    base = OrbBreakout(range_bars=3)
-    inv = InverseOf(base, "x", "X 反向", "#fff", 1.0, 1.5)
-    self.assertEqual((base.decide(bars, 0, None).side, inv.decide(bars, 0, None).side), ("B", "S"))
+  def test_inverse_mirrors_actual_entries_only(self):
+    from futures_ai.strategies import build_strategies, InverseOf
+    from futures_ai.trader import ENTRY_BUS
+    ids = [x.id for x in build_strategies({})]
+    self.assertEqual(ids, ["alpha-orb", "sigma-vwap", "gamma-scalp", "eps-inverse-alpha", "zeta-inverse-sigma", "delta-inverse"])
+    c = cfg()
+    ledger = Ledger(":memory:")
+    base = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "base long")), LocalPaperBroker(c), ledger)
+    inv_s = InverseOf(FakeStrategy(None), "inv", "Inv 反向", "#fff", 1.0, 1.5)
+    inv = AiTrader(c, inv_s, LocalPaperBroker(c), ledger)
+    bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
+    q = {"last": 47000, "bid": 46999, "ask": 47000}
+    ENTRY_BUS.clear()
+    inv.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, q, 200, True, False)
+    self.assertIsNone(inv.pos)  # base has not traded -> no mirror
+    base.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, q, 200, True, False)
+    inv.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, q, 200, True, False)
+    self.assertEqual((base.pos["side"], inv.pos["side"]), ("B", "S"))
+    self.assertEqual(inv.pos["sl"] - inv.pos["entry_price"], 40)  # same stop distance, opposite side
+

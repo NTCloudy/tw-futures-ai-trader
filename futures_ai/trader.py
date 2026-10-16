@@ -13,6 +13,9 @@ from .feed import Bar
 from .learning import Brain, market_regime
 from .strategies import vwap
 
+# Actual entries of each AI in this process, so contrarian AIs can mirror real trades (not raw signals).
+ENTRY_BUS: dict[str, dict] = {}
+
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉"}
 
@@ -132,6 +135,8 @@ class AiTrader:
                 "sl_oid": sl_oid, "tp_oid": tp_oid, "entry_cost": self.side_cost(price, self.qty),
                 "reason": e["reason"], "regime": e.get("regime", "chop"), "mode": e.get("mode", "native"),
                 "mfe": 0.0, "mae": 0.0, "trail": e.get("trail_pts")}
+    ENTRY_BUS[self.ai] = {"bar_end": e.get("bar_end"), "side": side, "sl_pts": e["sl_pts"], "tp_pts": e["tp_pts"],
+                          "price": price, "reason": e["reason"]}
     self.ledger.log(f"{'做多' if side == 'B' else '放空'}成交 {price:.0f}，同時掛停利觸價 {tp:.0f}／停損觸價 {sl:.0f}"
                     f"｜{e['reason']}", self.ai, "TRADE", ts)
 
@@ -267,6 +272,7 @@ class AiTrader:
     tp_pts, reason = tp_cap(sig.sl_pts, sig.tp_pts, bars, minutes_to_close, sig.reason)
     entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": tp_pts, "reason": reason,
              "trail_pts": getattr(sig, "trail_pts", None),
-             "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"]}
+             "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"],
+             "bar_end": bars[-1].end.isoformat() if bars else None}
     self._send_market(ts, td, code, "ENTRY", sig.side, quote, reason, entry)
     self.process_fills(ts)
