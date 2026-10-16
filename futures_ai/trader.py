@@ -269,7 +269,10 @@ class AiTrader:
       self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": why})
       return
     self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
-    tp_pts, reason = tp_cap(sig.sl_pts, sig.tp_pts, bars, minutes_to_close, sig.reason)
+    if getattr(self.s, "fixed_bracket", False):
+      tp_pts, reason = sig.tp_pts, sig.reason
+    else:
+      tp_pts, reason = tp_cap(sig.sl_pts, sig.tp_pts, bars, minutes_to_close, sig.reason)
     entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": tp_pts, "reason": reason,
              "trail_pts": getattr(sig, "trail_pts", None),
              "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"],

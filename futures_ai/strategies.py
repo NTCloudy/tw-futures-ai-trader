@@ -270,6 +270,29 @@ class InverseOf:
                  f"{who} 剛{'做多' if ev['side'] == 'B' else '放空'}成交 {ev['price']:.0f}，鏡像反向{'放空' if side == 'S' else '做多'}")
 
 
+class FixedBracket:
+  """Uses a base AI's entry logic (same direction) with a fixed take-profit / stop in points."""
+
+  allow_flip = False
+  fixed_bracket = True  # Not scaled by learning multipliers, not capped by remaining-session reach.
+
+  def __init__(self, base, id: str, name: str, color: str, tp_pts: float = 100, sl_pts: float = 50):
+    self.base = base
+    self.id, self.name, self.color = id, name, color
+    self.tp_pts, self.sl_pts = tp_pts, sl_pts
+    self.block_after_stop = getattr(base, "block_after_stop", False)
+    who = base.name.split(" ")[0]
+    self.style = f"用 {who} 的進場訊號（同方向），固定獲利 {tp_pts:.0f} 點停利、虧損 {sl_pts:.0f} 點停損"
+    self.modes = {"native": f"{who} 進場＋固定停利停損", "flip": f"{who} 進場＋固定停利停損"}
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    g = self.base.decide(bars, entries_this_session, bars_since_exit)
+    if g is None:
+      return None
+    return Entry(g.side, self.sl_pts, self.tp_pts,
+                 f"{g.reason}｜固定停利 {self.tp_pts:.0f} 點／停損 {self.sl_pts:.0f} 點")
+
+
 def build_strategies(params: dict | None = None) -> list:
   """params: optional {ai_id: kwargs} chosen by walk-forward training (data/strategy_params.json)."""
   if params is None:
@@ -286,4 +309,6 @@ def build_strategies(params: dict | None = None) -> list:
           InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
                     **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0})),
           InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
-                    **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0}))]
+                    **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0})),
+          FixedBracket(TrendPullback(**params.get("sigma-vwap", {})), "cloudy-sigma", "Cloudy's strategy", "#a3e635",
+                       **params.get("cloudy-sigma", {"tp_pts": 100, "sl_pts": 50}))]

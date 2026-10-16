@@ -87,6 +87,7 @@ class Brain:
     self.ledger = ledger
     self.learning = learning
     self.allow_flip = getattr(strategy, "allow_flip", True)
+    self.fixed = getattr(strategy, "fixed_bracket", False)
     self.ai = strategy.id
     self.modes = getattr(strategy, "modes", {"native": "原策略", "flip": "反向策略"})
     self.key = f"brain:{self.ai}"
@@ -138,8 +139,9 @@ class Brain:
     if mode is None:
       return None, ctx
     side = sig.side if mode == "native" else ("S" if sig.side == "B" else "B")
-    sl = round(sig.sl_pts * self.state["sl_mult"])
-    tp = round(sig.tp_pts * self.state["tp_mult"])
+    fixed = getattr(self, "fixed", False)
+    sl = round(sig.sl_pts if fixed else sig.sl_pts * self.state["sl_mult"])
+    tp = round(sig.tp_pts if fixed else sig.tp_pts * self.state["tp_mult"])
     reason = f"[{REGIME_ZH[regime]} ER {er:.2f}｜{self.modes[mode]}] {sig.reason}"
     if mode == "flip":
       reason += "（學習後反向操作）"

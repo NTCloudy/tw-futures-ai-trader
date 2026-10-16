@@ -243,6 +243,9 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
       return "S", sl, tp, trail
     return None
+  if ai == "sigma-fixed":  # Sigma entries with a fixed bracket (take-profit / stop in points).
+    g = signal5("sigma-pullback", p["base"], s, k, i)
+    return (g[0], p["sl_pts"], p["tp_pts"], None) if g else None
   if ai in ("alpha-inverse", "sigma-inverse"):
     base = "alpha-orb" if ai == "alpha-inverse" else "sigma-pullback"
     g = signal5(base, p["base"], s, k, i)
@@ -331,7 +334,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           maxdd = max(maxdd, peak - pnl)
           pos = None
           last_exit_i = i
-          if kind == "SL" and ai == "sigma-pullback":
+          if kind == "SL" and ai in ("sigma-pullback", "sigma-fixed"):
             block_side, block_i = side, i
           continue
       if pos or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
@@ -355,8 +358,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           block_side = None
         else:
           continue
-      remaining = max(1.0, (s.close - x.end).total_seconds() / 300)
-      tp_pts = min(tp_pts, max(round(sl_pts * 1.5), round(s.atr5[s.k_at[i]] * remaining ** 0.5)))
+      if ai != "sigma-fixed":  # Fixed brackets are not capped.
+        remaining = max(1.0, (s.close - x.end).total_seconds() / 300)
+        tp_pts = min(tp_pts, max(round(sl_pts * 1.5), round(s.atr5[s.k_at[i]] * remaining ** 0.5)))
       entry = x.c + 2 if side == "B" else x.c - 2
       d = 1 if side == "B" else -1
       pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail)

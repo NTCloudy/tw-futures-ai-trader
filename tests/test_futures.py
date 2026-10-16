@@ -390,7 +390,7 @@ class InverseOfTest(unittest.TestCase):
     from futures_ai.strategies import build_strategies, InverseOf
     from futures_ai.trader import ENTRY_BUS
     ids = [x.id for x in build_strategies({})]
-    self.assertEqual(ids, ["alpha-orb", "sigma-vwap", "gamma-scalp", "eps-inverse-alpha", "zeta-inverse-sigma", "delta-inverse"])
+    self.assertEqual(ids, ["alpha-orb", "sigma-vwap", "gamma-scalp", "eps-inverse-alpha", "zeta-inverse-sigma", "delta-inverse", "cloudy-sigma"])
     c = cfg()
     ledger = Ledger(":memory:")
     base = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "base long")), LocalPaperBroker(c), ledger)
@@ -406,3 +406,19 @@ class InverseOfTest(unittest.TestCase):
     self.assertEqual((base.pos["side"], inv.pos["side"]), ("B", "S"))
     self.assertEqual(inv.pos["sl"] - inv.pos["entry_price"], 40)  # same stop distance, opposite side
 
+
+
+class CloudyStrategyTest(unittest.TestCase):
+
+  def test_fixed_100_50_bracket_not_scaled_or_capped(self):
+    from futures_ai.strategies import FixedBracket, build_strategies
+    self.assertEqual(build_strategies({})[-1].name, "Cloudy's strategy")
+    c = cfg()
+    ledger = Ledger(":memory:")
+    fb = FixedBracket(FakeStrategy(Entry("B", 37, 222, "sigma long")), "cloudy-sigma", "Cloudy's strategy", "#fff")
+    tr = AiTrader(c, fb, LocalPaperBroker(c), ledger)
+    tr.brain.state["sl_mult"], tr.brain.state["tp_mult"] = 1.3, 0.7  # learning must not touch fixed brackets
+    bars = bars_from([(47000, 47003, 46997, 47000)] * 20)  # tiny ATR would normally cap the target
+    tr.on_bar(at(2026, 10, 16, 13, 30), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 100, True, False)
+    p = tr.pos
+    self.assertEqual((p["tp"] - p["entry_price"], p["entry_price"] - p["sl"]), (100, 50))

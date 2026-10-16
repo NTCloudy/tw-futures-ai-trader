@@ -196,10 +196,11 @@ function render(s) {
   document.getElementById('roll').innerHTML = `交易合約 <b>${r.contract}</b>（${r.delivery_month}）<br>結算日 ${r.settlement_date}<br>下次換倉 ${r.next_roll_day}<div class="mute">結算日前 1 個營業日自動改做次月；每盤收盤前全數平倉，不留倉換月</div>`;
 
   const PAIR = { 'alpha-orb': [0, 0], 'sigma-vwap': [1, 0], 'gamma-scalp': [2, 0],
-                 'eps-inverse-alpha': [0, 1], 'zeta-inverse-sigma': [1, 1], 'delta-inverse': [2, 1] };
+                 'eps-inverse-alpha': [0, 1], 'zeta-inverse-sigma': [1, 1], 'delta-inverse': [2, 1],
+                 'cloudy-sigma': [1, 2] };
   const narrow = window.matchMedia('(max-width: 1100px)').matches;
   const place = a => { const p = PAIR[a.id]; if (!p) return '';
-    return narrow ? `order:${p[0] * 2 + p[1]};` : `grid-column:${p[0] + 1};grid-row:${p[1] + 1};`; };
+    return narrow ? `order:${p[0] * 3 + p[1]};` : `grid-column:${p[0] + 1};grid-row:${p[1] + 1};`; };
   document.getElementById('aiCards').innerHTML = s.ais.map(a => {
     const p = a.position;
     const pos = p ? `<div class="pos"><span class="tag ${p.side === 'B' ? 'up' : 'down'}">${sideZh(p.side)}單 ${p.qty} 口</span> ${p.contract} 進場 <b>${p.entry_price.toLocaleString()}</b>（${t(p.entry_ts)}）<br>
