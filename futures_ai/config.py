@@ -45,7 +45,8 @@ DEFAULTS: dict = {
         "person_id_env": "SINOPAC_PERSON_ID",
     },
     "control_poll_seconds": 10,
-    "notify": {"line_enabled": True, "digest_minutes": 60},
+    # digest_minutes 0 = no intraday digests; day report at 13:45, night report next morning.
+    "notify": {"line_enabled": True, "digest_minutes": 0, "night_report_time": "08:30"},
     "publish": {
         "enabled": False,
         "repo": "NTCloudy/tw-futures-ai-trader",

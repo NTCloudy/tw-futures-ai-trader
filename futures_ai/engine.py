@@ -149,7 +149,9 @@ class Engine:
     notifier = LineNotifier(self.cfg, self.ledger)
     control = GitHubControl(self.cfg, self.ledger, notifier)
     names = {t.ai: t.s.name for t in self.traders}
-    status, prev_session, margin_day = None, session_of(self.clock())[0], None
+    status, margin_day = None, None
+    _, _, prev_end = session_of(self.clock())
+    prev_session = session_of(self.clock())[0]
     while True:
       now = self.clock()
       td = now.strftime("%Y-%m-%d")
@@ -167,17 +169,22 @@ class Engine:
         self.ledger.log(f"引擎錯誤：{exc}", level="ERROR")
         traceback.print_exc()
         new_status = "error"
-      sess = session_of(self.clock())[0]
+      sess, _, sess_end = session_of(self.clock())
       try:
         notifier.collect(names)
         if prev_session and sess != prev_session:  # A session just closed.
-          label = "日盤" if prev_session == "day" else "夜盤"
-          notifier.session_summary(summary_text(build_state(self.cfg, self.ledger), label))
+          # Evaluate the state as of the last second of the closed session (correct trading day).
+          st = build_state(self.cfg, self.ledger, now=prev_end - timedelta(seconds=1))
+          if prev_session == "day":
+            notifier.session_summary(summary_text(st, "日盤"))  # 13:45 report
+          else:
+            notifier.defer_night(summary_text(st, "夜盤"))  # Sent at notify.night_report_time (08:30)
         elif sess:
           notifier.maybe_digest(f"{'日盤' if sess == 'day' else '夜盤'} {now.strftime('%H:%M')}")
+        notifier.maybe_send_night(self.clock())
       except Exception as exc:
         print(f"notify failed: {exc}")
-      prev_session = sess
+      prev_session, prev_end = sess, sess_end or prev_end
       if self.publisher and time.monotonic() - self.last_publish >= self.cfg["publish"]["interval_seconds"]:
         self.last_publish = time.monotonic()
         try:

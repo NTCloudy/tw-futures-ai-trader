@@ -353,3 +353,22 @@ class TpCapTest(unittest.TestCase):
     self.assertGreaterEqual(tp, 225)  # never below 1.5x stop
     self.assertIn("停利上限", why)
     self.assertEqual(tp_cap(30, 60, bars, 200, "x")[0], 60)  # small targets untouched
+
+
+class NightReportTest(unittest.TestCase):
+
+  def test_night_report_deferred_until_morning(self):
+    from futures_ai.notify import LineNotifier
+    ledger = Ledger(":memory:")
+    n = LineNotifier(cfg(), ledger)
+    sent = []
+    n._send = sent.append
+    n.pending = ["02:10 Gamma：做多成交 47300"]
+    n.defer_night("夜盤摘要")
+    n.maybe_send_night(at(2026, 10, 17, 6, 0))
+    self.assertEqual(sent, [])
+    n.maybe_send_night(at(2026, 10, 17, 8, 30))
+    self.assertEqual(len(sent), 1)
+    self.assertIn("昨晚交易", sent[0])
+    n.maybe_send_night(at(2026, 10, 17, 9, 0))
+    self.assertEqual(len(sent), 1)  # only once

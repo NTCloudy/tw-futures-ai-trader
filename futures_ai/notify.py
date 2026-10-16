@@ -86,11 +86,28 @@ class LineNotifier:
       self.errors = 0
 
   def maybe_digest(self, header: str) -> None:
+    if self.cfg.get("digest_minutes", 0) <= 0:  # Digests disabled: trades go into the session report.
+      return
     if self.pending and time.monotonic() - self.last_digest >= self.cfg["digest_minutes"] * 60:
       self._send(f"【微台 AI 交易摘要】{header}\n" + "\n".join(self.pending[-25:]))
       self.pending.clear()
       self.ledger.set_state("notify_pending", [])
       self.last_digest = time.monotonic()
+
+  def defer_night(self, text: str) -> None:
+    """Stores the night-session report (with its trades) to be sent the next morning."""
+    if self.pending:
+      text += "\n\n昨晚交易：\n" + "\n".join(self.pending[-25:])
+      self.pending.clear()
+      self.ledger.set_state("notify_pending", [])
+    self.ledger.set_state("night_report", text)
+
+  def maybe_send_night(self, now: datetime) -> None:
+    text = self.ledger.get_state("night_report")
+    hh, mm = (int(x) for x in self.cfg.get("night_report_time", "08:30").split(":"))
+    if text and (now.hour, now.minute) >= (hh, mm) and now.hour < 15:
+      self._send(text)
+      self.ledger.set_state("night_report", None)
 
   def session_summary(self, text: str) -> None:
     if self.pending:
@@ -102,7 +119,8 @@ class LineNotifier:
 
 
 def summary_text(state: dict, session_label: str) -> str:
-  lines = [f"【微台 AI】{session_label}收盤摘要 {datetime.now().strftime('%m/%d')}"]
+  title = "昨晚夜盤戰況" if session_label == "夜盤" else "日盤收盤摘要"
+  lines = [f"【微台 AI】{title}（交易日 {state['rollover']['trading_day']}）"]
   for a in state["ais"]:
     lines.append(f"{a['name']}：今日 {a['today_pnl']:+,}｜累計 {a['total_pnl']:+,}｜{a['trades_today']} 筆勝 {a['wins_today']}")
   c = state["combined"]
