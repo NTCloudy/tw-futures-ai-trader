@@ -14,6 +14,7 @@ class Entry:
   tp_pts: float
   reason: str
   trail_pts: float | None = None  # trailing stop distance (None = fixed stop)
+  limit_price: float | None = None  # explicit limit entry price (otherwise derived from limit_atr)
 
 
 def clamp(x: float, lo: float, hi: float) -> float:
@@ -267,7 +268,8 @@ class InverseOf:
     sl = ev["sl_pts"] * self.sl_scale
     who = self.base.name.split(" ")[0]
     return Entry(side, sl, sl * self.tp_mult,
-                 f"{who} 剛{'做多' if ev['side'] == 'B' else '放空'}成交 {ev['price']:.0f}，鏡像反向{'放空' if side == 'S' else '做多'}")
+                 f"{who} 剛{'做多' if ev['side'] == 'B' else '放空'}成交 {ev['price']:.0f}，鏡像反向{'放空' if side == 'S' else '做多'}（限價 {ev['price']:.0f}）",
+                 None, ev["price"])
 
 
 class FixedBracket:
@@ -293,6 +295,118 @@ class FixedBracket:
                  f"{g.reason}｜固定停利 {self.tp_pts:.0f} 點／停損 {self.sl_pts:.0f} 點")
 
 
+class NightOpenBreakout:
+  """Nova (replaces Gamma): night-session opening-range breakout. Range = 15:00-15:30 (six 5-min bars);
+  trades a VWAP-confirmed breakout during the next 120 minutes; stop = range width (30-150 pts),
+  take-profit = 3x stop; limit entry at the signal close. Found on one year of data and validated by
+  rolling 40-day practice -> 20-day exams: 9 of 10 exam windows profitable."""
+
+  id = "nova-nightorb"
+  name = "Nova 夜盤開盤突破 AI"
+  style = "夜盤 15:00–15:30 開盤區間突破（VWAP 確認），之後 2 小時內有效；停損＝區間寬度，停利 3 倍，限價進場"
+  color = "#22d3ee"
+  modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
+  allow_flip = False
+  learn_scale = False  # Keep the validated stop / take-profit geometry.
+
+  def __init__(self, range_min: int = 30, window: int = 120, sl_frac: float = 1.0, tp_mult: float = 3.0):
+    self.range_min, self.window, self.sl_frac, self.tp_mult = range_min, window, sl_frac, tp_mult
+    self.limit_atr, self.limit_min = 0.0, 5
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    from datetime import datetime as _dt, time as _t, timedelta as _td
+    if len(bars) < 2:
+      return None
+    x, prev = bars[-1], bars[-2]
+    t = x.end
+    if _t(5, 1) <= t.time() < _t(15, 0):
+      return None  # Night session only.
+    d0 = t.date() if t.time() >= _t(15, 0) else t.date() - _td(days=1)
+    anchor = _dt.combine(d0, _t(15, 0), t.tzinfo)
+    r_end = anchor + _td(minutes=self.range_min)
+    if not (r_end < t <= r_end + _td(minutes=self.window)):
+      return None
+    rng = [b for b in bars if anchor < b.end <= r_end]
+    if len(rng) < self.range_min // 5 - 1:
+      return None
+    hi, lo = max(b.h for b in rng), min(b.l for b in rng)
+    vw = vwap(bars)
+    sl = clamp((hi - lo) * self.sl_frac, 30, 150)
+    if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
+      return Entry("B", sl, sl * self.tp_mult, f"突破夜盤開盤區間高點 {hi:.0f}（區間 {hi - lo:.0f} 點），站上 VWAP {vw:.0f}")
+    if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw:
+      return Entry("S", sl, sl * self.tp_mult, f"跌破夜盤開盤區間低點 {lo:.0f}（區間 {hi - lo:.0f} 點），位於 VWAP {vw:.0f} 之下")
+    return None
+
+
+class SwingTrend:
+  """Omega: swing trend-following on 60-minute bars; holds overnight; ATR trailing stop; limit entry.
+
+  Long when the 60-min close breaks the prior N-bar high and EMA20 > EMA60 (short = mirror).
+  Exit only by the trailing stop (atr_k x ATR14 of 60-min bars). After a forced roll exit it
+  re-enters on the first new 60-min bar if the EMA trend is unchanged. Validated on one year of
+  data: rolling 60-day practice -> 20-day exam, 7 of 9 exam windows profitable."""
+
+  id = "omega-swing"
+  name = "Omega 波段順勢 AI"
+  color = "#f97316"
+  modes = {"native": "波段順勢", "flip": "波段順勢"}
+  allow_flip = False
+  skip_trend_filter = True
+  fixed_bracket = True
+  hold_overnight = True
+  limit_min = 60
+
+  def __init__(self, lookback: int = 10, atr_k: float = 4.0, direction: str = "both", limit_atr: float = 0.3):
+    self.lookback, self.atr_k, self.direction, self.limit_atr_60 = lookback, atr_k, direction, limit_atr
+    self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60 做多（{'多空都做' if direction == 'both' else '只做多'}），"
+                  f"可留倉過夜，{atr_k:g} 倍 ATR 移動停損，限價進場")
+    self.h60: list[Bar] = []  # completed 60-minute bars across sessions (set by the engine)
+    self._last_decided = None
+    self.reentry_side: str | None = None
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    h = self.h60
+    if len(h) < max(60, self.lookback + 1) or h[-1].end == self._last_decided:
+      return None
+    self._last_decided = h[-1].end
+    if bars and (bars[-1].end - h[-1].end).total_seconds() > 65 * 60:
+      return None  # Only act on a freshly completed 60-minute bar (not a stale one after a restart).
+    closes = [b.c for b in h[-200:]]
+    ef, es = ema_series(closes, 20)[-1], ema_series(closes, 60)[-1]
+    trs = []
+    for i in range(len(h) - 14, len(h)):
+      pc = h[i - 1].c
+      trs.append(max(h[i].h - h[i].l, abs(h[i].h - pc), abs(h[i].l - pc)))
+    a = sum(trs) / len(trs)
+    hi = max(b.h for b in h[-self.lookback - 1:-1])
+    lo = min(b.l for b in h[-self.lookback - 1:-1])
+    c = h[-1].c
+    side, why = None, ""
+    if self.reentry_side:
+      if self.reentry_side == "B" and ef > es:
+        side, why = "B", "換倉後趨勢仍向上，重新做多"
+      elif self.reentry_side == "S" and ef < es and self.direction == "both":
+        side, why = "S", "換倉後趨勢仍向下，重新放空"
+      self.reentry_side = None
+    if side is None and c > hi and ef > es:
+      side, why = "B", f"60 分K 收盤 {c:.0f} 突破前 {self.lookback} 根高點 {hi:.0f}，EMA20 {ef:.0f} > EMA60 {es:.0f}"
+    elif side is None and c < lo and ef < es and self.direction == "both":
+      side, why = "S", f"60 分K 收盤 {c:.0f} 跌破前 {self.lookback} 根低點 {lo:.0f}，EMA20 {ef:.0f} < EMA60 {es:.0f}"
+    if side is None:
+      return None
+    d = 1 if side == "B" else -1
+    trail = round(self.atr_k * a)
+    return Entry(side, trail, round(a * 60), f"{why}｜移動停損 {trail} 點", trail, round(c - d * self.limit_atr_60 * a))
+
+
+def ema_series(values: list[float], n: int) -> list[float]:
+  k, out = 2 / (n + 1), []
+  for v in values:
+    out.append(v if not out else v * k + out[-1] * (1 - k))
+  return out
+
+
 def build_strategies(params: dict | None = None) -> list:
   """params: optional {ai_id: kwargs} chosen by walk-forward training (data/strategy_params.json)."""
   if params is None:
@@ -300,15 +414,28 @@ def build_strategies(params: dict | None = None) -> list:
     from .config import ROOT
     f = ROOT / "data" / "strategy_params.json"
     params = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-  # Order: the three base AIs, then their contrarian twins in the same column order
-  # (Alpha -> Epsilon, Sigma -> Zeta, Gamma -> Delta) so each inverse sits under its base AI.
-  return [OrbBreakout(**params.get("alpha-orb", {})), TrendPullback(**params.get("sigma-vwap", {})),
-          TrendBreakout(**params.get("gamma-scalp", {})),
-          InverseOf(OrbBreakout(**params.get("alpha-orb", {})), "eps-inverse-alpha", "Epsilon 反向 Alpha AI", "#ec4899",
-                    **params.get("eps-inverse-alpha", {"sl_scale": 1.0, "tp_mult": 1.5})),
-          InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
-                    **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0})),
-          InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
-                    **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0})),
-          FixedBracket(TrendPullback(**params.get("sigma-vwap", {})), "cloudy-sigma", "Cloudy's strategy", "#a3e635",
-                       **params.get("cloudy-sigma", {"tp_pts": 120, "sl_pts": 70}))]
+  # Hidden Gamma (not shown, not counted) only drives Delta's mirror trades; it runs first.
+  hidden_gamma = TrendBreakout(**params.get("gamma-scalp", {}))
+  hidden_gamma.hidden = True
+  alpha = OrbBreakout(**params.get("alpha-orb", {}))
+  sigma = TrendPullback(**params.get("sigma-vwap", {}))
+  omega = SwingTrend(**params.get("omega-swing", {}))
+  eps = InverseOf(OrbBreakout(**params.get("alpha-orb", {})), "eps-inverse-alpha", "Epsilon 反向 Alpha AI", "#ec4899",
+                  **params.get("eps-inverse-alpha", {"sl_scale": 1.0, "tp_mult": 1.5}))
+  zeta = InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
+                   **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0}))
+  delta = InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
+                    **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0}))
+  cloudy = FixedBracket(TrendPullback(**params.get("sigma-vwap", {})), "cloudy-sigma", "Cloudy's strategy", "#a3e635",
+                        **params.get("cloudy-sigma", {"tp_pts": 120, "sl_pts": 70}))
+  # 方向 B: limit-order entries (validated on one year of data).
+  alpha.limit_atr, alpha.limit_min = 0.0, 5
+  sigma.limit_atr, sigma.limit_min = 0.2, 10
+  cloudy.limit_atr, cloudy.limit_min = 0.2, 10
+  hidden_gamma.limit_atr, hidden_gamma.limit_min = 0.2, 10
+  # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
+  alpha.hours = ("us_open",)
+  sigma.hours = ("us_open", "night_open")
+  cloudy.hours = ("us_open", "night_open")
+  nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
+  return [hidden_gamma, alpha, sigma, nova, eps, zeta, delta, omega, cloudy]

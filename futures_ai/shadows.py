@@ -37,7 +37,7 @@ def build_tp_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
   from .strategies import build_strategies
   out = []
   for s in build_strategies():
-    if getattr(s, "fixed_bracket", False):
+    if getattr(s, "fixed_bracket", False) or getattr(s, "hidden", False):
       continue  # Fixed-point brackets have no take-profit multiple to shrink.
     s.base_id, s.id, s.name = s.id, f"tp1-{s.id}", f"{s.name}（停利 {TWIN_TP_MULT:g} 倍）"
     s.tp_mult = TWIN_TP_MULT

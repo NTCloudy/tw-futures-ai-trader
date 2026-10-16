@@ -33,6 +33,8 @@ def current_params() -> dict:
   from .strategies import build_strategies
   out = {}
   for s in build_strategies():
+    if s.id not in LIVE_KEYS:
+      continue
     attrs = {"range_bars": "range_bars", "sl_frac": "sl_frac", "tp_mult": "tp_mult", "pull_atr": "pull",
              "sl_atr": "sl_atr", "trail_atr": "trail_atr", "lookback": "n"}
     out[s.id] = {k: getattr(s, attrs[k]) for k in LIVE_KEYS[s.id]}

@@ -391,7 +391,8 @@ class InverseOfTest(unittest.TestCase):
     from futures_ai.strategies import build_strategies, InverseOf
     from futures_ai.trader import ENTRY_BUS
     ids = [x.id for x in build_strategies({})]
-    self.assertEqual(ids, ["alpha-orb", "sigma-vwap", "gamma-scalp", "eps-inverse-alpha", "zeta-inverse-sigma", "delta-inverse", "cloudy-sigma"])
+    self.assertEqual(ids, ["gamma-scalp", "alpha-orb", "sigma-vwap", "nova-nightorb", "eps-inverse-alpha", "zeta-inverse-sigma",
+                           "delta-inverse", "omega-swing", "cloudy-sigma"])
     c = cfg()
     ledger = Ledger(":memory:")
     base = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "base long")), LocalPaperBroker(c), ledger)
@@ -404,7 +405,10 @@ class InverseOfTest(unittest.TestCase):
     self.assertIsNone(inv.pos)  # base has not traded -> no mirror
     base.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, q, 200, True, False)
     inv.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, q, 200, True, False)
+    self.assertEqual(inv.pending and list(inv.pending.values())[0]["kind"], "ENTRY")  # limit at base's fill price
+    inv.on_price(at(2026, 10, 16, 9, 11), "2026-10-16", "TMFJ6", {"last": 47001, "hi": 47002, "lo": 47000}, 200, False)
     self.assertEqual((base.pos["side"], inv.pos["side"]), ("B", "S"))
+    self.assertEqual(inv.pos["entry_price"], base.pos["entry_price"])
     self.assertEqual(inv.pos["sl"] - inv.pos["entry_price"], 40)  # same stop distance, opposite side
 
 
@@ -464,3 +468,64 @@ class ExportHistoryTest(unittest.TestCase):
     self.assertTrue(all(c[1] == "TMFR1" for c in calls if c[0] == "kbars"))
     self.assertEqual(len(sess), 1)
     self.assertEqual(sess[0].bars[0].end.strftime("%H:%M"), "08:46")  # start-labeled bars converted to end time
+
+
+class LimitEntryTest(unittest.TestCase):
+
+  def test_limit_entry_fills_on_touch_and_expires(self):
+    c = cfg()
+    ledger = Ledger(":memory:")
+    st = FakeStrategy(Entry("B", 40, 80, "x"))
+    st.limit_atr, st.limit_min = 0.5, 10
+    tr = AiTrader(c, st, LocalPaperBroker(c), ledger)
+    bars = bars_from([(47000, 47020, 46980, 47000)] * 20)  # ATR 40 -> limit 46980
+    tr.on_bar(at(2026, 10, 16, 21, 40), "2026-10-19", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47001}, 200, True, False)
+    self.assertIsNone(tr.pos)
+    self.assertEqual(ledger.working_orders("alpha-orb")[0]["order_type"], "LMT")
+    tr.on_price(at(2026, 10, 16, 21, 42), "2026-10-19", "TMFJ6", {"last": 46985, "lo": 46979, "hi": 46990}, 200, False)
+    self.assertEqual(tr.pos["entry_price"], 46980)  # filled at the limit, no slippage
+
+  def test_unfilled_limit_is_cancelled(self):
+    c = cfg()
+    ledger = Ledger(":memory:")
+    st = FakeStrategy(Entry("B", 40, 80, "x"))
+    st.limit_atr, st.limit_min = 0.5, 10
+    tr = AiTrader(c, st, LocalPaperBroker(c), ledger)
+    bars = bars_from([(47000, 47020, 46980, 47000)] * 20)
+    tr.on_bar(at(2026, 10, 16, 21, 40), "2026-10-19", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47001}, 200, True, False)
+    tr.on_price(at(2026, 10, 16, 21, 55), "2026-10-19", "TMFJ6", {"last": 47050}, 200, False)
+    self.assertIsNone(tr.pos)
+    self.assertEqual(tr.pending, {})
+    self.assertEqual(ledger.rows("SELECT status FROM orders")[0]["status"], "CANCELLED")
+
+
+class SwingHoldTest(unittest.TestCase):
+
+  def test_swing_not_flattened_at_session_end(self):
+    from futures_ai.strategies import SwingTrend
+    c = cfg()
+    ledger = Ledger(":memory:")
+    sw = SwingTrend()
+    tr = AiTrader(c, sw, LocalPaperBroker(c), ledger)
+    tr.pos = {"side": "B", "qty": 1, "entry_price": 47000, "entry_ts": "2026-10-16T10:00:00+08:00", "contract": "TMFJ6",
+              "trading_day": "2026-10-16", "session_key": "k", "sl": 46600, "tp": 50000, "sl_oid": 0, "tp_oid": 0,
+              "entry_cost": 22, "reason": "x", "trail": 400, "mfe": 0, "mae": 0}
+    tr.on_price(at(2026, 10, 16, 13, 41), "2026-10-16", "TMFJ6", {"last": 47100, "bid": 47099, "ask": 47101}, 4, False)
+    self.assertIsNotNone(tr.pos)  # held overnight
+    tr.on_price(at(2026, 10, 16, 13, 42), "2026-10-16", "TMFJ6", {"last": 44300, "bid": 44299, "ask": 44301}, 3, False)
+    self.assertIsNone(tr.pos)  # stop (or margin guard) still protects it
+
+
+class NovaTest(unittest.TestCase):
+
+  def test_night_open_breakout(self):
+    from futures_ai.strategies import NightOpenBreakout
+    start = at(2026, 10, 16, 15, 5)
+    rng = [(47000, 47040, 46990, 47010)] * 6  # 15:05..15:30 range 46990-47040
+    bars = bars_from(rng + [(47010, 47030, 47005, 47020), (47020, 47070, 47018, 47065)], start=start)
+    bars = [Bar(start + timedelta(minutes=5 * i), b.o, b.h, b.l, b.c, b.v) for i, b in enumerate(bars)]
+    e = NightOpenBreakout().decide(bars, 0, None)
+    self.assertEqual(e.side, "B")
+    self.assertEqual(e.tp_pts, e.sl_pts * 3)
+    day = [Bar(at(2026, 10, 16, 9, 0) + timedelta(minutes=5 * i), b.o, b.h, b.l, b.c, b.v) for i, b in enumerate(bars)]
+    self.assertIsNone(NightOpenBreakout().decide(day, 0, None))  # day session: never

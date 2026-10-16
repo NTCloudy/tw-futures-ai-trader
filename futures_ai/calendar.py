@@ -84,3 +84,34 @@ def rollover_info(ts: datetime, product: str, roll_days_before: int = 1) -> dict
       "next_roll_day": (roll_day if td < roll_day else prev_weekdays(settle, roll_days_before)).isoformat(),
       "rolled_this_month": td >= roll_day,
   }
+
+
+# ---- time of day buckets (shared by live trading and training) ----
+def us_dst(d) -> bool:
+  import calendar
+  m2 = [day for day in range(8, 15) if calendar.weekday(d.year, 3, day) == 6][0]
+  n1 = [day for day in range(1, 8) if calendar.weekday(d.year, 11, day) == 6][0]
+  return date(d.year, 3, m2) <= d < date(d.year, 11, n1)
+
+
+def us_open_at(ts: datetime) -> datetime:
+  """US cash open in Taipei time for the night session containing ts (21:30 in US DST, else 22:30)."""
+  d = ts.date() if ts.time() >= time(15, 0) else ts.date() - timedelta(days=1)
+  hm = (21, 30) if us_dst(d) else (22, 30)
+  return datetime.combine(d, time(*hm), TPE)
+
+
+def tod_bucket(ts: datetime) -> str:
+  t = ts.time()
+  if time(8, 45) <= t <= time(9, 30):
+    return "day_open"
+  if time(9, 30) < t <= time(13, 45):
+    return "day"
+  if time(15, 0) <= t <= time(16, 0):
+    return "night_open"
+  mins = (ts - us_open_at(ts)).total_seconds() / 60
+  if 0 < mins <= 60:
+    return "us_open"
+  return "night_pre_us" if mins <= 0 else "night_late"
+
+

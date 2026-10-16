@@ -18,7 +18,8 @@ DEFAULTS: dict = {
     "product": "TMF",
     "point_value": 10,  # NT$ per index point (微型臺指)
     "tick": 1,
-    "initial_margin_twd": 35050,  # TAIFEX 原始保證金 for TMF; update when TAIFEX changes it.
+    "initial_margin_twd": 35050,
+    "maintenance_margin_twd": 26900,  # TAIFEX 維持保證金 for TMF  # TAIFEX 原始保證金 for TMF; update when TAIFEX changes it.
     "capital_multiple": 1.5,  # Capital per AI = 1.5 x initial margin.
     "qty": 1,
     "max_entries_per_session": 12,

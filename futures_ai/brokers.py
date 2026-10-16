@@ -23,6 +23,7 @@ class LocalPaperBroker:
     self.slip = cfg["paper_slippage_ticks"] * cfg["tick"]
     self._ids = itertools.count(1)
     self._fills: "queue.Queue[dict]" = queue.Queue()
+    self._limits: dict[str, dict] = {}
 
   def connect(self) -> None:
     pass
@@ -36,8 +37,29 @@ class LocalPaperBroker:
     self._fills.put({"broker_order_id": oid, "price": float(price), "qty": qty, "ts": datetime.now()})
     return oid
 
+  def limit(self, code: str, side: str, qty: int, price: float) -> str:
+    """Resting limit order (paper): filled at the limit price once the market trades through it."""
+    oid = f"P{next(self._ids)}"
+    self._limits[oid] = {"side": side, "price": float(price), "qty": qty}
+    return oid
+
+  def on_quote(self, quote: dict) -> None:
+    lo = min(quote["last"], quote.get("lo") or quote["last"])
+    hi = max(quote["last"], quote.get("hi") or quote["last"])
+    for oid, o in list(self._limits.items()):
+      if (o["side"] == "B" and lo <= o["price"]) or (o["side"] == "S" and hi >= o["price"]):
+        # A gap through the limit fills at the better market price, otherwise at the limit.
+        px = min(o["price"], quote["last"]) if o["side"] == "B" else max(o["price"], quote["last"])
+        self._fills.put({"broker_order_id": oid, "price": px, "qty": o["qty"], "ts": datetime.now()})
+        del self._limits[oid]
+
+  def cancel(self, order_id: str) -> None:
+    self._limits.pop(order_id, None)
+
   def cancel_all(self, code: str) -> int:
-    return 0  # No resting orders at a paper broker; triggers live in the ledger.
+    n = len(self._limits)
+    self._limits.clear()
+    return n
 
   def poll_fills(self) -> list[dict]:
     out = []
@@ -103,6 +125,25 @@ class ShioajiBroker:
         account=self.account)
     trade = self.api.place_order(self.contract(code), order)
     return str(trade.order.id)
+
+  def limit(self, code: str, side: str, qty: int, price: float) -> str:
+    c = self.sj.constant
+    order = self.api.Order(action=c.Action.Buy if side == "B" else c.Action.Sell, price=price, quantity=qty,
+                           price_type=c.FuturesPriceType.LMT, order_type=c.OrderType.ROD,
+                           octype=c.FuturesOCType.Auto, account=self.account)
+    trade = self.api.place_order(self.contract(code), order)
+    self._trades = getattr(self, "_trades", {})
+    self._trades[str(trade.order.id)] = trade
+    return str(trade.order.id)
+
+  def on_quote(self, quote: dict) -> None:
+    pass  # Exchange-side matching; fills arrive via the order callback.
+
+  def cancel(self, order_id: str) -> None:
+    trade = getattr(self, "_trades", {}).pop(order_id, None)
+    if trade is not None:
+      self.api.update_status(self.account)
+      self.api.cancel_order(trade)
 
   def cancel_all(self, code: str) -> int:
     self.api.update_status(self.account)

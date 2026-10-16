@@ -33,6 +33,10 @@ class Engine:
     self.last_equity_minute: str | None = None
     self.last_publish = 0.0
     self.prev_live: tuple | None = None  # (bar_end, high, low) seen at the previous poll
+    self.barstore = None
+    if any(hasattr(t.s, "h60") for t in self.traders + self.shadows):
+      from .barstore import BarStore
+      self.barstore = BarStore()
 
   def _record_equity(self, now: datetime, last: float, force: bool = False) -> None:
     minute = now.strftime("%Y-%m-%dT%H:%M")
@@ -85,6 +89,10 @@ class Engine:
 
     for tr in self.traders + self.shadows:  # Positions left from another session or an expiring contract.
       p = tr.pos
+      if p and p["contract"] == code and p["session_key"] != session_key and getattr(tr.s, "hold_overnight", False):
+        p["session_key"] = session_key  # Swing positions are held across sessions.
+        tr.pos = p
+        continue
       if p and not tr.pending and (p["contract"] != code or p["session_key"] != session_key):
         q = quote
         if p["contract"] != code:
@@ -100,6 +108,12 @@ class Engine:
       except Exception as exc:
         print(f"shadow {tr.ai} error: {exc}")
 
+    if self.barstore is not None and snap.bars:  # Multi-day 60-minute bars for the swing AI.
+      self.barstore.add(snap.bars)
+      h60 = self.barstore.sixty_min(now)
+      for tr in self.traders + self.shadows:
+        if hasattr(tr.s, "h60"):
+          tr.s.h60 = h60
     bars5 = completed_5min(snap.bars)  # The AIs decide on completed 5-minute K bars.
     if bars5 and bars5[-1].end != self.last_bar_end:
       self.last_bar_end = bars5[-1].end

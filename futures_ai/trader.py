@@ -7,7 +7,7 @@ Also: daily-loss lock, flatten before session close, flatten on contract roll, k
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .feed import Bar
 from .learning import Brain, market_regime
@@ -17,7 +17,8 @@ from .strategies import vwap
 ENTRY_BUS: dict[str, dict] = {}
 
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
-           "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉"}
+           "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉",
+           "RETIRE": "AI 下架平倉"}
 
 
 def tp_cap(sl_pts: float, tp_pts: float, bars: list, minutes_to_close: float, reason: str) -> tuple[float, str]:
@@ -95,6 +96,35 @@ class AiTrader:
     self.ledger.update_order(oid, ts.isoformat(timespec="seconds"), broker_order_id=boid)
     self.pending[boid] = {"oid": oid, "kind": kind, "entry": entry, "td": td, "code": code}
 
+  def _send_limit(self, ts: datetime, td: str, code: str, side: str, price: float, minutes: float,
+                  note: str, entry: dict) -> None:
+    """Entry by resting limit order (方向 B: no slippage). Cancelled if not filled in `minutes`."""
+    if self.pending:
+      return
+    t = ts.isoformat(timespec="seconds")
+    oid = self.ledger.add_order(ai=self.ai, ts=t, trading_day=td, contract=code, kind="ENTRY", order_type="LMT",
+                                side=side, qty=self.qty, trigger_price=price, status="WORKING", broker=self.broker.name,
+                                note=f"限價 {price:.0f}（{minutes:.0f} 分鐘內有效）｜{note}")
+    try:
+      boid = self.broker.limit(code, side, self.qty, price)
+    except Exception as exc:
+      self.ledger.update_order(oid, t, status="REJECTED", note=f"{note}｜{exc}")
+      return
+    self.ledger.update_order(oid, t, broker_order_id=boid)
+    self.pending[boid] = {"oid": oid, "kind": "ENTRY", "entry": entry, "td": td, "code": code,
+                          "expires": (ts + timedelta(minutes=minutes)).isoformat(), "limit": True}
+
+  def _expire_limits(self, ts: datetime, force: str | None = None) -> None:
+    for boid, info in list(self.pending.items()):
+      if info.get("limit") and (force or ts.isoformat() > info["expires"]):
+        try:
+          self.broker.cancel(boid)
+        except Exception as exc:
+          self.ledger.log(f"刪除限價單失敗：{exc}", self.ai, "ERROR", ts)
+        self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
+                                 note=force or "限價單逾時未成交，已刪除")
+        del self.pending[boid]
+
   def _cancel_working(self, ts: datetime, code: str, reason: str) -> None:
     """Cancels every unfilled order of this AI (ledger triggers + broker-side resting orders)."""
     for o in self.ledger.working_orders(self.ai):
@@ -158,6 +188,8 @@ class AiTrader:
     self._cancel_working(ts, info["code"], "部位已平倉，刪除剩餘委託")
     self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])}平倉 {price:.0f}，{points:+.0f} 點，"
                     f"淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
+    if info["kind"] == "ROLL" and hasattr(self.s, "reentry_side"):
+      self.s.reentry_side = p["side"]  # Re-open in the new contract if the trend is intact.
     if info["kind"] == "SL" and getattr(self.s, "block_after_stop", False):
       self.ledger.set_state(f"block:{self.ai}", {"side": p["side"], "ts": ts.isoformat()})
     lesson = self.brain.review(ts, p, price, info["kind"], gross - cost)
@@ -172,7 +204,15 @@ class AiTrader:
     self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), quote, KIND_ZH[kind])
 
   def on_price(self, ts: datetime, td: str, code: str, quote: dict, minutes_to_close: float, kill: bool) -> None:
+    if hasattr(self.broker, "on_quote"):
+      self.broker.on_quote(quote)
     self.process_fills(ts)
+    if kill:
+      self._expire_limits(ts, "緊急停止，刪除限價單")
+    elif minutes_to_close <= self.cfg["flatten_minutes_before_close"] + 1 and not getattr(self.s, "hold_overnight", False):
+      self._expire_limits(ts, "接近收盤，刪除未成交限價單")
+    else:
+      self._expire_limits(ts)
     p = self.pos
     last = quote["last"]
     hi, lo = max(last, quote.get("hi") or last), min(last, quote.get("lo") or last)
@@ -191,8 +231,12 @@ class AiTrader:
         self._fire(ts, quote, "SL", p["sl_oid"])
       elif tp_hit:
         self._fire(ts, quote, "TP", p["tp_oid"])
-      elif minutes_to_close <= self.cfg["flatten_minutes_before_close"]:
+      elif minutes_to_close <= self.cfg["flatten_minutes_before_close"] and not getattr(self.s, "hold_overnight", False):
         self.flatten(ts, code, quote, "SESSION_END")
+      elif getattr(self.s, "hold_overnight", False) and self.unrealized(last) < -(
+          self.cfg["capital_per_ai_twd"] - self.cfg.get("maintenance_margin_twd", 26900)):
+        self.ledger.log("未實現虧損逼近維持保證金，強制平倉避免追繳", self.ai, "WARN", ts)
+        self.flatten(ts, code, quote, "RISK")
       elif p.get("trail"):  # Ratchet the trailing stop (after the stop check, conservative).
         tick = self.cfg["tick"]
         best = p["entry_price"] + p["mfe"] if p["side"] == "B" else p["entry_price"] - p["mfe"]
@@ -247,8 +291,14 @@ class AiTrader:
       return
     locked = self.cfg.get("enforce_daily_loss", True) and not self.learning and self.locked_day() == td
     no_entry = self.cfg["flatten_minutes_before_close"] + 1 if self.learning else self.cfg["no_entry_minutes_before_close"]
-    if locked or minutes_to_close <= no_entry:
+    hold = getattr(self.s, "hold_overnight", False)
+    if locked or (minutes_to_close <= no_entry and not hold):
       return
+    hours = getattr(self.s, "hours", None)
+    if hours and bars:
+      from .calendar import tod_bucket
+      if tod_bucket(bars[-1].end) not in hours:
+        return
     last_exit = self.ledger.get_state(f"last_exit:{self.ai}")
     since = None
     if last_exit:
@@ -277,5 +327,15 @@ class AiTrader:
              "trail_pts": getattr(sig, "trail_pts", None),
              "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"],
              "bar_end": bars[-1].end.isoformat() if bars else None}
-    self._send_market(ts, td, code, "ENTRY", sig.side, quote, reason, entry)
+    lim = getattr(sig, "limit_price", None)
+    if lim is None and getattr(self.s, "limit_atr", None) is not None:
+      from .strategies import atr as atr_fn  # Limit = last close pulled back by limit_atr x ATR (5-min).
+      d = 1 if sig.side == "B" else -1
+      lim = round(bars[-1].c - d * self.s.limit_atr * atr_fn(bars))
+    if lim is not None:
+      self._send_limit(ts, td, code, sig.side, lim, getattr(self.s, "limit_min", 10), reason, entry)
+      if hasattr(self.broker, "on_quote"):
+        self.broker.on_quote(quote)  # Marketable immediately if price is already through the limit.
+    else:
+      self._send_market(ts, td, code, "ENTRY", sig.side, quote, reason, entry)
     self.process_fills(ts)

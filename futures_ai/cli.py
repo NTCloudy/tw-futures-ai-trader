@@ -18,7 +18,17 @@ from .trader import AiTrader
 
 
 def build_traders(cfg: dict, ledger: Ledger) -> list[AiTrader]:
-  return [AiTrader(cfg, s, make_broker(cfg, s.id), ledger) for s in build_strategies()]
+  """Visible AIs use the main ledger; hidden helpers (e.g. Gamma driving Delta) use the shadow ledger."""
+  from .shadows import shadow_ledger
+  sl = None
+  out = []
+  for s in build_strategies():
+    if getattr(s, "hidden", False):
+      sl = sl or shadow_ledger()
+      out.append(AiTrader(cfg, s, make_broker(dict(cfg, mode="local_paper"), s.id), sl))
+    else:
+      out.append(AiTrader(cfg, s, make_broker(cfg, s.id), ledger))
+  return out
 
 
 def serve(cfg: dict, ledger: Ledger, port: int) -> None:

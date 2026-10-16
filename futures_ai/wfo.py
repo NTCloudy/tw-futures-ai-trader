@@ -171,6 +171,9 @@ def precompute(s: Session) -> None:
       s.k_at[i] = len(s.b5) - 1
 
 
+from .calendar import tod_bucket, us_dst, us_open_at  # noqa: E402,F401  (shared with live trading)
+
+
 # ---------------------------------------------------------------- signals
 def ema_tail(values: list[float], n: int) -> float:
   k, out = 2 / (n + 1), values[0]
@@ -293,6 +296,33 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
       return "S", sl, tp, trail
     return None
+  if ai == "anchor-orb":
+    anchor_kind = p["anchor"]
+    ts = x.end
+    if anchor_kind == "us":
+      if ts.time() >= time(5, 1) and ts.time() < time(15, 0):
+        return None
+      anchor = us_open_at(ts)
+    else:  # night session open 15:00
+      d0 = ts.date() if ts.time() >= time(15, 0) else ts.date() - timedelta(days=1)
+      if time(5, 1) <= ts.time() < time(15, 0):
+        return None
+      anchor = datetime.combine(d0, time(15, 0), TPE)
+    r_end = anchor + timedelta(minutes=p["range_min"])
+    if not (r_end < ts <= r_end + timedelta(minutes=p["window"])):
+      return None
+    rng = [y for y in b[:k] if anchor < y.end <= r_end]
+    if len(rng) < max(1, p["range_min"] // 5 - 1):
+      return None
+    hi, lo = max(y.h for y in rng), min(y.l for y in rng)
+    width = hi - lo
+    sl = clamp(width * p["sl_frac"], 30, 150)
+    tp = sl * p["tp_mult"]
+    if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
+      return "B", sl, tp, None
+    if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw:
+      return "S", sl, tp, None
+    return None
   if ai == "sigma-fixed":  # Sigma entries with a fixed bracket (take-profit / stop in points).
     g = signal5("sigma-pullback", p["base"], s, k, i)
     return (g[0], p["sl_pts"], p["tp_pts"], None) if g else None
@@ -334,13 +364,14 @@ def side_cost(cfg, price):
   return cfg["commission_per_side_twd"] + round(price * cfg["point_value"] * cfg["tax_rate"])
 
 
-def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
+def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool = False) -> dict:
   if p.get("off"):
     return {"pnl": 0.0, "trades": 0, "wins": 0, "maxdd": 0.0, "curve": []}
   pv = cfg["point_value"]
   cap_entries = min(cfg["max_entries_per_session"], p.get("max_entries", 99))
   pnl = peak = maxdd = 0.0
   trades = wins = 0
+  tlog = []
   for s in sessions:
     b = s.bars
     pos = None
@@ -350,6 +381,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
     block_i = None
     chase_side = None  # set after a take-profit: allow trend-continuation re-entries
     chase_k = None
+    pend = None  # limit entry: (side, limit_px, sl_pts, tp_pts, trail, expires_end)
     for i in range(len(b)):
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
@@ -362,7 +394,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
         if sl_hit:
           exit_px, kind = ((min(sl, x.o) - 1) if d == 1 else (max(sl, x.o) + 1)), "SL"
         elif tp_hit:
-          exit_px, kind = (tp - 1) if d == 1 else (tp + 1), "TP"
+          slip = 0 if p.get("tp_limit") else 1
+          exit_px, kind = (tp - slip) if d == 1 else (tp + slip), "TP"
         elif mtc <= cfg["flatten_minutes_before_close"] or i == len(b) - 1:
           exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "END"
         be = p.get("be_r")  # Breakeven: once profit >= be_r x initial stop, move stop to entry (+cost cover).
@@ -371,7 +404,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           fav = (x.h - entry) if d == 1 else (entry - x.l)
           be_px = entry + d * 6
           if fav >= be * init and ((d == 1 and sl < be_px) or (d == -1 and sl > be_px)):
-            pos = (side, entry, be_px, tp, cost_in, trail, init)
+            pos = (side, entry, be_px, tp, cost_in, trail, init) + tuple(pos[7:])
             sl = be_px
         if exit_px is None and trail:  # Ratchet the stop after this bar (conservative ordering).
           new_sl = round(x.h - trail) if d == 1 else round(x.l + trail)
@@ -379,6 +412,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
             pos = (side, entry, new_sl, tp, cost_in, trail) + tuple(pos[6:])
         if exit_px is not None:
           net = (exit_px - entry) * d * pv - cost_in - side_cost(cfg, exit_px)
+          if record:
+            tlog.append((pos[7] if len(pos) > 7 else None, x.end, side, net, kind))
           pnl += net
           trades += 1
           wins += net > 0
@@ -395,9 +430,21 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           if kind == "SL" and ai in ("sigma-pullback", "sigma-fixed"):
             block_side, block_i = side, i
           continue
-      if pos or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
+      if pend and not pos:  # Working limit entry from an earlier signal.
+        p_side, p_px, p_sl, p_tp, p_tr, p_exp = pend
+        if x.end > p_exp or mtc <= cfg["no_entry_minutes_before_close"]:
+          pend = None
+        elif (p_side == "B" and x.l <= p_px) or (p_side == "S" and x.h >= p_px):
+          d = 1 if p_side == "B" else -1
+          pos = (p_side, p_px, round(p_px - d * p_sl), round(p_px + d * p_tp), side_cost(cfg, p_px), p_tr, abs(p_sl), x.end)
+          entries += 1
+          pend = None
+          continue
+      if pos or pend or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
         continue
       if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
+        continue
+      if p.get("hours") and tod_bucket(x.end) not in p["hours"]:
         continue
       sig = signal5(ai, p, s, s.k_at[i], i)
       if not sig and chase_side and p.get("chase"):
@@ -431,11 +478,16 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
       if ai != "sigma-fixed":  # Fixed brackets are not capped.
         remaining = max(1.0, (s.close - x.end).total_seconds() / 300)
         tp_pts = min(tp_pts, max(round(sl_pts * 1.5), round(s.atr5[s.k_at[i]] * remaining ** 0.5)))
+      if p.get("limit_atr") is not None:  # 方向 B: wait for a small pullback with a limit order (no slippage).
+        d = 1 if side == "B" else -1
+        lim = round(x.c - d * p["limit_atr"] * s.atr5[s.k_at[i]])
+        pend = (side, lim, sl_pts, tp_pts, trail, x.end + timedelta(minutes=p.get("limit_min", 10)))
+        continue
       entry = x.c + 2 if side == "B" else x.c - 2
       d = 1 if side == "B" else -1
-      pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail)
+      pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail, abs(sl_pts), x.end)
       entries += 1
-  return {"pnl": pnl, "trades": trades, "wins": wins, "maxdd": maxdd}
+  return {"pnl": pnl, "trades": trades, "wins": wins, "maxdd": maxdd, "log": tlog}
 
 
 # ---------------------------------------------------------------- grids & walk-forward

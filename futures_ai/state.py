@@ -59,7 +59,7 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   market = ledger.get_state("market", {}) or {}
   last = market.get("last") or 0.0
   cap = cfg["capital_per_ai_twd"]
-  names = {s.id: s for s in build_strategies()}
+  names = {s.id: s for s in build_strategies() if not getattr(s, "hidden", False)}
   ais = []
   combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0}
 
