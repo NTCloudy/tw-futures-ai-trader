@@ -259,10 +259,11 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     lo = min(y.l for y in b[k - n: k])
     sl = clamp(a * p["sl_atr"], 20, 150)
     trail = a * p["trail_atr"]
+    tpm = p.get("tp_mult", 4)
     if s.direction[i] > 0 and x.c > hi and prev.c <= hi:
-      return "B", sl, sl * 4, trail
+      return "B", sl, sl * tpm, trail
     if s.direction[i] < 0 and x.c < lo and prev.c >= lo:
-      return "S", sl, sl * 4, trail
+      return "S", sl, sl * tpm, trail
     return None
   raise ValueError(ai)
 
@@ -290,7 +291,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
       if pos:  # bracket check on this bar
-        side, entry, sl, tp, cost_in, trail = pos
+        side, entry, sl, tp, cost_in, trail = pos[:6]
         d = 1 if side == "B" else -1
         exit_px = kind = None
         sl_hit = x.l <= sl if d == 1 else x.h >= sl
@@ -301,10 +302,18 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           exit_px, kind = (tp - 1) if d == 1 else (tp + 1), "TP"
         elif mtc <= cfg["flatten_minutes_before_close"] or i == len(b) - 1:
           exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "END"
+        be = p.get("be_r")  # Breakeven: once profit >= be_r x initial stop, move stop to entry (+cost cover).
+        if exit_px is None and be:
+          init = pos[6] if len(pos) > 6 else abs(entry - sl)
+          fav = (x.h - entry) if d == 1 else (entry - x.l)
+          be_px = entry + d * 6
+          if fav >= be * init and ((d == 1 and sl < be_px) or (d == -1 and sl > be_px)):
+            pos = (side, entry, be_px, tp, cost_in, trail, init)
+            sl = be_px
         if exit_px is None and trail:  # Ratchet the stop after this bar (conservative ordering).
           new_sl = round(x.h - trail) if d == 1 else round(x.l + trail)
           if (d == 1 and new_sl > sl) or (d == -1 and new_sl < sl):
-            pos = (side, entry, new_sl, tp, cost_in, trail)
+            pos = (side, entry, new_sl, tp, cost_in, trail) + tuple(pos[6:])
         if exit_px is not None:
           net = (exit_px - entry) * d * pv - cost_in - side_cost(cfg, exit_px)
           pnl += net
