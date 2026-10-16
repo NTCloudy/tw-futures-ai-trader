@@ -141,7 +141,26 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                       "regime_zh": REGIME_ZH.get(j["regime"], j["regime"])})
   journal.sort(key=lambda j: j["ts"], reverse=True)
 
+  # 停利縮小對照組: live AI vs its twin (same rules, take-profit = 1x stop), counted from the same start time.
+  tp_compare = []
+  from .config import ROOT
+  shadow_path = ROOT / "data" / "shadow.db"
+  if shadow_path.exists() and cfg["db_path"] != ":memory:":
+    from .ledger import Ledger as _Ledger
+    sl = _Ledger(str(shadow_path))
+    since = sl.get_state("twin_since")
+    if since:
+      for ai_id, strat in names.items():
+        live_h = health(ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, since)))
+        twin_h = health(sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (f"tp1-{ai_id}", since)))
+        live_pnl = sum(t["pnl_twd"] for t in ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (ai_id, since)))
+        twin_pnl = sum(t["pnl_twd"] for t in sl.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (f"tp1-{ai_id}", since)))
+        tp_compare.append({"id": ai_id, "name": strat.name, "color": strat.color,
+                           "current_tp": getattr(strat, "tp_mult", None), "live": {**live_h, "pnl": live_pnl},
+                           "twin": {**twin_h, "pnl": twin_pnl}})
+
   return {
+      "tp_compare": tp_compare,
       "generated_at": now.isoformat(timespec="seconds"),
       "mode": cfg["mode"], "mode_label": MODE_LABEL.get(cfg["mode"], cfg["mode"]),
       "product": cfg["product"], "point_value": cfg["point_value"],

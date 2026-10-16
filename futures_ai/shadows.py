@@ -29,6 +29,20 @@ def shadow_ledger() -> Ledger:
   return Ledger(str(ROOT / "data" / "shadow.db"))
 
 
+TWIN_TP_MULT = 1.0  # "停利縮小對照組": same strategy, take-profit = 1.0x stop.
+
+
+def build_tp_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
+  """One twin per live AI: identical rules/params, only the take-profit is shrunk to 1x the stop."""
+  from .strategies import build_strategies
+  out = []
+  for s in build_strategies():
+    s.base_id, s.id, s.name = s.id, f"tp1-{s.id}", f"{s.name}（停利 {TWIN_TP_MULT:g} 倍）"
+    s.tp_mult = TWIN_TP_MULT
+    out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
+  return out + build_tp_twins(cfg, ledger)
+
+
 def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   ledger = ledger or shadow_ledger()
   cfg = copy.deepcopy(cfg)
@@ -41,4 +55,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
     s.name = f"影子{i} {cls.name}"
     s.params = params
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out
+  return out + build_tp_twins(cfg, ledger)

@@ -191,8 +191,8 @@ class TrendBreakout:
   modes = {"native": "趨勢突破", "flip": "趨勢突破"}
   allow_flip = False
 
-  def __init__(self, lookback: int = 12, sl_atr: float = 2.0, trail_atr: float = 3.0):
-    self.n, self.sl_atr, self.trail_atr = lookback, sl_atr, trail_atr
+  def __init__(self, lookback: int = 12, sl_atr: float = 2.0, trail_atr: float = 3.0, tp_mult: float = 4.0):
+    self.n, self.sl_atr, self.trail_atr, self.tp_mult = lookback, sl_atr, trail_atr, tp_mult
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
     if len(bars) < self.n + 2:
@@ -206,9 +206,9 @@ class TrendBreakout:
     x, prev = bars[-1], bars[-2]
     sl = clamp(a * self.sl_atr, 20, 150)
     if d > 0 and x.c > hi and prev.c <= hi:
-      return Entry("B", sl, sl * 4, f"5 分K 多頭趨勢（ER {er:.2f}），突破前 {self.n} 根高點 {hi:.0f}，移動停損 {a * self.trail_atr:.0f} 點", a * self.trail_atr)
+      return Entry("B", sl, sl * self.tp_mult, f"5 分K 多頭趨勢（ER {er:.2f}），突破前 {self.n} 根高點 {hi:.0f}，移動停損 {a * self.trail_atr:.0f} 點", a * self.trail_atr)
     if d < 0 and x.c < lo and prev.c >= lo:
-      return Entry("S", sl, sl * 4, f"5 分K 空頭趨勢（ER {er:.2f}），跌破前 {self.n} 根低點 {lo:.0f}，移動停損 {a * self.trail_atr:.0f} 點", a * self.trail_atr)
+      return Entry("S", sl, sl * self.tp_mult, f"5 分K 空頭趨勢（ER {er:.2f}），跌破前 {self.n} 根低點 {lo:.0f}，移動停損 {a * self.trail_atr:.0f} 點", a * self.trail_atr)
     return None
 
 
