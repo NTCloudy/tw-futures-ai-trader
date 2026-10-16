@@ -94,7 +94,7 @@ class OcoBracketTest(unittest.TestCase):
     self.ledger = Ledger(":memory:")
     self.tr = AiTrader(self.cfg, FakeStrategy(Entry("B", 40, 80, "test")), LocalPaperBroker(self.cfg), self.ledger)
     self.td = "2026-10-16"
-    self.bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    self.bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
 
   def enter(self, price=47000):
     q = {"last": price, "bid": price - 1, "ask": price}
@@ -255,7 +255,7 @@ class TrialModeTest(unittest.TestCase):
     c = cfg(enforce_daily_loss=False)
     ledger = Ledger(":memory:")
     tr = AiTrader(c, FakeStrategy(Entry("B", 400, 800, "wide")), LocalPaperBroker(c), ledger)
-    bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
     tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
     tr.on_price(at(2026, 10, 16, 9, 20), "2026-10-16", "TMFJ6", {"last": 46790, "bid": 46789, "ask": 46791}, 200, False)
     self.assertIsNotNone(tr.pos)  # -2100 unrealized but no forced exit in trial mode
@@ -313,7 +313,7 @@ class TrailingStopTest(unittest.TestCase):
     c = cfg()
     ledger = Ledger(":memory:")
     tr = AiTrader(c, FakeStrategy(Entry("B", 40, 400, "trend", 30)), LocalPaperBroker(c), ledger)
-    bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
     tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
     self.assertEqual(tr.pos["sl"], 46961)
     tr.on_price(at(2026, 10, 16, 9, 11), "2026-10-16", "TMFJ6", {"last": 47090, "bid": 47089, "ask": 47091, "hi": 47101, "lo": 47080}, 200, False)
@@ -336,8 +336,20 @@ class LearningModeTest(unittest.TestCase):
     tr = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "x")), LocalPaperBroker(c), ledger)
     tr.s.decide = lambda bars, n, since: Entry("B", 40, 80, "x")
     ledger.set_state("cnt:alpha-orb:k", 50)
-    bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
     tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
     self.assertIsNotNone(tr.pos)  # cap of 1 ignored in learning mode
     with self.assertRaises(SystemExit):
       make_broker(cfg(mode="sinopac_live", i_understand_real_money=True, learning_mode=True), "alpha-orb")
+
+
+class TpCapTest(unittest.TestCase):
+
+  def test_take_profit_capped_near_close(self):
+    from futures_ai.trader import tp_cap
+    bars = bars_from([(47000, 47040, 46960, 47000)] * 20)  # ATR ~80
+    tp, why = tp_cap(150, 600, bars, 65, "x")  # 13 bars left -> 80*sqrt(13) ~ 288
+    self.assertLess(tp, 600)
+    self.assertGreaterEqual(tp, 225)  # never below 1.5x stop
+    self.assertIn("停利上限", why)
+    self.assertEqual(tp_cap(30, 60, bars, 200, "x")[0], 60)  # small targets untouched

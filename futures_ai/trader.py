@@ -17,6 +17,17 @@ KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSI
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉"}
 
 
+def tp_cap(sl_pts: float, tp_pts: float, bars: list, minutes_to_close: float, reason: str) -> tuple[float, str]:
+  """Caps the take-profit at the distance price can plausibly travel before the session ends
+  (5-minute ATR x sqrt(remaining 5-minute bars)), but never below 1.5x the stop."""
+  from .strategies import atr as atr_fn
+  remaining = max(1.0, minutes_to_close / 5)
+  cap = max(round(sl_pts * 1.5), round(atr_fn(bars) * remaining ** 0.5))
+  if tp_pts > cap:
+    return cap, f"{reason}（停利上限 {cap:.0f} 點：依收盤前剩餘時間估算可走距離）"
+  return tp_pts, reason
+
+
 def opposite(side: str) -> str:
   return "S" if side == "B" else "B"
 
@@ -253,8 +264,9 @@ class AiTrader:
       self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": why})
       return
     self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
-    entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": sig.tp_pts, "reason": sig.reason,
+    tp_pts, reason = tp_cap(sig.sl_pts, sig.tp_pts, bars, minutes_to_close, sig.reason)
+    entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": tp_pts, "reason": reason,
              "trail_pts": getattr(sig, "trail_pts", None),
              "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"]}
-    self._send_market(ts, td, code, "ENTRY", sig.side, quote, sig.reason, entry)
+    self._send_market(ts, td, code, "ENTRY", sig.side, quote, reason, entry)
     self.process_fills(ts)

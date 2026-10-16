@@ -330,6 +330,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           block_side = None
         else:
           continue
+      remaining = max(1.0, (s.close - x.end).total_seconds() / 300)
+      tp_pts = min(tp_pts, max(round(sl_pts * 1.5), round(s.atr5[s.k_at[i]] * remaining ** 0.5)))
       entry = x.c + 2 if side == "B" else x.c - 2
       d = 1 if side == "B" else -1
       pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail)

@@ -79,19 +79,62 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
   return Snapshot(code, last, num("CBidPrice1"), num("CAskPrice1"), completed, qt, live, q.get("CDate") or None)
 
 
-class TaifexFeed:
+MIS_QUOTE_URL = "https://mis.taifex.com.tw/futures/api/getQuoteList"
 
-  def snapshot(self, code: str, session: str, session_start: datetime, now: datetime) -> Snapshot:
-    # Day session uses "<code>-F"; the after-hours session uses "<code>-M".
-    suffixes = ["-F"] if session == "day" else ["-M", "-F"]
+
+class TaifexFeed:
+  """Primary: 1-minute chart endpoint (bars + quote). Each poll retries once; if the chart endpoint
+  still fails, the quote-list endpoint supplies a fresh last/bid/ask on top of the cached bars."""
+
+  def __init__(self):
+    self.cache: dict[str, Snapshot] = {}
+    self.night_suffix: str | None = None
+
+  def _chart(self, code: str, session: str, session_start: datetime, now: datetime) -> Snapshot:
+    if session == "day":
+      suffixes = ["-F"]
+    else:  # The after-hours symbol suffix is detected once and remembered.
+      suffixes = [self.night_suffix] if self.night_suffix else ["-M", "-F"]
     last_err = None
     for sfx in suffixes:
+      for attempt in range(2):
+        try:
+          payload = _post(MIS_CHART_URL, {"SymbolID": f"{code}{sfx}"}, timeout=4)
+          if payload.get("RtCode") == "0" and payload.get("RtData"):
+            snap = parse_chart(payload, code, session_start, now)
+            if snap.bars:
+              if session == "night":
+                self.night_suffix = sfx
+              return snap
+          break  # Valid response without bars: try the next suffix.
+        except Exception as exc:
+          last_err = exc
+    raise RuntimeError(f"chart endpoint failed: {last_err}")
+
+  def _quote_fallback(self, code: str, session: str, now: datetime) -> Snapshot:
+    payload = _post(MIS_QUOTE_URL, {"MarketType": "0" if session == "day" else "1", "SymbolType": "F",
+                                    "KindID": "1", "CID": code[:3], "ExpireMonth": "", "RowSize": "全部",
+                                    "PageNo": "", "SortColumn": "", "AscDesc": "A"}, timeout=4)
+    rows = [q for q in payload["RtData"]["QuoteList"] if q.get("SymbolID", "").startswith(code + "-")]
+    if not rows or not rows[0].get("CLastPrice"):
+      raise RuntimeError("quote fallback: symbol not found")
+    q = rows[0]
+    ct = q.get("CTime") or ""
+    qt = datetime.combine(now.date(), time(int(ct[:2]), int(ct[2:4]), int(ct[4:6])), TPE) if len(ct) >= 6 else now
+    if qt > now + timedelta(minutes=5):
+      qt -= timedelta(days=1)
+    cached = self.cache.get(code)
+    num = lambda k: float(q[k]) if q.get(k) not in (None, "") else None
+    return Snapshot(code, float(q["CLastPrice"]), num("CBidPrice1"), num("CAskPrice1"),
+                    cached.bars if cached else [], qt, None, q.get("CDate") or None)
+
+  def snapshot(self, code: str, session: str, session_start: datetime, now: datetime) -> Snapshot:
+    try:
+      snap = self._chart(code, session, session_start, now)
+      self.cache[code] = snap
+      return snap
+    except Exception as chart_err:
       try:
-        payload = _post(MIS_CHART_URL, {"SymbolID": f"{code}{sfx}"})
-        if payload.get("RtCode") == "0" and payload.get("RtData"):
-          snap = parse_chart(payload, code, session_start, now)
-          if snap.bars or sfx == suffixes[-1]:
-            return snap
-      except Exception as exc:  # Try the next suffix, then surface the error.
-        last_err = exc
-    raise RuntimeError(f"TAIFEX 行情取得失敗：{last_err}")
+        return self._quote_fallback(code, session, now)
+      except Exception as exc:
+        raise RuntimeError(f"TAIFEX 行情取得失敗：{chart_err}；備援也失敗：{exc}")
