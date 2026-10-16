@@ -396,5 +396,20 @@ class ShadowBuildTest(unittest.TestCase):
     from futures_ai.shadows import build_shadows
     sh = build_shadows(cfg(), Ledger(":memory:"))
     ids = [t.ai for t in sh]
-    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 4)
+    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 6)
     self.assertTrue(all(t.s.tp_mult == 1.0 for t in sh if t.ai.startswith("tp1-")))
+
+
+class InverseOfTest(unittest.TestCase):
+
+  def test_inverse_alpha_and_sigma_flip_side(self):
+    from futures_ai.strategies import build_strategies
+    ids = [s.id for s in build_strategies({})]
+    self.assertIn("eps-inverse-alpha", ids)
+    self.assertIn("zeta-inverse-sigma", ids)
+    from futures_ai.strategies import InverseOf, OrbBreakout
+    rng = [(47100, 47110, 47095, 47105)] * 3 + [(47105, 47109, 47104, 47108)]
+    bars = bars_from(rng + [(47108, 47130, 47107, 47125)])
+    base = OrbBreakout(range_bars=3)
+    inv = InverseOf(base, "x", "X 反向", "#fff", 1.0, 1.5)
+    self.assertEqual((base.decide(bars, 0, None).side, inv.decide(bars, 0, None).side), ("B", "S"))

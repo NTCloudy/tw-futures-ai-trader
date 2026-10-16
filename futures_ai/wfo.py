@@ -243,6 +243,14 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
       return "S", sl, tp, trail
     return None
+  if ai in ("alpha-inverse", "sigma-inverse"):
+    base = "alpha-orb" if ai == "alpha-inverse" else "sigma-pullback"
+    g = signal5(base, p["base"], s, k, i)
+    if not g:
+      return None
+    side = "S" if g[0] == "B" else "B"
+    sl = g[1] * p["sl_scale"]
+    return side, sl, sl * p["tp_mult"], None
   if ai == "gamma-inverse":
     # Take Gamma's breakout signal and trade the opposite direction (fade the breakout).
     g = signal5("gamma-trend", {"lookback": p["lookback"], "sl_atr": p["g_sl_atr"], "trail_atr": 4.0}, s, k, i)
@@ -335,12 +343,12 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
         continue
       side, sl_pts, tp_pts, trail = sig
       reg = s.regime[i]
-      if reg not in p["regimes"]:
+      if reg not in p.get("regimes", ("trend", "chop")):
         continue
       if reg in p.get("flip", ()):
         side = "S" if side == "B" else "B"
       dirn = s.direction[i]
-      if ai != "gamma-inverse" and reg == "trend" and ((side == "B" and dirn < 0) or (side == "S" and dirn > 0)):
+      if not ai.endswith("-inverse") and reg == "trend" and ((side == "B" and dirn < 0) or (side == "S" and dirn > 0)):
         continue
       if block_side == side:
         if any(b[k].l <= s.vwap[k] <= b[k].h for k in range(block_i + 1, i + 1)):

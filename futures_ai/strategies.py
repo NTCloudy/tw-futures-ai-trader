@@ -238,6 +238,31 @@ class InverseGamma:
                  f"Gamma 想{'做多' if g.side == 'B' else '放空'}，Delta 反向{'放空' if side == 'S' else '做多'}｜{g.reason.split('，移動停損')[0]}")
 
 
+class InverseOf:
+  """Generic contrarian twin: whenever the base AI wants to go long, go short at that point (and
+  vice versa), with its own stop / take-profit set to make money in the opposite direction."""
+
+  allow_flip = False
+  skip_trend_filter = True
+
+  def __init__(self, base, id: str, name: str, color: str, sl_scale: float = 1.0, tp_mult: float = 1.5):
+    self.base = base
+    self.id, self.name, self.color = id, name, color
+    self.style = f"跟 {base.name.split(' ')[0]} 唱反調：它想做多就放空、想放空就做多，停損停利依反向方向設定"
+    self.modes = {"native": f"反向 {base.name.split(' ')[0]}", "flip": f"反向 {base.name.split(' ')[0]}"}
+    self.sl_scale, self.tp_mult = sl_scale, tp_mult
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    g = self.base.decide(bars, 0, None)
+    if g is None:
+      return None
+    side = "S" if g.side == "B" else "B"
+    sl = g.sl_pts * self.sl_scale
+    who = self.base.name.split(" ")[0]
+    return Entry(side, sl, sl * self.tp_mult,
+                 f"{who} 想{'做多' if g.side == 'B' else '放空'}，反向{'放空' if side == 'S' else '做多'}｜{g.reason}")
+
+
 def build_strategies(params: dict | None = None) -> list:
   """params: optional {ai_id: kwargs} chosen by walk-forward training (data/strategy_params.json)."""
   if params is None:
@@ -247,4 +272,8 @@ def build_strategies(params: dict | None = None) -> list:
     params = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
   return [OrbBreakout(**params.get("alpha-orb", {})), TrendPullback(**params.get("sigma-vwap", {})),
           TrendBreakout(**params.get("gamma-scalp", {})),
-          InverseGamma(params.get("gamma-scalp", {}), **params.get("delta-inverse", {}))]
+          InverseGamma(params.get("gamma-scalp", {}), **params.get("delta-inverse", {})),
+          InverseOf(OrbBreakout(**params.get("alpha-orb", {})), "eps-inverse-alpha", "Epsilon 反向 Alpha AI", "#ec4899",
+                    **params.get("eps-inverse-alpha", {"sl_scale": 1.0, "tp_mult": 1.5})),
+          InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
+                    **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0}))]
