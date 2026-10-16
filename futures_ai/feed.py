@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 
 from .calendar import TPE
 
@@ -51,8 +51,12 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
   idx = {f: i for i, f in enumerate(fields)}
   bars: list[Bar] = []
   for row in data.get("Ticks") or []:
-    hhmmss = row[idx["T"]]
-    t = datetime.combine(session_start.date(), datetime.strptime(hhmmss, "%H%M%S").time(), TPE)
+    try:  # Skip malformed rows instead of failing the whole snapshot.
+      hhmmss = str(row[idx["T"]]).strip().zfill(6)[:6]
+      t = datetime.combine(session_start.date(), time(int(hhmmss[:2]), int(hhmmss[2:4]), int(hhmmss[4:6])), TPE)
+      float(row[idx["C"]])
+    except (ValueError, IndexError, TypeError):
+      continue
     if t < session_start:  # Night session crosses midnight.
       t += timedelta(days=1)
     bars.append(Bar(t, float(row[idx["O"]]), float(row[idx["H"]]), float(row[idx["L"]]),
@@ -68,8 +72,8 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
   live = bars[-1] if bars and bars[-1].end > now else None
   qt = newest - timedelta(minutes=1) if newest else None  # start of the newest bar, conservative
   ctime = q.get("CTime")
-  if ctime and len(ctime) >= 6:
-    t = datetime.combine(now.date(), datetime.strptime(ctime[:6], "%H%M%S").time(), TPE)
+  if ctime and len(ctime) >= 6 and ctime[:6].isdigit():
+    t = datetime.combine(now.date(), time(int(ctime[:2]), int(ctime[2:4]), int(ctime[4:6])), TPE)
     qt = t - timedelta(days=1) if t > now + timedelta(minutes=5) else t
   return Snapshot(code, last, num("CBidPrice1"), num("CAskPrice1"), completed, qt, live)
 
