@@ -56,6 +56,9 @@
   #side .tools button { width:100%; margin-top:6px; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px; cursor:pointer; font-size:12px; }
   .content { min-width:0; overflow-x:hidden; padding-left:16px; }
   .pos td, .pos th { white-space:normal; }
+  /* AI cards: 3 columns, base AIs on the first row, each contrarian twin directly below its base */
+  #aiCards { display:grid; gap:16px; grid-template-columns:repeat(3, minmax(0, 1fr)); scroll-margin-top:70px; }
+  @media (max-width: 1100px) { #aiCards { grid-template-columns:1fr; } }
   #navToggle { display:none; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; }
   @media (hover: none) { #navToggle { display:inline-block; } }
   /* ---- collapsible sections ---- */
@@ -121,7 +124,7 @@
   <section class="card s3"><h2>累計總收益</h2><div class="big" id="total">–</div><div class="mute" id="totalSub"></div></section>
   <section class="card s3"><h2>近幾小時收益</h2><div class="kpis" id="recent"></div></section>
   <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
-  <div class="s12" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));scroll-margin-top:70px" id="aiCards"></div>
+  <div class="s12" id="aiCards"></div>
   <section class="card s12" id="secCurve"><h2>今日損益走勢（每分鐘）</h2><svg id="curve" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg><div class="mute" id="legend"></div></section>
   <section class="card s12" id="secTpCmp"><h2>🔬 停利縮小對照組（同策略，只把停利改成 1 倍停損，與現行同時即時模擬）</h2><div class="scroll"><table id="tpCmp"></table></div><div class="mute" id="tpCmpNote"></div></section>
   <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
@@ -192,13 +195,18 @@ function render(s) {
   const r = s.rollover;
   document.getElementById('roll').innerHTML = `交易合約 <b>${r.contract}</b>（${r.delivery_month}）<br>結算日 ${r.settlement_date}<br>下次換倉 ${r.next_roll_day}<div class="mute">結算日前 1 個營業日自動改做次月；每盤收盤前全數平倉，不留倉換月</div>`;
 
+  const PAIR = { 'alpha-orb': [0, 0], 'sigma-vwap': [1, 0], 'gamma-scalp': [2, 0],
+                 'eps-inverse-alpha': [0, 1], 'zeta-inverse-sigma': [1, 1], 'delta-inverse': [2, 1] };
+  const narrow = window.matchMedia('(max-width: 1100px)').matches;
+  const place = a => { const p = PAIR[a.id]; if (!p) return '';
+    return narrow ? `order:${p[0] * 2 + p[1]};` : `grid-column:${p[0] + 1};grid-row:${p[1] + 1};`; };
   document.getElementById('aiCards').innerHTML = s.ais.map(a => {
     const p = a.position;
     const pos = p ? `<div class="pos"><span class="tag ${p.side === 'B' ? 'up' : 'down'}">${sideZh(p.side)}單 ${p.qty} 口</span> ${p.contract} 進場 <b>${p.entry_price.toLocaleString()}</b>（${t(p.entry_ts)}）<br>
         🎯 停利觸價 <b class="up">${p.tp.toLocaleString()}</b>　🛑 停損觸價 <b class="down">${p.sl.toLocaleString()}</b><br>
         未實現 <b class="${cls(p.unrealized)}">${nt(p.unrealized)}</b><br><span class="mute">${p.reason}</span></div>`
       : `<div class="pos mute">${a.locked_today ? '⛔ 今日已達虧損上限，停止交易' : '空手，等待進場訊號'}</div>`;
-    return `<section class="card" style="border-top:3px solid ${a.color}"><h2 style="color:${a.color}">${a.name} <span class="badge">${a.broker === 'local_paper' ? '本機模擬' : a.broker}</span></h2>
+    return `<section class="card" style="border-top:3px solid ${a.color};${place(a)}"><h2 style="color:${a.color}">${a.name} <span class="badge">${a.broker === 'local_paper' ? '本機模擬' : a.broker}</span></h2>
       <div class="mute">${a.style}</div>
       <div class="kpis">
         <div><div class="mute">今日損益</div><div class="${cls(a.today_pnl)}" style="font-size:20px;font-weight:700">${nt(a.today_pnl)}</div></div>

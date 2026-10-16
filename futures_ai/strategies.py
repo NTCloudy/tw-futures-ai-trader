@@ -270,10 +270,12 @@ def build_strategies(params: dict | None = None) -> list:
     from .config import ROOT
     f = ROOT / "data" / "strategy_params.json"
     params = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+  # Order: the three base AIs, then their contrarian twins in the same column order
+  # (Alpha -> Epsilon, Sigma -> Zeta, Gamma -> Delta) so each inverse sits under its base AI.
   return [OrbBreakout(**params.get("alpha-orb", {})), TrendPullback(**params.get("sigma-vwap", {})),
           TrendBreakout(**params.get("gamma-scalp", {})),
-          InverseGamma(params.get("gamma-scalp", {}), **params.get("delta-inverse", {})),
           InverseOf(OrbBreakout(**params.get("alpha-orb", {})), "eps-inverse-alpha", "Epsilon 反向 Alpha AI", "#ec4899",
                     **params.get("eps-inverse-alpha", {"sl_scale": 1.0, "tp_mult": 1.5})),
           InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
-                    **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0}))]
+                    **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0})),
+          InverseGamma(params.get("gamma-scalp", {}), **params.get("delta-inverse", {}))]
