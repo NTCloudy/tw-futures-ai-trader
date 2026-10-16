@@ -123,6 +123,17 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     t["ai_name"] = names[t["ai"]].name if t["ai"] in names else t["ai"]
     t["exit_kind_zh"] = KIND_ZH.get(t["exit_kind"], t["exit_kind"])
   events = ledger.rows("SELECT * FROM events ORDER BY id DESC LIMIT 40")
+  # Per trading day x session history (日盤 / 夜盤) for every AI.
+  hist: dict[tuple, dict] = {}
+  for t in ledger.rows("SELECT ai, trading_day, entry_ts, pnl_twd FROM trades ORDER BY id"):
+    hh = t["entry_ts"][11:16]
+    sess_name = "day" if "08:45" <= hh < "13:45" else "night"
+    row = hist.setdefault((t["trading_day"], sess_name), {"trading_day": t["trading_day"], "session": sess_name,
+                                                          "pnl": {}, "trades": {}, "total": 0.0})
+    row["pnl"][t["ai"]] = row["pnl"].get(t["ai"], 0.0) + t["pnl_twd"]
+    row["trades"][t["ai"]] = row["trades"].get(t["ai"], 0) + 1
+    row["total"] += t["pnl_twd"]
+  daily_history = sorted(hist.values(), key=lambda r: (r["trading_day"], r["session"] == "day"), reverse=True)
   journal = []
   for ai_id, s in names.items():
     for j in (ledger.get_state(f"brain:{ai_id}") or {}).get("journal", []):
@@ -146,4 +157,5 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
       "market": market, "kill_switch": ledger.get_state("kill_switch", False),
       "ais": ais, "combined": {k: round(v) for k, v in combined.items()},
       "orders_today": orders, "trades_today": trades, "events": events, "journal": journal[:40],
+      "daily_history": daily_history[:120],
   }
