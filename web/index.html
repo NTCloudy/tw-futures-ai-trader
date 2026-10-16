@@ -47,7 +47,8 @@
   #side a.active { background:#1d2a4a; color:#fff; font-weight:700; }
   #side .grp { font-size:11px; color:#5b6694; margin:12px 10px 4px; letter-spacing:1px; }
   #side .tools button { width:100%; margin-top:6px; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px; cursor:pointer; font-size:12px; }
-  .content { flex:1; min-width:0; }
+  .content { flex:1; min-width:0; overflow-x:hidden; }
+  .pos td, .pos th { white-space:normal; }
   #navToggle { display:none; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; }
   @media (max-width: 900px) {
     #side { position:fixed; left:0; top:0; height:100vh; z-index:40; transform:translateX(-100%); transition:transform .2s; box-shadow:4px 0 20px rgba(0,0,0,.5); }
@@ -156,14 +157,14 @@ function brainHtml(a) {
   const b = a.brain; if (!b) return '';
   const rows = ['trend', 'chop'].map(r => {
     const st = b.stats[r], c = b.choices[r];
-    const cell = m => `${st[m].n} 筆／勝 ${st[m].wins}／<span class="${cls(st[m].pnl)}">${nt(st[m].pnl)}</span>`;
+    const cell = m => `${st[m].n}筆 勝${st[m].wins}<br><span class="${cls(st[m].pnl)}">${nt(st[m].pnl)}</span>`;
     return `<tr><td>${regimeZh[r]}</td><td>${cell('native')}</td><td>${cell('flip')}</td><td><b>${c.label}</b></td></tr>`;
   }).join('');
   const pause = b.pause_until && new Date(b.pause_until) > new Date() ? `<div class="down">⏸ 冷靜期到 ${b.pause_until.slice(11, 16)}</div>` : '';
   const skip = a.last_skip ? `<div class="mute">最近略過訊號：${a.last_skip.why}（${a.last_skip.ts.slice(11, 16)}）</div>` : '';
   const pre = b.pretrained ? `<div class="mute">📚 已在背景研讀過去 ${b.pretrained.days} 個交易日的真實 K 線（${b.pretrained.range[0]} ～ ${b.pretrained.range[1]}）</div>` : '';
   return `<div class="pos"><b>🧠 學習狀態</b>${pre}　停損 ×${b.sl_mult.toFixed(2)}　停利 ×${b.tp_mult.toFixed(2)}　連虧 ${b.loss_streak}${pause}
-    <table style="margin-top:6px"><tr><th>盤勢</th><th>${b.modes.native}</th><th>${b.modes.flip}</th><th>下次採用</th></tr>${rows}</table>${skip}</div>`;
+    <div style="overflow-x:auto"><table style="margin-top:6px;font-size:12px"><tr><th>盤勢</th><th>${b.modes.native}</th><th>${b.modes.flip}</th><th>下次採用</th></tr>${rows}</table></div>${skip}</div>`;
 }
 
 function render(s) {
