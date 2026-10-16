@@ -7,7 +7,7 @@ from futures_ai.feed import Bar, Snapshot
 from futures_ai.brokers import LocalPaperBroker
 from futures_ai.engine import Engine
 from futures_ai.ledger import Ledger
-from futures_ai.strategies import Entry, OrbBreakout, VwapReversion
+from futures_ai.strategies import AggressiveMomentum, Entry, OrbBreakout, VwapReversion
 from futures_ai.trader import AiTrader
 
 
@@ -64,6 +64,16 @@ class StrategyTest(unittest.TestCase):
     e = VwapReversion().decide(bars_from(flat + spike), 0, None)
     self.assertIsNotNone(e)
     self.assertEqual(e.side, "S")
+
+
+class AggressiveTest(unittest.TestCase):
+
+  def test_momentum_long_and_short(self):
+    up = [(47000 + i * 3, 47004 + i * 3, 46998 + i * 3, 47003 + i * 3) for i in range(20)] + [(47062, 47080, 47061, 47078)]
+    self.assertEqual(AggressiveMomentum().decide(bars_from(up), 0, None).side, "B")
+    down = [(47000 - i * 3, 47002 - i * 3, 46996 - i * 3, 46997 - i * 3) for i in range(20)] + [(46940, 46941, 46920, 46922)]
+    self.assertEqual(AggressiveMomentum().decide(bars_from(down), 0, None).side, "S")
+    self.assertIsNone(AggressiveMomentum().decide(bars_from(up), 30, None))
 
 
 class FakeStrategy:

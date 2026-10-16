@@ -44,7 +44,7 @@
   </div>
 </header>
 <main>
-  <section class="card s3"><h2>今日總損益（兩位 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
+  <section class="card s3"><h2>今日總損益（全部 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
   <section class="card s3"><h2>累計總收益</h2><div class="big" id="total">–</div><div class="mute" id="totalSub"></div></section>
   <section class="card s3"><h2>近幾小時收益</h2><div class="kpis" id="recent"></div></section>
   <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
@@ -79,7 +79,7 @@ function render(s) {
   const nTrades = s.ais.reduce((a, x) => a + x.trades_today, 0), nWins = s.ais.reduce((a, x) => a + x.wins_today, 0);
   document.getElementById('todaySub').textContent = `今日 ${nTrades} 筆平倉，勝 ${nWins} 筆`;
   document.getElementById('total').innerHTML = `<span class="${cls(c.total_pnl)}">${nt(c.total_pnl)}</span>`;
-  document.getElementById('totalSub').textContent = `兩位 AI 合計資金 NT$ ${(s.capital_per_ai * s.ais.length).toLocaleString()}，報酬 ${(c.total_pnl / (s.capital_per_ai * s.ais.length) * 100).toFixed(2)}%`;
+  document.getElementById('totalSub').textContent = `全部 AI 合計資金 NT$ ${(s.capital_per_ai * s.ais.length).toLocaleString()}，報酬 ${(c.total_pnl / (s.capital_per_ai * s.ais.length) * 100).toFixed(2)}%`;
   document.getElementById('recent').innerHTML = [['近 1 小時', c.pnl_1h], ['近 3 小時', c.pnl_3h], ['近 6 小時', c.pnl_6h]]
     .map(([k, v]) => `<div><div class="mute">${k}</div><div class="${cls(v)}" style="font-size:18px;font-weight:700">${nt(v)}</div></div>`).join('');
   const r = s.rollover;
@@ -140,7 +140,7 @@ async function refresh() {
   } catch (e) { document.getElementById('sub').textContent = '讀取狀態失敗：' + e; }
 }
 refresh();
-setInterval(refresh, ON_PAGES ? 30000 : 10000);
+setInterval(refresh, ON_PAGES ? 15000 : 5000);
 </script>
 </body>
 </html>

@@ -99,5 +99,38 @@ class VwapReversion:
     return None
 
 
+def ema(values: list[float], n: int) -> float:
+  k, out = 2 / (n + 1), values[0]
+  for v in values[1:]:
+    out = v * k + out * (1 - k)
+  return out
+
+
+class AggressiveMomentum:
+  """Gamma: aggressive 1-minute momentum scalper. Trades often (built to exercise the automation)."""
+
+  id = "gamma-scalp"
+  name = "Gamma 激進動能 AI"
+  style = "1 分K 動能當沖：EMA5/13 同向且突破前一根高/低點就進場，小停損快停利，每盤最多 30 次"
+  color = "#f97316"
+
+  def __init__(self, sl_pts: float = 15, tp_pts: float = 20, max_entries: int = 30):
+    self.sl, self.tp, self.max_entries = sl_pts, tp_pts, max_entries
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+    if len(bars) < 14 or entries_this_session >= self.max_entries:
+      return None
+    if bars_since_exit is not None and bars_since_exit < 1:
+      return None
+    closes = [b.c for b in bars[-30:]]
+    fast, slow = ema(closes, 5), ema(closes, 13)
+    last, prev = bars[-1], bars[-2]
+    if fast > slow and last.c > prev.h and last.c > last.o:
+      return Entry("B", self.sl, self.tp, f"EMA5 {fast:.0f} > EMA13 {slow:.0f}，收盤 {last.c:.0f} 突破前高 {prev.h:.0f}，激進追多")
+    if fast < slow and last.c < prev.l and last.c < last.o:
+      return Entry("S", self.sl, self.tp, f"EMA5 {fast:.0f} < EMA13 {slow:.0f}，收盤 {last.c:.0f} 跌破前低 {prev.l:.0f}，激進追空")
+    return None
+
+
 def build_strategies() -> list:
-  return [OrbBreakout(), VwapReversion()]
+  return [OrbBreakout(), VwapReversion(), AggressiveMomentum()]
