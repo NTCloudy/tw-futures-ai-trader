@@ -7,5 +7,5 @@
   "max_daily_loss_twd": 2000,
   "commission_per_side_twd": 20,
   "trade_night_session": true,
-  "publish": { "enabled": true, "interval_seconds": 30 }
+  "publish": { "enabled": true, "interval_seconds": 20 }
 }

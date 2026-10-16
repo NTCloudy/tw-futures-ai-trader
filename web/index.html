@@ -41,6 +41,7 @@
   <div style="text-align:right">
     <div class="big" id="last">–</div>
     <div class="mute" id="quote"></div>
+    <div class="mute" id="age"></div>
   </div>
 </header>
 <main>
@@ -57,7 +58,6 @@
 </main>
 <script>
 const ON_PAGES = location.hostname.endsWith('github.io');
-const SRC = ON_PAGES ? 'https://raw.githubusercontent.com/NTCloudy/tw-futures-ai-trader/live-state/state.json' : '/state.json';
 const nt = n => (n >= 0 ? '+' : '-') + 'NT$ ' + Math.abs(Math.round(n)).toLocaleString('en-US');
 const cls = n => n > 0 ? 'up' : (n < 0 ? 'down' : '');  // Taiwan convention: red = profit.
 const sideZh = s => s === 'B' ? '多' : '空';
@@ -133,14 +133,42 @@ function render(s) {
   document.getElementById('events').innerHTML = s.events.map(e => `<tr><td class="mute">${t(e.ts)}</td><td>${e.ai || ''}</td><td>${e.level}</td><td style="white-space:normal">${e.message}</td></tr>`).join('');
 }
 
+const RAW = 'https://raw.githubusercontent.com/NTCloudy/tw-futures-ai-trader/live-state';
+let interval = 20, lastGen = null;
+
+async function fetchState() {
+  if (!ON_PAGES) return (await fetch('/state.json', { cache: 'no-store' })).json();
+  // Each publish writes slots/<epoch/interval>.json; a never-requested path bypasses the CDN cache.
+  const base = Math.floor((Date.now() / 1000 - interval * 1.5) / interval);
+  for (let k = 0; k < 4; k++) {
+    try {
+      const res = await fetch(`${RAW}/slots/${base - k}.json`, { cache: 'no-store' });
+      if (res.ok) return res.json();
+    } catch (e) { /* try older slot */ }
+  }
+  return (await fetch(`${RAW}/state.json`, { cache: 'no-store' })).json();
+}
+
+function ageText() {
+  if (!lastGen) return;
+  const sec = Math.max(0, Math.round((Date.now() - new Date(lastGen).getTime()) / 1000));
+  const el = document.getElementById('age');
+  el.textContent = `資料時間 ${sec} 秒前（自動更新，不用手動重新整理）`;
+  el.style.color = sec > 120 ? '#f87171' : '#8d98c4';
+}
+
 async function refresh() {
   try {
-    const res = await fetch(SRC + '?t=' + Date.now(), { cache: 'no-store' });
-    render(await res.json());
+    const s = await fetchState();
+    if (s.publish_interval) interval = s.publish_interval;
+    lastGen = s.generated_at;
+    render(s);
+    ageText();
   } catch (e) { document.getElementById('sub').textContent = '讀取狀態失敗：' + e; }
 }
 refresh();
-setInterval(refresh, ON_PAGES ? 15000 : 5000);
+setInterval(refresh, ON_PAGES ? 10000 : 3000);
+setInterval(ageText, 1000);
 </script>
 </body>
 </html>
