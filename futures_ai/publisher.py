@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -19,14 +21,22 @@ class GitPublisher:
     self.ledger = ledger
     self.dir = ROOT / "data" / "publish"
     self.branch = cfg["publish"]["branch"]
+    self._last_backup = 0.0
 
   def _git(self, *args: str) -> str:
-    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # Never block waiting for credentials.
-    askpass = Path.home() / ".config" / "tw-futures-ai" / "askpass.sh"
-    if askpass.exists():  # Token file: works without a desktop keyring session (cron restarts).
-      env["GIT_ASKPASS"] = str(askpass)
-    return subprocess.run(["git", "-c", "credential.helper=", *args], cwd=self.dir, check=True,
-                          capture_output=True, text=True, env=env, timeout=60).stdout
+    """Runs git without any interactive prompt. Auth comes from GH_TOKEN or the token file
+    ~/.config/tw-futures-ai/gh_token, so it works under cron / Task Scheduler on any OS."""
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+    extra = []
+    token = os.environ.get("GH_TOKEN", "")
+    token_file = Path.home() / ".config" / "tw-futures-ai" / "gh_token"
+    if not token and token_file.exists():
+      token = token_file.read_text(encoding="utf-8").strip()
+    if token:
+      basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+      extra = ["-c", "credential.helper=", "-c", f"http.https://github.com/.extraheader=Authorization: Basic {basic}"]
+    return subprocess.run(["git", *extra, *args], cwd=self.dir, check=True, capture_output=True, text=True,
+                          env=env, timeout=60).stdout
 
   def _ensure_repo(self) -> None:
     if (self.dir / ".git").exists():
@@ -54,6 +64,13 @@ class GitPublisher:
       if f.stem.isdigit() and int(f.stem) < slot - 8:
         f.unlink()
     (self.dir / "state.json").write_text(body, encoding="utf-8")
+    if time.time() - self._last_backup >= 600:  # Every 10 min: DB snapshot so another computer can restore.
+      self._last_backup = time.time()
+      (self.dir / "backup").mkdir(exist_ok=True)
+      dst = sqlite3.connect(self.dir / "backup" / "futures.db")
+      with self.ledger.lock:
+        self.ledger.conn.backup(dst)
+      dst.close()
     self._git("add", "-A")
     has_head = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=self.dir, capture_output=True).returncode == 0
     # Amend a single commit so the branch never accumulates history.

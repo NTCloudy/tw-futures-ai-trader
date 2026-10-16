@@ -45,6 +45,18 @@ python3 -m futures_ai dashboard            # 本機儀表板 http://127.0.0.1:87
 python3 -m futures_ai sinopac-test         # 永豐模擬環境：登入 + 期貨下單測試
 ```
 
+## 搬到自己的電腦執行（不需要 Cloudtop）
+
+1. **停掉舊機器的引擎**：在舊機器執行 `bash scripts/stop.sh`。兩台同時跑會互相覆蓋線上儀表板。
+2. **在新電腦下載專案**：`gh repo clone NTCloudy/tw-futures-ai-trader && cd tw-futures-ai-trader`。
+3. **還原交易紀錄和 AI 學習資料**：執行 `python -m futures_ai restore`。舊機器每 10 分鐘會自動備份一次到 GitHub 的 `live-state` 分支。
+4. **一次性設定**：
+   - Windows：`powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1`
+   - macOS／Linux：`bash scripts/setup_unix.sh`
+   - 設定腳本會安裝需要的工具、建立 GitHub 權杖檔（讓線上儀表板能更新），並設定開機自動執行，以及每 5 分鐘檢查一次、沒在跑就自動重啟。
+5. **把電腦設成不會自動睡眠**。睡眠期間不會交易。
+6. **要停止時**：Windows 執行 `scripts\stop_windows.ps1`，macOS／Linux 執行 `bash scripts/stop.sh`。
+
 ## 永豐帳戶設定（之後切換用）
 
 需要設定的環境變數：`SINOPAC_API_KEY`、`SINOPAC_SECRET_KEY`。真實帳戶另外需要 `SINOPAC_CA_PASSWORD`、`SINOPAC_PERSON_ID`，並把憑證放在 `certs/Sinopac.pfx`。這些資料都不會進 git。

@@ -57,6 +57,22 @@ def serve(cfg: dict, ledger: Ledger, port: int) -> None:
   ThreadingHTTPServer(("127.0.0.1", port), H).serve_forever()
 
 
+def restore(cfg: dict, force: bool) -> int:
+  import urllib.request
+  from pathlib import Path
+  db = Path(cfg["db_path"])
+  if db.exists() and not force:
+    print(f"{db} 已存在，加上 --force 才會覆蓋")
+    return 1
+  url = f"https://raw.githubusercontent.com/{cfg['publish']['repo']}/{cfg['publish']['branch']}/backup/futures.db"
+  db.parent.mkdir(parents=True, exist_ok=True)
+  with urllib.request.urlopen(url, timeout=30) as r:
+    db.write_bytes(r.read())
+  n = Ledger(str(db)).rows("SELECT COUNT(*) n FROM trades")[0]["n"]
+  print(f"已還原 {db}（{n} 筆交易，含 AI 學習紀錄）")
+  return 0
+
+
 def main(argv=None) -> int:
   ap = argparse.ArgumentParser(prog="futures_ai", description="TW Futures AI Trader（微台指 AI 自動交易）")
   ap.add_argument("--config")
@@ -69,9 +85,13 @@ def main(argv=None) -> int:
   k = sub.add_parser("kill", help="緊急停止：平掉所有部位並停止新單")
   k.add_argument("state", choices=["on", "off"])
   sub.add_parser("sinopac-test", help="永豐模擬環境：登入 + 期貨下單測試（開通正式環境用）")
+  rs = sub.add_parser("restore", help="從 GitHub 備份還原交易紀錄與 AI 學習資料（換電腦用）")
+  rs.add_argument("--force", action="store_true", help="覆蓋本機現有資料")
   args = ap.parse_args(argv)
 
   cfg = load_config(args.config)
+  if args.cmd == "restore":
+    return restore(cfg, args.force)
   ledger = Ledger(cfg["db_path"])
   if args.cmd == "run":
     if args.publish:
