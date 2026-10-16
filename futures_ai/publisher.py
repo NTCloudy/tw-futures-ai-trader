@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -20,7 +21,12 @@ class GitPublisher:
     self.branch = cfg["publish"]["branch"]
 
   def _git(self, *args: str) -> str:
-    return subprocess.run(["git", *args], cwd=self.dir, check=True, capture_output=True, text=True).stdout
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")  # Never block waiting for credentials.
+    askpass = Path.home() / ".config" / "tw-futures-ai" / "askpass.sh"
+    if askpass.exists():  # Token file: works without a desktop keyring session (cron restarts).
+      env["GIT_ASKPASS"] = str(askpass)
+    return subprocess.run(["git", "-c", "credential.helper=", *args], cwd=self.dir, check=True,
+                          capture_output=True, text=True, env=env, timeout=60).stdout
 
   def _ensure_repo(self) -> None:
     if (self.dir / ".git").exists():
