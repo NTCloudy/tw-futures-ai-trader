@@ -32,11 +32,34 @@ def _creds() -> tuple[str, str]:
 
 
 def _login(sj, simulation: bool, key: str, sec: str):
+  """Logs in using only the keyword arguments the installed Shioaji version supports."""
+  import inspect
+  version = getattr(sj, "__version__", "?")
+  print(f"shioaji 版本：{version}")
   api = sj.Shioaji(simulation=simulation)
   try:
-    api.login(api_key=key, secret_key=sec, fetch_contract=True, subscribe_trade=False)
-  except TypeError:  # Older versions without subscribe_trade.
-    api.login(api_key=key, secret_key=sec, fetch_contract=True)
+    params = set(inspect.signature(api.login).parameters)
+  except (TypeError, ValueError):  # Compiled method without an inspectable signature.
+    params = set()
+  if params and "api_key" not in params:
+    raise SystemExit(f"shioaji {version} 太舊（不支援 API Key 登入）。請執行：pip install -U shioaji 後再試一次")
+  attempts = [{"fetch_contract": True, "subscribe_trade": False}, {"fetch_contract": True}, {}]
+  if params:
+    attempts = [{k: v for k, v in a.items() if k in params} for a in attempts]
+  last = None
+  for extra in attempts:
+    try:
+      api.login(api_key=key, secret_key=sec, **extra)
+      break
+    except TypeError as exc:  # Unsupported keyword: retry with fewer options.
+      last = exc
+  else:
+    raise last
+  try:
+    api.Contracts.Futures.TMF  # noqa: B018 - make sure contracts are loaded
+  except Exception:
+    if hasattr(api, "fetch_contracts"):
+      api.fetch_contracts(contract_download=True)
   return api
 
 
