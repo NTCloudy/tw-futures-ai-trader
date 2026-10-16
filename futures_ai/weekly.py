@@ -68,8 +68,16 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
         changes[live_id] = kw
         ledger.set_state(f"strategy_since:{live_id}", datetime.now(TPE).isoformat(timespec="seconds"))
         switched = True
-    lines.append(f"\n{NAMES[live_id]}：考試期 推薦參數 {r['oos_pnl']:+,} vs 目前參數 {cur_oos:+,.0f}"
-                 f"（{r['oos_trades']} 筆，勝 {r['oos_wins']}）→ {'✅ 已換成新參數' if switched else '維持目前參數'}")
+    if switched:
+      verdict = "✅ 已換成新參數"
+    elif new.get("off"):
+      verdict = "訓練建議暫停（最近練習期沒有任何組合賺錢）；學習模式下照常交易累積經驗"
+    elif r["oos_pnl"] <= cur_oos:
+      verdict = "目前參數考得比較好，維持"
+    else:
+      verdict = "維持目前參數"
+    lines.append(f"\n{NAMES[live_id]}：考試期 訓練挑選 {r['oos_pnl']:+,} vs 目前參數 {cur_oos:+,.0f}"
+                 f"（{r['oos_trades']} 筆，勝 {r['oos_wins']}）→ {verdict}")
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
 
