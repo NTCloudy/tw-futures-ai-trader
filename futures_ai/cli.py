@@ -90,6 +90,7 @@ def main(argv=None) -> int:
   tr = sub.add_parser("train", help="滾動前進測試 + 參數搜尋（練習期挑參數 → 沒看過的考試期驗證）")
   tr.add_argument("--train-days", type=int, default=10)
   tr.add_argument("--test-days", type=int, default=5)
+  sub.add_parser("weekly", help="每週自動訓練：滾動前進測試、比較參數、影子排名、LINE 報告")
   sub.add_parser("line-setup", help="設定 LINE 通知（Channel access token + 你的 User ID）")
   sub.add_parser("line-test", help="傳一則 LINE 測試訊息")
   rs = sub.add_parser("restore", help="從 GitHub 備份還原交易紀錄與 AI 學習資料（換電腦用）")
@@ -118,7 +119,9 @@ def main(argv=None) -> int:
     if args.publish:
       cfg["publish"]["enabled"] = True
     pub = GitPublisher(cfg, ledger) if cfg["publish"]["enabled"] else None
-    Engine(cfg, ledger, build_traders(cfg, ledger), publisher=pub).run_forever()
+    from .shadows import build_shadows
+    Engine(cfg, ledger, build_traders(cfg, ledger), publisher=pub,
+           shadows=build_shadows(cfg) if cfg.get("shadows_enabled", True) else []).run_forever()
   elif args.cmd == "status":
     st = build_state(cfg, ledger)
     print(f"{st['mode_label']}｜合約 {st['rollover']['contract']}（結算 {st['rollover']['settlement_date']}）｜最新價 {st['market'].get('last')}")
@@ -133,6 +136,9 @@ def main(argv=None) -> int:
     ledger.set_state("kill_switch", args.state == "on")
     ledger.log(f"緊急停止 {'啟動' if args.state == 'on' else '解除'}（CLI）", level="WARN")
     print(f"kill_switch = {args.state}")
+  elif args.cmd == "weekly":
+    from .weekly import run_weekly
+    run_weekly(cfg)
   elif args.cmd == "train":
     from .wfo import save_report, walk_forward
     rep = walk_forward(cfg, args.train_days, args.test_days)

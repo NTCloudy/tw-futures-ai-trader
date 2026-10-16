@@ -31,6 +31,27 @@ def _value_at(series, t: datetime) -> float:
   return v
 
 
+def health(trades: list[dict]) -> dict:
+  """Strategy health metrics from closed trades."""
+  n = len(trades)
+  if not n:
+    return {"n": 0}
+  pnls = [t["pnl_twd"] for t in trades]
+  wins = [p for p in pnls if p > 0]
+  losses = [p for p in pnls if p <= 0]
+  eq = peak = mdd = 0.0
+  for p in pnls:
+    eq += p
+    peak = max(peak, eq)
+    mdd = max(mdd, peak - eq)
+  gross_win, gross_loss = sum(wins), -sum(losses)
+  return {"n": n, "win_rate": len(wins) / n * 100,
+          "avg_win": gross_win / len(wins) if wins else 0, "avg_loss": -gross_loss / len(losses) if losses else 0,
+          "profit_factor": (gross_win / gross_loss) if gross_loss else None,
+          "expectancy": sum(pnls) / n, "max_dd": mdd,
+          "avg_points": sum(t["points"] for t in trades) / n}
+
+
 def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   now = now or now_tpe()
   td = trading_day(now).isoformat()
@@ -83,6 +104,9 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
         "pnl_6h": round(current - _value_at(series, now - timedelta(hours=6))),
         "hourly": hourly,
         "brain": Brain(ledger, s).summary(),
+        "health": health(ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id",
+                                     (ai_id, ledger.get_state(f"strategy_since:{ai_id}", "2000")))),
+        "health_since": ledger.get_state(f"strategy_since:{ai_id}"),
         "last_skip": ledger.get_state(f"skip:{ai_id}"),
         "curve": [{"ts": t.strftime("%H:%M"), "v": round(v)} for t, v in pts][-600:],
     }

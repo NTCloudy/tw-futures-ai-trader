@@ -21,8 +21,9 @@ def completed_5min(bars1: list) -> list:
 
 class Engine:
 
-  def __init__(self, cfg: dict, ledger, traders: list, feed=None, clock=now_tpe, publisher=None):
+  def __init__(self, cfg: dict, ledger, traders: list, feed=None, clock=now_tpe, publisher=None, shadows=None):
     self.cfg = cfg
+    self.shadows = shadows or []
     self.ledger = ledger
     self.traders = traders
     self.feed = feed or TaifexFeed()
@@ -38,8 +39,8 @@ class Engine:
     if minute == self.last_equity_minute and not force:
       return
     self.last_equity_minute = minute
-    for tr in self.traders:
-      self.ledger.add_equity(minute + ":00", tr.ai, self.ledger.realized(tr.ai), tr.unrealized(last))
+    for tr in self.traders + self.shadows:
+      tr.ledger.add_equity(minute + ":00", tr.ai, tr.ledger.realized(tr.ai), tr.unrealized(last))
 
   def _touched_range(self, snap) -> tuple[float, float]:
     """Highest / lowest trade since the previous poll, so fast spikes still hit 觸價單."""
@@ -82,7 +83,7 @@ class Engine:
                                      "fresh": fresh, "updated_at": now.isoformat(timespec="seconds"),
                                      "bars": len(snap.bars)})
 
-    for tr in self.traders:  # Positions left from another session or an expiring contract.
+    for tr in self.traders + self.shadows:  # Positions left from another session or an expiring contract.
       p = tr.pos
       if p and not tr.pending and (p["contract"] != code or p["session_key"] != session_key):
         q = quote
@@ -93,12 +94,22 @@ class Engine:
 
     for tr in self.traders:
       tr.on_price(now, td, code, quote, minutes_to_close, kill)
+    for tr in self.shadows:  # Shadows keep learning even during an emergency stop (paper only).
+      try:
+        tr.on_price(now, td, code, quote, minutes_to_close, False)
+      except Exception as exc:
+        print(f"shadow {tr.ai} error: {exc}")
 
     bars5 = completed_5min(snap.bars)  # The AIs decide on completed 5-minute K bars.
     if bars5 and bars5[-1].end != self.last_bar_end:
       self.last_bar_end = bars5[-1].end
       for tr in self.traders:
         tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, kill)
+      for tr in self.shadows:
+        try:
+          tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, False)
+        except Exception as exc:
+          print(f"shadow {tr.ai} error: {exc}")
 
     self._record_equity(now, snap.last)
     return "trading" if fresh else "stale"

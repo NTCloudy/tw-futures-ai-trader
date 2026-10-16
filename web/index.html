@@ -94,6 +94,21 @@ const t = s => (s || '').replace('T', ' ').slice(5, 19);
 const statusZh = { WORKING: '等待觸價', SUBMITTED: '已送出', FILLED: '已成交', TRIGGERED: '已觸發', CANCELLED: '已刪除', REJECTED: '失敗' };
 const typeZh = { MKT: '市價', STOP: '停損觸價單', TAKE: '停利觸價單' };
 
+function healthHtml(a) {
+  const h = a.health;
+  const since = a.health_since ? `（${a.health_since.slice(5, 16).replace('T', ' ')} 換新策略後）` : '';
+  if (!h || !h.n) return `<div class="pos mute">📋 策略體檢${since}：尚無平倉交易</div>`;
+  const pf = h.profit_factor === null ? '∞' : h.profit_factor.toFixed(2);
+  const pfCls = h.profit_factor === null || h.profit_factor >= 1 ? 'up' : 'down';
+  return `<div class="pos"><b>📋 策略體檢</b><span class="mute">${since}</span>
+    <div class="kpis" style="margin-top:4px">
+      <div><div class="mute">筆數／勝率</div>${h.n} 筆／${h.win_rate.toFixed(0)}%</div>
+      <div><div class="mute">平均賺／賠</div><span class="up">${nt(h.avg_win)}</span> / <span class="down">${nt(h.avg_loss)}</span></div>
+      <div><div class="mute">獲利因子</div><b class="${pfCls}">${pf}</b></div>
+      <div><div class="mute">每筆期望值</div><span class="${cls(h.expectancy)}">${nt(h.expectancy)}</span></div>
+      <div><div class="mute">最大回落</div>${nt(-h.max_dd)}</div>
+    </div><div class="mute">獲利因子 = 總獲利 ÷ 總虧損，大於 1 代表策略有賺</div></div>`;
+}
 const regimeZh = { trend: '趨勢盤', chop: '盤整盤' };
 function brainHtml(a) {
   const b = a.brain; if (!b) return '';
@@ -144,7 +159,7 @@ function render(s) {
         <div><div class="mute">近 1h / 3h</div><div><span class="${cls(a.pnl_1h)}">${nt(a.pnl_1h)}</span> / <span class="${cls(a.pnl_3h)}">${nt(a.pnl_3h)}</span></div></div>
       </div>
       ${s.enforce_daily_loss ? `<div class="mute" style="margin-top:8px">每日虧損上限使用 ${a.daily_loss_used_pct.toFixed(0)}%</div><div class="bar"><div style="width:${Math.min(100, a.daily_loss_used_pct)}%"></div></div>` : '<div class="mute" style="margin-top:8px">每日虧損上限：試跑中已關閉</div>'}
-      <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${pos}${brainHtml(a)}</section>`;
+      <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${healthHtml(a)}${pos}${brainHtml(a)}</section>`;
   }).join('');
 
   // Intraday curve
