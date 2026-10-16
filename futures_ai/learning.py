@@ -206,5 +206,7 @@ class Brain:
     for r in REGIME_ZH:
       m, why = self.choose_mode(r)
       choices[r] = {"mode": m, "label": self.modes[m] if m else "暫停", "why": why}
-    return {"sl_mult": st["sl_mult"], "tp_mult": st["tp_mult"], "loss_streak": st["loss_streak"],
+    pre = st.get("pretrained")
+    return {"pretrained": {k: pre[k] for k in ("days", "range", "trades", "at")} if pre else None,
+            "sl_mult": st["sl_mult"], "tp_mult": st["tp_mult"], "loss_streak": st["loss_streak"],
             "pause_until": st["pause_until"], "stats": st["stats"], "choices": choices, "modes": self.modes}

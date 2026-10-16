@@ -85,6 +85,8 @@ def main(argv=None) -> int:
   k = sub.add_parser("kill", help="緊急停止：平掉所有部位並停止新單")
   k.add_argument("state", choices=["on", "off"])
   sub.add_parser("sinopac-test", help="永豐模擬環境：登入 + 期貨下單測試（開通正式環境用）")
+  pt = sub.add_parser("pretrain", help="背景學習：用期交所過去 N 個交易日的真實逐筆資料預先累積 AI 經驗（不顯示在儀表板）")
+  pt.add_argument("--days", type=int, default=20)
   sub.add_parser("line-setup", help="設定 LINE 通知（Channel access token + 你的 User ID）")
   sub.add_parser("line-test", help="傳一則 LINE 測試訊息")
   rs = sub.add_parser("restore", help="從 GitHub 備份還原交易紀錄與 AI 學習資料（換電腦用）")
@@ -128,6 +130,13 @@ def main(argv=None) -> int:
     ledger.set_state("kill_switch", args.state == "on")
     ledger.log(f"緊急停止 {'啟動' if args.state == 'on' else '解除'}（CLI）", level="WARN")
     print(f"kill_switch = {args.state}")
+  elif args.cmd == "pretrain":
+    from .pretrain import merge_into_live, replay
+    res = replay(cfg, args.days)
+    for ai, info in res["ais"].items():
+      print(f"  {ai}: 歷史模擬 {info['trades']} 筆，勝 {info['wins']}，損益 NT$ {info['pnl']:+,.0f}")
+    merge_into_live(ledger, res)
+    print("已把歷史經驗合併到 AI 學習狀態（交易紀錄不會出現在儀表板）。請重新啟動引擎讓它載入。")
   elif args.cmd == "sinopac-test":
     from .sinopac_setup import sinopac_test
     return 0 if sinopac_test(cfg) else 1
