@@ -118,7 +118,7 @@ class OcoBracketTest(unittest.TestCase):
     t = self.ledger.rows("SELECT * FROM trades")[0]
     self.assertEqual(t["exit_kind"], "TP")
     self.assertEqual(t["points"], 47080 - 47001)  # TP trigger 47081 - 1 tick slippage
-    cost = 2 * 20 + round(47001 * 10 * 0.00002) + round(47080 * 10 * 0.00002)
+    cost = 2 * 12 + round(47001 * 10 * 0.00002) + round(47080 * 10 * 0.00002)
     self.assertAlmostEqual(t["pnl_twd"], 79 * 10 - cost)
 
   def test_spike_between_polls_triggers_take_profit(self):

@@ -5,7 +5,7 @@
   "initial_margin_twd": 35050,
   "capital_multiple": 1.5,
   "max_daily_loss_twd": 2000,
-  "commission_per_side_twd": 20,
+  "commission_per_side_twd": 12,
   "trade_night_session": true,
   "publish": { "enabled": true, "interval_seconds": 20 }
 }

@@ -28,7 +28,7 @@ DEFAULTS: dict = {
     # cool-downs, loss-streak pauses and regime blocking so the AIs collect as much experience as
     # possible. sinopac_live refuses to start while it is on, so every limit is back for real money.
     "learning_mode": False,
-    "commission_per_side_twd": 20,
+    "commission_per_side_twd": 12,  # 永豐微台電子單優惠價估計；拿到第一張對帳單後請更新。
     "tax_rate": 0.00002,  # 期交稅 十萬分之二 per side
     "paper_slippage_ticks": 1,
     "roll_days_before": 1,

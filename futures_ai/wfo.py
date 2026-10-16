@@ -40,6 +40,9 @@ class Session:
   regime: list[str] = None
   er: list[float] = None
   direction: list[int] = None
+  b5: list = None
+  atr5: list = None
+  k_at: dict = None
 
 
 def load_sessions(cfg: dict) -> list[Session]:
@@ -98,6 +101,24 @@ def precompute(s: Session) -> None:
     s.er.append(er)
     s.direction.append(d)
     s.regime.append("trend" if trend else "chop")
+  # 5-minute decision points: 1-minute indices that complete a 5-minute bucket.
+  s.b5, s.atr5, s.k_at = [], [], {}
+  agg = None
+  trs5 = []
+  for i, x in enumerate(b):
+    key = x.end.replace(second=0, microsecond=0)
+    bucket_end = key + timedelta(minutes=(5 - key.minute % 5) % 5)
+    if agg and agg.end == bucket_end:
+      agg = Bar(bucket_end, agg.o, max(agg.h, x.h), min(agg.l, x.l), x.c, agg.v + x.v)
+    else:
+      agg = Bar(bucket_end, x.o, x.h, x.l, x.c, x.v)
+    if x.end == bucket_end:  # bucket complete
+      prev_c = s.b5[-1].c if s.b5 else agg.o
+      trs5.append(max(agg.h - agg.l, abs(agg.h - prev_c), abs(agg.l - prev_c)))
+      w = trs5[-14:]
+      s.b5.append(agg)
+      s.atr5.append(sum(w) / len(w))
+      s.k_at[i] = len(s.b5) - 1
 
 
 # ---------------------------------------------------------------- signals
@@ -189,6 +210,55 @@ def signal(ai: str, p: dict, s: Session, i: int, since_exit: int | None):
   raise ValueError(ai)
 
 
+def signal5(ai: str, p: dict, s: Session, k: int, i: int):
+  """Signals on completed 5-minute bars (k = 5-min index, i = 1-min index completing it)."""
+  b = s.b5
+  x, prev = b[k], b[k - 1] if k else b[k]
+  vw = s.vwap[i]
+  a = max(s.atr5[k], 5.0)
+  if ai == "alpha-orb":
+    rb = p["range_bars"]
+    if k + 1 <= rb + 1:
+      return None
+    hi = max(y.h for y in b[:rb])
+    lo = min(y.l for y in b[:rb])
+    width = hi - lo
+    if width > 450:
+      return None
+    sl = clamp(width * p["sl_frac"], 30, 120)
+    tp = sl * p["tp_mult"]
+    if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
+      return "B", sl, tp, None
+    if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw:
+      return "S", sl, tp, None
+    return None
+  if ai == "sigma-pullback":
+    if k + 1 < 6 or s.regime[i] != "trend" or s.direction[i] == 0:
+      return None
+    sl = clamp(a * p["sl_atr"], 20, 150)
+    tp = sl * p["tp_mult"]
+    trail = a * p["trail_atr"] if p.get("trail_atr") else None
+    if s.direction[i] > 0 and x.l <= vw + p["pull_atr"] * a and x.c > vw and x.c > x.o:
+      return "B", sl, tp, trail
+    if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
+      return "S", sl, tp, trail
+    return None
+  if ai == "gamma-trend":
+    n = p["lookback"]
+    if k < n + 1 or s.regime[i] != "trend":
+      return None
+    hi = max(y.h for y in b[k - n: k])
+    lo = min(y.l for y in b[k - n: k])
+    sl = clamp(a * p["sl_atr"], 20, 150)
+    trail = a * p["trail_atr"]
+    if s.direction[i] > 0 and x.c > hi and prev.c <= hi:
+      return "B", sl, sl * 4, trail
+    if s.direction[i] < 0 and x.c < lo and prev.c >= lo:
+      return "S", sl, sl * 4, trail
+    return None
+  raise ValueError(ai)
+
+
 # ---------------------------------------------------------------- simulation
 def side_cost(cfg, price):
   return cfg["commission_per_side_twd"] + round(price * cfg["point_value"] * cfg["tax_rate"])
@@ -236,13 +306,14 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           maxdd = max(maxdd, peak - pnl)
           pos = None
           last_exit_i = i
-          if kind == "SL" and ai in ("sigma-vwap", "sigma-pullback"):
+          if kind == "SL" and ai == "sigma-pullback":
             block_side, block_i = side, i
           continue
       if pos or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
         continue
-      since = (i - last_exit_i) if last_exit_i is not None else None
-      sig = signal(ai, p, s, i, since)
+      if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
+        continue
+      sig = signal5(ai, p, s, s.k_at[i], i)
       if not sig:
         continue
       side, sl_pts, tp_pts, trail = sig
@@ -269,24 +340,18 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
 # ---------------------------------------------------------------- grids & walk-forward
 def grid(ai: str) -> list[dict]:
   if ai == "alpha-orb":
-    g = [dict(range_minutes=r, sl_frac=f, tp_mult=t, regimes=reg, flip=fl)
-         for r, f, t, reg, fl in itertools.product([15, 30], [0.35, 0.5], [1.5, 2.0],
+    g = [dict(range_bars=r, sl_frac=f, tp_mult=t, regimes=reg, flip=fl)
+         for r, f, t, reg, fl in itertools.product([3, 6], [0.35, 0.5, 0.75], [1.5, 2.0, 3.0],
                                                    [("trend", "chop"), ("trend",)], [(), ("chop",)])
          if not (fl and "chop" not in reg)]
-  elif ai == "sigma-vwap":
-    g = [dict(stretch=st, sl_atr=sa, tp_frac=tf, regimes=reg, flip=fl)
-         for st, sa, tf, reg, fl in itertools.product([2.0, 2.5, 3.0], [1.2, 1.8], [0.5, 0.8],
-                                                      [("trend", "chop"), ("chop",)], [(), ("trend",)])
-         if not (fl and "trend" not in reg)]
   elif ai == "sigma-pullback":
     g = [dict(pull_atr=pa, sl_atr=sa, tp_mult=tm, trail_atr=ta, regimes=("trend",), flip=())
-         for pa, sa, tm, ta in itertools.product([0.3, 0.6, 1.0], [1.8, 2.5, 3.5], [2.5, 4.0], [None, 3.0, 5.0])]
+         for pa, sa, tm, ta in itertools.product([0.2, 0.5], [1.0, 1.5, 2.0], [2.0, 3.0, 4.0], [None, 2.0, 3.0])]
   elif ai == "gamma-trend":
     g = [dict(lookback=lb, sl_atr=sa, trail_atr=ta, regimes=("trend",), flip=())
-         for lb, sa, ta in itertools.product([30, 60, 90], [3.0, 4.0, 6.0], [3.0, 5.0, 8.0])]
+         for lb, sa, ta in itertools.product([6, 12, 24], [1.5, 2.0, 3.0], [2.0, 3.0, 4.0])]
   else:
-    g = [dict(sl_min=sm, tp_ratio=tr, max_entries=me, regimes=reg, flip=())
-         for sm, tr, me, reg in itertools.product([20, 30], [1.5, 2.0], [4, 8, 12], [("trend",), ("trend", "chop")])]
+    raise ValueError(ai)
   return g + [{"off": True}]
 
 

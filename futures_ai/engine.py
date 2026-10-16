@@ -8,6 +8,15 @@ from datetime import datetime, timedelta
 
 from .calendar import now_tpe, rollover_info, session_of
 from .feed import TaifexFeed
+from .learning import to_5min
+
+
+def completed_5min(bars1: list) -> list:
+  """Aggregates completed 1-minute bars into 5-minute bars, dropping a still-forming last bucket."""
+  if not bars1:
+    return []
+  b5 = to_5min(bars1)
+  return [b for b in b5 if b.end <= bars1[-1].end]
 
 
 class Engine:
@@ -85,10 +94,11 @@ class Engine:
     for tr in self.traders:
       tr.on_price(now, td, code, quote, minutes_to_close, kill)
 
-    if snap.bars and snap.bars[-1].end != self.last_bar_end:
-      self.last_bar_end = snap.bars[-1].end
+    bars5 = completed_5min(snap.bars)  # The AIs decide on completed 5-minute K bars.
+    if bars5 and bars5[-1].end != self.last_bar_end:
+      self.last_bar_end = bars5[-1].end
       for tr in self.traders:
-        tr.on_bar(now, td, code, session_key, snap.bars, quote, minutes_to_close, fresh, kill)
+        tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, kill)
 
     self._record_equity(now, snap.last)
     return "trading" if fresh else "stale"
