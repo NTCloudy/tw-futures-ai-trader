@@ -298,6 +298,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
     last_exit_i = None
     block_side = None
     block_i = None
+    chase_side = None  # set after a take-profit: allow trend-continuation re-entries
+    chase_k = None
     for i in range(len(b)):
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
@@ -334,6 +336,12 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
           maxdd = max(maxdd, peak - pnl)
           pos = None
           last_exit_i = i
+          if kind == "TP" and p.get("chase"):
+            chase_side, chase_k = side, s.k_at.get(i, len(s.b5) - 1) if s.b5 else 0
+            # k of the most recent completed 5-min bar at/ before this minute
+            chase_k = max([kk for ii, kk in s.k_at.items() if ii <= i] or [0])
+          if kind == "SL":
+            chase_side = None
           if kind == "SL" and ai in ("sigma-pullback", "sigma-fixed"):
             block_side, block_i = side, i
           continue
@@ -342,6 +350,18 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session]) -> dict:
       if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
         continue
       sig = signal5(ai, p, s, s.k_at[i], i)
+      if not sig and chase_side and p.get("chase"):
+        k = s.k_at[i]
+        n = p["chase"]["lookback"]
+        if k - chase_k > p["chase"]["expire"]:
+          chase_side = None
+        elif k >= n and s.regime[i] == "trend":
+          xb = s.b5[k]
+          prior = s.b5[k - n:k]
+          if chase_side == "B" and s.direction[i] > 0 and xb.c > max(y.h for y in prior):
+            sig = ("B", p["sl_pts"], p["tp_pts"], None)
+          elif chase_side == "S" and s.direction[i] < 0 and xb.c < min(y.l for y in prior):
+            sig = ("S", p["sl_pts"], p["tp_pts"], None)
       if not sig:
         continue
       side, sl_pts, tp_pts, trail = sig
