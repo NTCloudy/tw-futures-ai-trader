@@ -1,0 +1,194 @@
+"""Per-AI trading state machine with bracket (OCO) 觸價單.
+
+FLAT --entry signal--> market entry --fill--> IN_POSITION + TAKE(停利觸價) + STOP(停損觸價)
+IN_POSITION --either trigger fires--> cancel ALL working orders --> market exit --fill--> FLAT
+Also: daily-loss lock, flatten before session close, flatten on contract roll, kill switch.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from .feed import Bar
+
+KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
+           "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉"}
+
+
+def opposite(side: str) -> str:
+  return "S" if side == "B" else "B"
+
+
+class AiTrader:
+
+  def __init__(self, cfg: dict, strategy, broker, ledger):
+    self.cfg = cfg
+    self.s = strategy
+    self.ai = strategy.id
+    self.broker = broker
+    self.ledger = ledger
+    self.pv = cfg["point_value"]
+    self.qty = cfg["qty"]
+    self.pending: dict[str, dict] = {}  # broker_order_id -> {"oid", "kind", "entry"}
+
+  # ---------- persisted state ----------
+  @property
+  def pos(self) -> dict | None:
+    return self.ledger.get_state(f"pos:{self.ai}")
+
+  @pos.setter
+  def pos(self, value: dict | None) -> None:
+    self.ledger.set_state(f"pos:{self.ai}", value)
+
+  def locked_day(self) -> str | None:
+    return self.ledger.get_state(f"lock:{self.ai}")
+
+  def entries(self, session_key: str) -> int:
+    return self.ledger.get_state(f"cnt:{self.ai}:{session_key}", 0)
+
+  # ---------- money ----------
+  def side_cost(self, price: float, qty: int) -> float:
+    return self.cfg["commission_per_side_twd"] * qty + round(price * self.pv * qty * self.cfg["tax_rate"])
+
+  def unrealized(self, last: float) -> float:
+    p = self.pos
+    if not p or not last:
+      return 0.0
+    d = 1 if p["side"] == "B" else -1
+    return (last - p["entry_price"]) * d * self.pv * p["qty"] - p["entry_cost"] - self.side_cost(last, p["qty"])
+
+  def today_pnl(self, trading_day: str, last: float) -> float:
+    return self.ledger.realized(self.ai, trading_day) + self.unrealized(last)
+
+  # ---------- order plumbing ----------
+  def _send_market(self, ts: datetime, td: str, code: str, kind: str, side: str, quote: dict,
+                   note: str, entry: dict | None = None) -> None:
+    if self.pending:
+      return  # One in-flight market order at a time.
+    oid = self.ledger.add_order(ai=self.ai, ts=ts.isoformat(timespec="seconds"), trading_day=td, contract=code,
+                                kind=kind, order_type="MKT", side=side, qty=self.qty, status="SUBMITTED",
+                                broker=self.broker.name, note=note)
+    try:
+      boid = self.broker.market(code, side, self.qty, quote)
+    except Exception as exc:
+      self.ledger.update_order(oid, ts.isoformat(timespec="seconds"), status="REJECTED", note=f"{note}｜{exc}")
+      self.ledger.log(f"{KIND_ZH.get(kind, kind)} 委託失敗：{exc}", self.ai, "ERROR", ts)
+      return
+    self.ledger.update_order(oid, ts.isoformat(timespec="seconds"), broker_order_id=boid)
+    self.pending[boid] = {"oid": oid, "kind": kind, "entry": entry, "td": td, "code": code}
+
+  def _cancel_working(self, ts: datetime, code: str, reason: str) -> None:
+    """Cancels every unfilled order of this AI (ledger triggers + broker-side resting orders)."""
+    for o in self.ledger.working_orders(self.ai):
+      if o["order_type"] in ("STOP", "TAKE"):
+        self.ledger.update_order(o["id"], ts.isoformat(timespec="seconds"), status="CANCELLED", note=reason)
+    try:
+      self.broker.cancel_all(code)
+    except Exception as exc:
+      self.ledger.log(f"券商刪單失敗：{exc}", self.ai, "ERROR", ts)
+
+  def process_fills(self, ts: datetime) -> None:
+    for f in self.broker.poll_fills():
+      info = self.pending.pop(f["broker_order_id"], None)
+      if info is None:
+        self.ledger.log(f"收到未知委託成交 {f}", self.ai, "WARN", ts)
+        continue
+      t = ts.isoformat(timespec="seconds")
+      self.ledger.update_order(info["oid"], t, status="FILLED", fill_price=f["price"])
+      if info["kind"] == "ENTRY":
+        self._open(ts, info, f["price"])
+      else:
+        self._close(ts, info, f["price"])
+
+  def _open(self, ts: datetime, info: dict, price: float) -> None:
+    e = info["entry"]
+    side = e["side"]
+    d = 1 if side == "B" else -1
+    sl = price - d * e["sl_pts"]
+    tp = price + d * e["tp_pts"]
+    t = ts.isoformat(timespec="seconds")
+    common = dict(ai=self.ai, ts=t, trading_day=info["td"], contract=info["code"], side=opposite(side),
+                  qty=self.qty, status="WORKING", broker=self.broker.name)
+    tp_oid = self.ledger.add_order(kind="TP", order_type="TAKE", trigger_price=tp, note=f"停利觸價 {tp:.0f}", **common)
+    sl_oid = self.ledger.add_order(kind="SL", order_type="STOP", trigger_price=sl, note=f"停損觸價 {sl:.0f}", **common)
+    self.pos = {"side": side, "qty": self.qty, "entry_price": price, "entry_ts": t, "contract": info["code"],
+                "trading_day": info["td"], "session_key": e["session_key"], "sl": sl, "tp": tp,
+                "sl_oid": sl_oid, "tp_oid": tp_oid, "entry_cost": self.side_cost(price, self.qty),
+                "reason": e["reason"]}
+    self.ledger.log(f"{'做多' if side == 'B' else '放空'}成交 {price:.0f}，同時掛停利觸價 {tp:.0f}／停損觸價 {sl:.0f}"
+                    f"｜{e['reason']}", self.ai, "TRADE", ts)
+
+  def _close(self, ts: datetime, info: dict, price: float) -> None:
+    p = self.pos
+    if not p:
+      return
+    d = 1 if p["side"] == "B" else -1
+    points = (price - p["entry_price"]) * d
+    gross = points * self.pv * p["qty"]
+    cost = p["entry_cost"] + self.side_cost(price, p["qty"])
+    self.ledger.add_trade(ai=self.ai, trading_day=p["trading_day"], contract=p["contract"], side=p["side"],
+                          qty=p["qty"], entry_ts=p["entry_ts"], entry_price=p["entry_price"],
+                          exit_ts=ts.isoformat(timespec="seconds"), exit_price=price, points=points,
+                          gross_twd=gross, cost_twd=cost, pnl_twd=gross - cost, exit_kind=info["kind"],
+                          entry_reason=p["reason"])
+    self.pos = None
+    self.ledger.set_state(f"last_exit:{self.ai}", ts.isoformat())
+    self._cancel_working(ts, info["code"], "部位已平倉，刪除剩餘委託")
+    self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])}平倉 {price:.0f}，{points:+.0f} 點，"
+                    f"淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
+
+  # ---------- decisions ----------
+  def flatten(self, ts: datetime, code: str, quote: dict, kind: str) -> None:
+    p = self.pos
+    if not p or self.pending:
+      return
+    self._cancel_working(ts, code, KIND_ZH[kind])
+    self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), quote, KIND_ZH[kind])
+
+  def on_price(self, ts: datetime, td: str, code: str, quote: dict, minutes_to_close: float, kill: bool) -> None:
+    self.process_fills(ts)
+    p = self.pos
+    last = quote["last"]
+    if p and not self.pending:
+      if kill:
+        self.flatten(ts, code, quote, "KILL")
+      elif p["side"] == "B" and last >= p["tp"] or p["side"] == "S" and last <= p["tp"]:
+        self._fire(ts, quote, "TP", p["tp_oid"])
+      elif p["side"] == "B" and last <= p["sl"] or p["side"] == "S" and last >= p["sl"]:
+        self._fire(ts, quote, "SL", p["sl_oid"])
+      elif minutes_to_close <= self.cfg["flatten_minutes_before_close"]:
+        self.flatten(ts, code, quote, "SESSION_END")
+    if self.locked_day() != td and self.today_pnl(td, last) <= -self.cfg["max_daily_loss_twd"]:
+      self.ledger.set_state(f"lock:{self.ai}", td)
+      self.ledger.log(f"今日損益已達 -NT$ {self.cfg['max_daily_loss_twd']:,}，停止今日交易", self.ai, "WARN", ts)
+      if self.pos:
+        self.flatten(ts, code, quote, "RISK")
+    self.process_fills(ts)
+
+  def _fire(self, ts: datetime, quote: dict, kind: str, trigger_oid: int) -> None:
+    p = self.pos
+    t = ts.isoformat(timespec="seconds")
+    self.ledger.update_order(trigger_oid, t, status="TRIGGERED", note=f"{KIND_ZH[kind]}（成交價 {quote['last']:.0f}）")
+    self._cancel_working(ts, p["contract"], f"{KIND_ZH[kind]}，刪除其他未成交委託")
+    self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), quote, KIND_ZH[kind])
+
+  def on_bar(self, ts: datetime, td: str, code: str, session_key: str, bars: list[Bar], quote: dict,
+             minutes_to_close: float, fresh: bool, kill: bool) -> None:
+    if self.pos or self.pending or kill or not fresh:
+      return
+    if self.locked_day() == td or minutes_to_close <= self.cfg["no_entry_minutes_before_close"]:
+      return
+    last_exit = self.ledger.get_state(f"last_exit:{self.ai}")
+    since = None
+    if last_exit:
+      le = datetime.fromisoformat(last_exit)
+      if bars and le >= bars[0].end:
+        since = sum(1 for b in bars if b.end > le)
+    sig = self.s.decide(bars, self.entries(session_key), since)
+    if sig is None:
+      return
+    self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
+    entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": sig.tp_pts, "reason": sig.reason,
+             "session_key": session_key}
+    self._send_market(ts, td, code, "ENTRY", sig.side, quote, sig.reason, entry)
+    self.process_fills(ts)

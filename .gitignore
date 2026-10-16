@@ -1,0 +1,8 @@
+config/local.json
+certs/
+*.pfx
+data/
+logs/
+__pycache__/
+*.pyc
+.env

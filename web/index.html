@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="zh-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>微台指 AI 自動交易｜TW Futures AI Trader</title>
+<style>
+  :root { --bg:#0a0f1d; --card:#121a2d; --line:#24304d; --fg:#e8edff; --mute:#8d98c4; --up:#ef4444; --down:#22c55e; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Noto Sans TC",system-ui,sans-serif; background:var(--bg); color:var(--fg); }
+  header { padding:18px 24px; border-bottom:1px solid var(--line); display:flex; flex-wrap:wrap; gap:14px; align-items:center; justify-content:space-between; }
+  h1 { margin:0; font-size:21px; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:999px; border:1px solid var(--line); font-size:12px; margin-left:6px; color:var(--mute); }
+  .badge.live { color:#fbbf24; border-color:#fbbf24; }
+  main { padding:18px 24px; display:grid; gap:16px; grid-template-columns:repeat(12,1fr); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:16px; }
+  .card h2 { margin:0 0 10px; font-size:14px; color:var(--mute); font-weight:600; }
+  .s3 { grid-column:span 3; } .s4 { grid-column:span 4; } .s6 { grid-column:span 6; } .s12 { grid-column:span 12; }
+  @media (max-width: 900px) { .s3,.s4,.s6 { grid-column:span 12; } }
+  .big { font-size:28px; font-weight:700; }
+  .up { color:var(--up); } .down { color:var(--down); } .mute { color:var(--mute); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th, td { padding:6px 5px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+  th { color:var(--mute); font-weight:500; }
+  .scroll { overflow-x:auto; max-height:420px; overflow-y:auto; }
+  .bar { height:8px; background:#1e2944; border-radius:6px; overflow:hidden; margin:6px 0; }
+  .bar > div { height:100%; background:linear-gradient(90deg,#f59e0b,#ef4444); }
+  .pos { padding:10px; border-radius:10px; background:#0d1424; border:1px dashed var(--line); margin-top:8px; font-size:13px; line-height:1.7; }
+  .kpis { display:flex; gap:18px; flex-wrap:wrap; margin-top:8px; font-size:13px; }
+  svg { width:100%; height:200px; }
+  button.kill { background:#dc2626; color:#fff; border:0; padding:9px 14px; border-radius:10px; font-weight:700; cursor:pointer; }
+  .tag { padding:1px 7px; border-radius:6px; font-size:12px; border:1px solid var(--line); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>📈 微台指 AI 自動交易 <span id="mode" class="badge"></span></h1>
+    <div class="mute" id="sub">載入中…</div>
+  </div>
+  <div style="text-align:right">
+    <div class="big" id="last">–</div>
+    <div class="mute" id="quote"></div>
+  </div>
+</header>
+<main>
+  <section class="card s3"><h2>今日總損益（兩位 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
+  <section class="card s3"><h2>累計總收益</h2><div class="big" id="total">–</div><div class="mute" id="totalSub"></div></section>
+  <section class="card s3"><h2>近幾小時收益</h2><div class="kpis" id="recent"></div></section>
+  <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
+  <div class="s12" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))" id="aiCards"></div>
+  <section class="card s12"><h2>今日損益走勢（每分鐘）</h2><svg id="curve" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg><div class="mute" id="legend"></div></section>
+  <section class="card s6"><h2>每小時損益</h2><div class="scroll"><table id="hourly"></table></div></section>
+  <section class="card s6"><h2>今日已平倉交易</h2><div class="scroll"><table id="trades"></table></div></section>
+  <section class="card s12"><h2>今日下單狀況（含停利／停損觸價單）</h2><div class="scroll"><table id="orders"></table></div></section>
+  <section class="card s12"><h2>系統事件</h2><div class="scroll"><table id="events"></table></div></section>
+</main>
+<script>
+const ON_PAGES = location.hostname.endsWith('github.io');
+const SRC = ON_PAGES ? 'https://raw.githubusercontent.com/NTCloudy/tw-futures-ai-trader/live-state/state.json' : '/state.json';
+const nt = n => (n >= 0 ? '+' : '-') + 'NT$ ' + Math.abs(Math.round(n)).toLocaleString('en-US');
+const cls = n => n > 0 ? 'up' : (n < 0 ? 'down' : '');  // Taiwan convention: red = profit.
+const sideZh = s => s === 'B' ? '多' : '空';
+const t = s => (s || '').replace('T', ' ').slice(5, 19);
+const statusZh = { WORKING: '等待觸價', SUBMITTED: '已送出', FILLED: '已成交', TRIGGERED: '已觸發', CANCELLED: '已刪除', REJECTED: '失敗' };
+const typeZh = { MKT: '市價', STOP: '停損觸價單', TAKE: '停利觸價單' };
+
+function render(s) {
+  document.getElementById('mode').textContent = s.mode_label;
+  document.getElementById('mode').className = 'badge' + (s.mode === 'sinopac_live' ? ' live' : '');
+  const sess = s.session.name === 'day' ? '日盤交易中' : s.session.name === 'night' ? '夜盤交易中' : '休市';
+  document.getElementById('sub').textContent = `${sess}｜交易日 ${s.rollover.trading_day}｜每位 AI 資金 NT$ ${s.capital_per_ai.toLocaleString()}（1.5 × 原始保證金 ${s.initial_margin.toLocaleString()}）｜每日虧損上限 NT$ ${s.max_daily_loss.toLocaleString()}｜更新 ${t(s.generated_at)}`;
+  const m = s.market || {};
+  document.getElementById('last').textContent = m.last ? m.last.toLocaleString() : '–';
+  document.getElementById('quote').textContent = m.last ? `${m.contract}｜買 ${m.bid ?? '-'} / 賣 ${m.ask ?? '-'}｜${m.fresh ? '即時' : '行情延遲'}` : '';
+
+  const c = s.combined;
+  document.getElementById('today').innerHTML = `<span class="${cls(c.today_pnl)}">${nt(c.today_pnl)}</span>`;
+  const nTrades = s.ais.reduce((a, x) => a + x.trades_today, 0), nWins = s.ais.reduce((a, x) => a + x.wins_today, 0);
+  document.getElementById('todaySub').textContent = `今日 ${nTrades} 筆平倉，勝 ${nWins} 筆`;
+  document.getElementById('total').innerHTML = `<span class="${cls(c.total_pnl)}">${nt(c.total_pnl)}</span>`;
+  document.getElementById('totalSub').textContent = `兩位 AI 合計資金 NT$ ${(s.capital_per_ai * s.ais.length).toLocaleString()}，報酬 ${(c.total_pnl / (s.capital_per_ai * s.ais.length) * 100).toFixed(2)}%`;
+  document.getElementById('recent').innerHTML = [['近 1 小時', c.pnl_1h], ['近 3 小時', c.pnl_3h], ['近 6 小時', c.pnl_6h]]
+    .map(([k, v]) => `<div><div class="mute">${k}</div><div class="${cls(v)}" style="font-size:18px;font-weight:700">${nt(v)}</div></div>`).join('');
+  const r = s.rollover;
+  document.getElementById('roll').innerHTML = `交易合約 <b>${r.contract}</b>（${r.delivery_month}）<br>結算日 ${r.settlement_date}<br>下次換倉 ${r.next_roll_day}<div class="mute">結算日前 1 個營業日自動改做次月；每盤收盤前全數平倉，不留倉換月</div>`;
+
+  document.getElementById('aiCards').innerHTML = s.ais.map(a => {
+    const p = a.position;
+    const pos = p ? `<div class="pos"><span class="tag ${p.side === 'B' ? 'up' : 'down'}">${sideZh(p.side)}單 ${p.qty} 口</span> ${p.contract} 進場 <b>${p.entry_price.toLocaleString()}</b>（${t(p.entry_ts)}）<br>
+        🎯 停利觸價 <b class="up">${p.tp.toLocaleString()}</b>　🛑 停損觸價 <b class="down">${p.sl.toLocaleString()}</b><br>
+        未實現 <b class="${cls(p.unrealized)}">${nt(p.unrealized)}</b><br><span class="mute">${p.reason}</span></div>`
+      : `<div class="pos mute">${a.locked_today ? '⛔ 今日已達虧損上限，停止交易' : '空手，等待進場訊號'}</div>`;
+    return `<section class="card" style="border-top:3px solid ${a.color}"><h2 style="color:${a.color}">${a.name} <span class="badge">${a.broker === 'local_paper' ? '本機模擬' : a.broker}</span></h2>
+      <div class="mute">${a.style}</div>
+      <div class="kpis">
+        <div><div class="mute">今日損益</div><div class="${cls(a.today_pnl)}" style="font-size:20px;font-weight:700">${nt(a.today_pnl)}</div></div>
+        <div><div class="mute">累計</div><div class="${cls(a.total_pnl)}" style="font-size:20px;font-weight:700">${nt(a.total_pnl)}</div></div>
+        <div><div class="mute">權益</div><div style="font-size:20px;font-weight:700">NT$ ${a.equity.toLocaleString()}</div></div>
+        <div><div class="mute">近 1h / 3h</div><div><span class="${cls(a.pnl_1h)}">${nt(a.pnl_1h)}</span> / <span class="${cls(a.pnl_3h)}">${nt(a.pnl_3h)}</span></div></div>
+      </div>
+      <div class="mute" style="margin-top:8px">每日虧損上限使用 ${a.daily_loss_used_pct.toFixed(0)}%</div><div class="bar"><div style="width:${Math.min(100, a.daily_loss_used_pct)}%"></div></div>
+      <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${pos}</section>`;
+  }).join('');
+
+  // Intraday curve
+  const all = s.ais.flatMap(a => a.curve.map(p => p.v));
+  if (all.length > 1) {
+    const lo = Math.min(0, ...all), hi = Math.max(0, ...all), y = v => 190 - (v - lo) / ((hi - lo) || 1) * 180;
+    let svg = `<line x1="0" x2="1000" y1="${y(0)}" y2="${y(0)}" stroke="#475569" stroke-dasharray="4"/>`;
+    s.ais.forEach(a => {
+      if (a.curve.length < 2) return;
+      const d = a.curve.map((p, i) => `${i ? 'L' : 'M'}${(i / (a.curve.length - 1) * 1000).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+      svg += `<path d="${d}" fill="none" stroke="${a.color}" stroke-width="2"/>`;
+    });
+    document.getElementById('curve').innerHTML = svg;
+    document.getElementById('legend').innerHTML = s.ais.map(a => `<span style="color:${a.color}">■</span> ${a.name}（${a.curve[0]?.ts || ''} → ${a.curve.at(-1)?.ts || ''}）`).join('　');
+  } else {
+    document.getElementById('curve').innerHTML = '<text x="20" y="100" fill="#8d98c4">開盤後每分鐘記錄一次損益</text>';
+  }
+
+  const hours = [...new Set(s.ais.flatMap(a => a.hourly.map(h => h.hour)))].sort();
+  document.getElementById('hourly').innerHTML = `<tr><th>時段</th>${s.ais.map(a => `<th>${a.name}</th>`).join('')}<th>合計</th></tr>` +
+    (hours.map(h => { const vals = s.ais.map(a => (a.hourly.find(x => x.hour === h) || { pnl: 0 }).pnl);
+      return `<tr><td>${h}</td>${vals.map(v => `<td class="${cls(v)}">${nt(v)}</td>`).join('')}<td class="${cls(vals.reduce((a, b) => a + b, 0))}">${nt(vals.reduce((a, b) => a + b, 0))}</td></tr>`; }).reverse().join('') || '<tr><td class="mute">尚無資料</td></tr>');
+
+  document.getElementById('trades').innerHTML = '<tr><th>AI</th><th>方向</th><th>進場</th><th>出場</th><th>點數</th><th>淨損益</th><th>出場原因</th></tr>' +
+    (s.trades_today.map(x => `<tr><td>${x.ai_name}</td><td class="${x.side === 'B' ? 'up' : 'down'}">${sideZh(x.side)}</td><td>${t(x.entry_ts).slice(6)} @ ${x.entry_price}</td><td>${t(x.exit_ts).slice(6)} @ ${x.exit_price}</td><td class="${cls(x.points)}">${x.points > 0 ? '+' : ''}${x.points}</td><td class="${cls(x.pnl_twd)}">${nt(x.pnl_twd)}</td><td>${x.exit_kind_zh}</td></tr>`).join('') || '<tr><td colspan="7" class="mute">今日尚未有平倉交易</td></tr>');
+
+  document.getElementById('orders').innerHTML = '<tr><th>時間</th><th>AI</th><th>用途</th><th>類型</th><th>買賣</th><th>口數</th><th>觸價</th><th>成交價</th><th>狀態</th><th>說明</th></tr>' +
+    (s.orders_today.map(o => `<tr><td>${t(o.ts).slice(6)}</td><td>${o.ai_name}</td><td>${o.kind_zh}</td><td>${typeZh[o.order_type] || o.order_type}</td><td class="${o.side === 'B' ? 'up' : 'down'}">${o.side === 'B' ? '買' : '賣'}</td><td>${o.qty}</td><td>${o.trigger_price ?? ''}</td><td>${o.fill_price ?? ''}</td><td>${statusZh[o.status] || o.status}</td><td class="mute">${o.note || ''}</td></tr>`).join('') || '<tr><td colspan="10" class="mute">今日尚無委託</td></tr>');
+
+  document.getElementById('events').innerHTML = s.events.map(e => `<tr><td class="mute">${t(e.ts)}</td><td>${e.ai || ''}</td><td>${e.level}</td><td style="white-space:normal">${e.message}</td></tr>`).join('');
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(SRC + '?t=' + Date.now(), { cache: 'no-store' });
+    render(await res.json());
+  } catch (e) { document.getElementById('sub').textContent = '讀取狀態失敗：' + e; }
+}
+refresh();
+setInterval(refresh, ON_PAGES ? 30000 : 10000);
+</script>
+</body>
+</html>
