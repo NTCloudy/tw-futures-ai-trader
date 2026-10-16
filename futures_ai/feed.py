@@ -33,10 +33,11 @@ class Snapshot:
   bid: float | None
   ask: float | None
   bars: list[Bar] = field(default_factory=list)  # completed bars only
-  quote_time: datetime | None = None  # end time of the newest (possibly in-progress) bar
+  quote_time: datetime | None = None  # exchange time of the latest quote
+  live_bar: Bar | None = None  # in-progress bar (its high/low reveal prices touched between polls)
 
 
-def _post(url: str, body: dict, timeout: int = 10) -> dict:
+def _post(url: str, body: dict, timeout: int = 5) -> dict:
   req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST", headers={
       "Content-Type": "application/json", "User-Agent": "Mozilla/5.0 tw-futures-ai-trader"})
   with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -64,7 +65,13 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
     return float(v) if v not in (None, "") else None
 
   last = num("CLastPrice") or (bars[-1].c if bars else 0.0)
-  return Snapshot(code, last, num("CBidPrice1"), num("CAskPrice1"), completed, newest)
+  live = bars[-1] if bars and bars[-1].end > now else None
+  qt = newest - timedelta(minutes=1) if newest else None  # start of the newest bar, conservative
+  ctime = q.get("CTime")
+  if ctime and len(ctime) >= 6:
+    t = datetime.combine(now.date(), datetime.strptime(ctime[:6], "%H%M%S").time(), TPE)
+    qt = t - timedelta(days=1) if t > now + timedelta(minutes=5) else t
+  return Snapshot(code, last, num("CBidPrice1"), num("CAskPrice1"), completed, qt, live)
 
 
 class TaifexFeed:

@@ -149,13 +149,16 @@ class AiTrader:
     self.process_fills(ts)
     p = self.pos
     last = quote["last"]
+    hi, lo = max(last, quote.get("hi") or last), min(last, quote.get("lo") or last)
     if p and not self.pending:
+      sl_hit = lo <= p["sl"] if p["side"] == "B" else hi >= p["sl"]
+      tp_hit = hi >= p["tp"] if p["side"] == "B" else lo <= p["tp"]
       if kill:
         self.flatten(ts, code, quote, "KILL")
-      elif p["side"] == "B" and last >= p["tp"] or p["side"] == "S" and last <= p["tp"]:
-        self._fire(ts, quote, "TP", p["tp_oid"])
-      elif p["side"] == "B" and last <= p["sl"] or p["side"] == "S" and last >= p["sl"]:
+      elif sl_hit:  # If both were touched within one poll, assume the stop came first (conservative).
         self._fire(ts, quote, "SL", p["sl_oid"])
+      elif tp_hit:
+        self._fire(ts, quote, "TP", p["tp_oid"])
       elif minutes_to_close <= self.cfg["flatten_minutes_before_close"]:
         self.flatten(ts, code, quote, "SESSION_END")
     if self.locked_day() != td and self.today_pnl(td, last) <= -self.cfg["max_daily_loss_twd"]:

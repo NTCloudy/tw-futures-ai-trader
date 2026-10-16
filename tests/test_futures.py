@@ -111,6 +111,14 @@ class OcoBracketTest(unittest.TestCase):
     cost = 2 * 20 + round(47001 * 10 * 0.00002) + round(47083 * 10 * 0.00002)
     self.assertAlmostEqual(t["pnl_twd"], 82 * 10 - cost)
 
+  def test_spike_between_polls_triggers_take_profit(self):
+    self.enter()
+    # Last price is back below TP, but the high since the previous poll touched it.
+    self.tr.on_price(at(2026, 10, 16, 9, 20), self.td, "TMFJ6",
+                     {"last": 47060, "bid": 47059, "ask": 47061, "hi": 47090, "lo": 47055}, 200, False)
+    self.assertIsNone(self.tr.pos)
+    self.assertEqual(self.ledger.rows("SELECT exit_kind FROM trades")[0]["exit_kind"], "TP")
+
   def test_stop_loss_and_daily_loss_lock(self):
     self.tr.s.entry = Entry("B", 150, 300, "wide")
     self.enter()
@@ -150,7 +158,7 @@ class FakeFeed:
   def snapshot(self, code, session, start, now):
     bars = bars_from([(self.last[code],) * 4] * 20, start=start + timedelta(minutes=1))
     bars = [b for b in bars if b.end <= now]
-    return Snapshot(code, self.last[code], self.last[code] - 1, self.last[code] + 1, bars, now)
+    return Snapshot(code, self.last[code], self.last[code] - 1, self.last[code] + 1, bars, now, None)
 
 
 class EngineRollTest(unittest.TestCase):

@@ -22,6 +22,7 @@ class Engine:
     self.last_bar_end: datetime | None = None
     self.last_equity_minute: str | None = None
     self.last_publish = 0.0
+    self.prev_live: tuple | None = None  # (bar_end, high, low) seen at the previous poll
 
   def _record_equity(self, now: datetime, last: float, force: bool = False) -> None:
     minute = now.strftime("%Y-%m-%dT%H:%M")
@@ -30,6 +31,23 @@ class Engine:
     self.last_equity_minute = minute
     for tr in self.traders:
       self.ledger.add_equity(minute + ":00", tr.ai, self.ledger.realized(tr.ai), tr.unrealized(last))
+
+  def _touched_range(self, snap) -> tuple[float, float]:
+    """Highest / lowest trade since the previous poll, so fast spikes still hit 觸價單."""
+    hi = lo = snap.last
+    lv, prev = snap.live_bar, self.prev_live
+    if lv and prev:
+      if prev[0] == lv.end:
+        hi = max(hi, lv.h) if lv.h > prev[1] else hi
+        lo = min(lo, lv.l) if lv.l < prev[2] else lo
+      else:
+        hi, lo = max(hi, lv.h), min(lo, lv.l)
+        done = next((b for b in snap.bars if b.end == prev[0]), None)
+        if done:
+          hi = max(hi, done.h) if done.h > prev[1] else hi
+          lo = min(lo, done.l) if done.l < prev[2] else lo
+    self.prev_live = (lv.end, lv.h, lv.l) if lv else None
+    return hi, lo
 
   def step(self) -> str:
     now = self.clock()
@@ -41,8 +59,9 @@ class Engine:
     snap = self.feed.snapshot(code, name, start, now)
     if snap.quote_time is None or not snap.last:
       return "no-data"
-    quote = {"last": snap.last, "bid": snap.bid, "ask": snap.ask}
-    age = (now - (snap.quote_time - timedelta(minutes=1))).total_seconds()
+    hi, lo = self._touched_range(snap)
+    quote = {"last": snap.last, "bid": snap.bid, "ask": snap.ask, "hi": hi, "lo": lo}
+    age = (now - snap.quote_time).total_seconds()
     fresh = age < self.cfg["stale_seconds"]
     session_key = f"{td}-{name}"
     minutes_to_close = (end - now).total_seconds() / 60
