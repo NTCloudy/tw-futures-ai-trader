@@ -91,6 +91,10 @@ def main(argv=None) -> int:
   tr.add_argument("--train-days", type=int, default=10)
   tr.add_argument("--test-days", type=int, default=5)
   sub.add_parser("weekly", help="每週自動訓練：滾動前進測試、比較參數、影子排名、LINE 報告")
+  ex = sub.add_parser("export-history", help="（Mac 上執行）唯讀下載永豐微台指 1 分K 歷史資料，上傳到私人資料庫")
+  ex.add_argument("--days", type=int, default=365)
+  ex.add_argument("--production", action="store_true", help="改用正式環境行情（API Key 需勾選正式環境＋行情/資料）")
+  ex.add_argument("--no-push", action="store_true", help="只存本機，不上傳")
   sub.add_parser("line-setup", help="設定 LINE 通知（Channel access token + 你的 User ID）")
   sub.add_parser("line-test", help="傳一則 LINE 測試訊息")
   rs = sub.add_parser("restore", help="從 GitHub 備份還原交易紀錄與 AI 學習資料（換電腦用）")
@@ -98,6 +102,10 @@ def main(argv=None) -> int:
   args = ap.parse_args(argv)
 
   cfg = load_config(args.config)
+  if args.cmd == "export-history":  # Data-only: never creates traders, brokers or orders.
+    from .export_history import export_history
+    export_history(args.days, args.production, not args.no_push)
+    return 0
   if args.cmd == "restore":
     return restore(cfg, args.force)
   if args.cmd in ("line-setup", "line-test"):

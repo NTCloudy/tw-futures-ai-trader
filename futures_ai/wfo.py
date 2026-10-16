@@ -45,6 +45,49 @@ class Session:
   k_at: dict = None
 
 
+KBAR_FILES = [ROOT / "data" / "kbars" / "TMF_1min.csv", ROOT / "data" / "kbars_repo" / "TMF_1min.csv"]
+
+
+def sessions_from_kbars(path: Path) -> list[Session]:
+  """Builds sessions from a Shioaji 1-minute K-bar export (continuous near month, Taipei time)."""
+  import csv
+  from .calendar import next_weekday
+  rows = []
+  with path.open(encoding="utf-8") as f:
+    for r in csv.DictReader(f):
+      ts = datetime.strptime(r["ts_taipei"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=TPE)
+      rows.append((ts, float(r["open"]), float(r["high"]), float(r["low"]), float(r["close"]), float(r["volume"])))
+  if not rows:
+    return []
+  # Shioaji may label a bar by its start or its end minute; detect from the day-session open.
+  start_labeled = any(ts.hour == 8 and ts.minute == 45 for ts, *_ in rows[:5000])
+  groups: dict[tuple, list[Bar]] = {}
+  for ts, o, h, l, c, v in rows:
+    end = ts + timedelta(minutes=1) if start_labeled else ts
+    t = end.time()
+    if time(8, 46) <= t <= time(13, 45):
+      key = (end.date(), "day")
+    elif t >= time(15, 1) or t <= time(5, 0):
+      start_date = end.date() if t >= time(15, 1) else end.date() - timedelta(days=1)
+      key = (next_weekday(start_date), "night", start_date)
+    else:
+      continue
+    groups.setdefault(key, []).append(Bar(end, o, h, l, c, v))
+  out = []
+  for key, bars in groups.items():
+    if len(bars) < 30:
+      continue
+    bars.sort(key=lambda b: b.end)
+    if key[1] == "day":
+      close = datetime.combine(key[0], time(13, 45), TPE)
+    else:
+      close = datetime.combine(key[2] + timedelta(days=1), time(5, 0), TPE)
+    sess = Session(key[0], key[1], "TMFR1", bars, close)
+    precompute(sess)
+    out.append(sess)
+  return out
+
+
 def load_sessions(cfg: dict) -> list[Session]:
   from .pretrain import sessions_from_file
   out = []
@@ -57,6 +100,13 @@ def load_sessions(cfg: dict) -> list[Session]:
       s = Session(td, name, code, bars, close)
       precompute(s)
       out.append(s)
+  have = {(s.td, s.name) for s in out}  # Official tick files take precedence over K-bar exports.
+  for f in KBAR_FILES:
+    if f.exists():
+      for sess in sessions_from_kbars(f):
+        if (sess.td, sess.name) not in have:
+          have.add((sess.td, sess.name))
+          out.append(sess)
   out.sort(key=lambda s: s.bars[0].end)
   return out
 

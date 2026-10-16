@@ -1,4 +1,5 @@
 import unittest
+from unittest import mock
 from datetime import date, datetime, timedelta
 
 from futures_ai.calendar import TPE, active_month, contract_code, rollover_info, session_of, third_wednesday, trading_day
@@ -422,3 +423,44 @@ class CloudyStrategyTest(unittest.TestCase):
     tr.on_bar(at(2026, 10, 16, 13, 30), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 100, True, False)
     p = tr.pos
     self.assertEqual((p["tp"] - p["entry_price"], p["entry_price"] - p["sl"]), (100, 50))
+
+
+class ExportHistoryTest(unittest.TestCase):
+
+  def test_export_with_fake_shioaji_is_read_only_and_futures_only(self):
+    import sys, types, tempfile
+    from pathlib import Path
+    from futures_ai import export_history as ex
+    calls = []
+
+    class FakeKbars:
+      def __init__(self):
+        base = datetime(2026, 10, 15, 8, 45)
+        self.ts = [int((base + timedelta(minutes=i)).replace(tzinfo=__import__("datetime").timezone.utc).timestamp() * 1e9) for i in range(40)]
+        self.Open = self.High = self.Low = self.Close = [47000.0 + i for i in range(40)]
+        self.Volume = [10] * 40
+
+    class FakeApi:
+      def __init__(self, simulation):
+        calls.append(("init", simulation))
+        self.Contracts = types.SimpleNamespace(Futures=types.SimpleNamespace(TMF=types.SimpleNamespace(TMFR1=types.SimpleNamespace(code="TMFR1"))))
+      def login(self, **kw): calls.append(("login",))
+      def kbars(self, contract, start, end): calls.append(("kbars", contract.code)); return FakeKbars()
+      def logout(self): calls.append(("logout",))
+      def __getattr__(self, name):  # Any trading / account call would fail the test.
+        raise AssertionError(f"unexpected API call: {name}")
+
+    sys.modules["shioaji"] = types.SimpleNamespace(Shioaji=FakeApi)
+    try:
+      with tempfile.TemporaryDirectory() as d, mock.patch.object(ex, "OUT_DIR", Path(d)), \
+           mock.patch.dict("os.environ", {"SINOPAC_API_KEY": "k", "SINOPAC_SECRET_KEY": "s"}):
+        out = ex.export_history(days=20, push=False, log=lambda *_: None)
+        from futures_ai.wfo import sessions_from_kbars
+        sess = sessions_from_kbars(out)
+    finally:
+      del sys.modules["shioaji"]
+    self.assertIn(("init", True), calls)  # simulation environment by default
+    self.assertTrue(all(c[0] in ("init", "login", "kbars", "logout") for c in calls))
+    self.assertTrue(all(c[1] == "TMFR1" for c in calls if c[0] == "kbars"))
+    self.assertEqual(len(sess), 1)
+    self.assertEqual(sess[0].bars[0].end.strftime("%H:%M"), "08:46")  # start-labeled bars converted to end time
