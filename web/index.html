@@ -39,6 +39,28 @@
   .modal > div { background:#121a2d; border:1px solid #24304d; border-radius:14px; padding:20px; max-width:560px; line-height:1.7; font-size:14px; }
   .modal input { width:100%; padding:8px; border-radius:8px; border:1px solid #24304d; background:#0a0f1d; color:#e8edff; }
   .modal button { margin-top:10px; margin-right:8px; padding:8px 14px; border-radius:8px; border:0; cursor:pointer; font-weight:700; }
+  /* ---- layout with side panel ---- */
+  .layout { display:flex; align-items:flex-start; }
+  #side { position:sticky; top:62px; width:210px; flex:0 0 210px; height:calc(100vh - 62px); overflow-y:auto; border-right:1px solid var(--line); padding:14px 10px; background:#0c1222; }
+  #side a { display:block; padding:7px 10px; border-radius:8px; color:var(--mute); text-decoration:none; font-size:13px; margin-bottom:2px; }
+  #side a:hover { background:#16203a; color:var(--fg); }
+  #side a.active { background:#1d2a4a; color:#fff; font-weight:700; }
+  #side .grp { font-size:11px; color:#5b6694; margin:12px 10px 4px; letter-spacing:1px; }
+  #side .tools button { width:100%; margin-top:6px; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px; cursor:pointer; font-size:12px; }
+  .content { flex:1; min-width:0; }
+  #navToggle { display:none; background:#16203a; color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; }
+  @media (max-width: 900px) {
+    #side { position:fixed; left:0; top:0; height:100vh; z-index:40; transform:translateX(-100%); transition:transform .2s; box-shadow:4px 0 20px rgba(0,0,0,.5); }
+    #side.open { transform:none; }
+    #navToggle { display:inline-block; }
+  }
+  /* ---- collapsible sections ---- */
+  section.card > h2 { cursor:pointer; user-select:none; display:flex; justify-content:space-between; align-items:center; }
+  section.card > h2::after { content:'▾'; color:var(--mute); font-size:13px; margin-left:8px; }
+  section.card.collapsed > h2::after { content:'▸'; }
+  section.card.collapsed > :not(h2) { display:none !important; }
+  section.card { scroll-margin-top:70px; }
+  .more { margin-top:8px; background:#16203a; color:#93c5fd; border:1px solid var(--line); border-radius:8px; padding:5px 12px; cursor:pointer; font-size:12px; }
 </style>
 </head>
 <body>
@@ -61,9 +83,26 @@
   <button id="mClear" style="background:#334155;color:#fff">清除已存權杖</button>
   <button id="mClose" style="background:#334155;color:#fff">關閉</button>
 </div></div>
+<div class="layout">
+<nav id="side">
+  <div class="grp">總覽</div>
+  <a href="#secSummary">📊 今日總覽</a>
+  <a href="#aiCards">🤖 三位 AI 狀態</a>
+  <a href="#secCurve">📈 今日損益走勢</a>
+  <div class="grp">紀錄（最新在最上面）</div>
+  <a href="#secHist">📅 歷史每盤戰績</a>
+  <a href="#secHourly">⏱ 每小時損益</a>
+  <a href="#secTrades">✅ 今日已平倉交易</a>
+  <a href="#secOrders">📝 今日下單狀況</a>
+  <a href="#secJournal">🧠 AI 學習日誌</a>
+  <a href="#secEvents">⚙️ 系統事件</a>
+  <div class="grp">工具</div>
+  <div class="tools"><button id="expandAll">全部展開</button><button id="collapseAll">全部收合</button></div>
+</nav>
+<div class="content">
 <header>
   <div>
-    <h1>📈 微台指 AI 自動交易 <span id="mode" class="badge"></span></h1>
+    <h1><button id="navToggle">☰</button> 📈 微台指 AI 自動交易 <span id="mode" class="badge"></span></h1>
     <div class="mute" id="sub">載入中…</div>
   </div>
   <div style="text-align:right">
@@ -73,19 +112,21 @@
   </div>
 </header>
 <main>
-  <section class="card s3"><h2>今日總損益（全部 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
+  <section class="card s3" id="secSummary"><h2>今日總損益（全部 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
   <section class="card s3"><h2>累計總收益</h2><div class="big" id="total">–</div><div class="mute" id="totalSub"></div></section>
   <section class="card s3"><h2>近幾小時收益</h2><div class="kpis" id="recent"></div></section>
   <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
-  <div class="s12" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr))" id="aiCards"></div>
-  <section class="card s12"><h2>今日損益走勢（每分鐘）</h2><svg id="curve" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg><div class="mute" id="legend"></div></section>
-  <section class="card s12"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist"></table></div></section>
-  <section class="card s6"><h2>每小時損益</h2><div class="scroll"><table id="hourly"></table></div></section>
-  <section class="card s6"><h2>今日已平倉交易</h2><div class="scroll"><table id="trades"></table></div></section>
-  <section class="card s12"><h2>今日下單狀況（含停利／停損觸價單）</h2><div class="scroll"><table id="orders"></table></div></section>
-  <section class="card s12"><h2>🧠 AI 學習日誌（每筆平倉後自動檢討：為什麼賺／賠、下次怎麼調整）</h2><div class="scroll"><table id="journal"></table></div></section>
-  <section class="card s12"><h2>系統事件</h2><div class="scroll"><table id="events"></table></div></section>
+  <div class="s12" style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));scroll-margin-top:70px" id="aiCards"></div>
+  <section class="card s12" id="secCurve"><h2>今日損益走勢（每分鐘）</h2><svg id="curve" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg><div class="mute" id="legend"></div></section>
+  <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
+  <section class="card s6" id="secHourly"><h2>每小時損益</h2><div class="scroll"><table id="hourly" data-limit="8"></table></div></section>
+  <section class="card s6" id="secTrades"><h2>今日已平倉交易</h2><div class="scroll"><table id="trades" data-limit="10"></table></div></section>
+  <section class="card s12" id="secOrders"><h2>今日下單狀況（含停利／停損觸價單）</h2><div class="scroll"><table id="orders" data-limit="15"></table></div></section>
+  <section class="card s12" id="secJournal"><h2>🧠 AI 學習日誌（每筆平倉後自動檢討：為什麼賺／賠、下次怎麼調整）</h2><div class="scroll"><table id="journal" data-limit="8"></table></div></section>
+  <section class="card s12" id="secEvents"><h2>系統事件</h2><div class="scroll"><table id="events" data-limit="10"></table></div></section>
 </main>
+</div>
+</div>
 <script>
 const ON_PAGES = location.hostname.endsWith('github.io');
 const nt = n => (n >= 0 ? '+' : '-') + 'NT$ ' + Math.abs(Math.round(n)).toLocaleString('en-US');
@@ -231,6 +272,8 @@ async function refresh() {
     lastGen = s.generated_at;
     render(s);
     renderControl(s);
+    setupCollapsible(document.getElementById('aiCards'));
+    applyLimits();
     ageText();
   } catch (e) { document.getElementById('sub').textContent = '讀取狀態失敗：' + e; }
 }
@@ -298,6 +341,52 @@ document.getElementById('mIssue').onclick = () => { modal.style.display = 'none'
 document.getElementById('mSave').onclick = () => { const v = document.getElementById('mToken').value.trim(); if (v) { localStorage.setItem('gh_ctl_token', v); alert('已儲存，之後按緊急停止會一鍵送出'); modal.style.display = 'none'; } };
 document.getElementById('mClear').onclick = () => { localStorage.removeItem('gh_ctl_token'); alert('已清除'); };
 document.getElementById('mClose').onclick = () => { modal.style.display = 'none'; };
+
+// ---------------- Side panel, collapsible sections, "show more" for long tables ----------------
+const expandedTables = new Set();
+function applyLimits() {
+  document.querySelectorAll('table[data-limit]').forEach(tb => {
+    const limit = +tb.dataset.limit, rows = [...tb.rows].slice(1);
+    const open = expandedTables.has(tb.id);
+    rows.forEach((r, i) => { r.style.display = (open || i < limit) ? '' : 'none'; });
+    let btn = tb.parentElement.querySelector('.more');
+    if (rows.length <= limit) { if (btn) btn.remove(); return; }
+    if (!btn) {
+      btn = document.createElement('button'); btn.className = 'more';
+      btn.onclick = () => { expandedTables.has(tb.id) ? expandedTables.delete(tb.id) : expandedTables.add(tb.id); applyLimits(); };
+      tb.parentElement.appendChild(btn);
+    }
+    btn.textContent = open ? '收合（只顯示最新 ' + limit + ' 筆）' : `顯示全部（共 ${rows.length} 筆）`;
+  });
+}
+function setupCollapsible(root) {
+  root.querySelectorAll('section.card').forEach(sec => {
+    const key = 'collapsed:' + (sec.id || sec.querySelector('h2')?.textContent.slice(0, 20));
+    if (localStorage.getItem(key) === '1') sec.classList.add('collapsed');
+    const h = sec.querySelector(':scope > h2');
+    if (h && !h.dataset.bound) {
+      h.dataset.bound = '1';
+      h.addEventListener('click', (e) => { if (e.target.closest('button,a')) return; sec.classList.toggle('collapsed'); localStorage.setItem(key, sec.classList.contains('collapsed') ? '1' : '0'); });
+    }
+  });
+}
+document.getElementById('expandAll').onclick = () => document.querySelectorAll('section.card').forEach(sec => { sec.classList.remove('collapsed'); localStorage.setItem('collapsed:' + (sec.id || sec.querySelector('h2')?.textContent.slice(0, 20)), '0'); });
+document.getElementById('collapseAll').onclick = () => document.querySelectorAll('main > section.card').forEach(sec => { sec.classList.add('collapsed'); localStorage.setItem('collapsed:' + sec.id, '1'); });
+const side = document.getElementById('side');
+document.getElementById('navToggle').onclick = () => side.classList.toggle('open');
+side.querySelectorAll('a').forEach(a => a.addEventListener('click', (e) => {
+  const target = document.querySelector(a.getAttribute('href'));
+  if (target && target.classList.contains('collapsed')) { target.classList.remove('collapsed'); localStorage.setItem('collapsed:' + target.id, '0'); }
+  side.classList.remove('open');
+}));
+const navObserver = new IntersectionObserver(entries => {
+  entries.forEach(en => { if (en.isIntersecting) {
+    side.querySelectorAll('a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id));
+  } });
+}, { rootMargin: '-70px 0px -60% 0px' });
+['secSummary', 'aiCards', 'secCurve', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
+  .forEach(id => { const el = document.getElementById(id); if (el) navObserver.observe(el); });
+setupCollapsible(document);
 
 refresh();
 setInterval(refresh, ON_PAGES ? 10000 : 3000);
