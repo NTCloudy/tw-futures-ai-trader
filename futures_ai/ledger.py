@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+
+TPE = timezone(timedelta(hours=8))
 from pathlib import Path
 
 SCHEMA = """
@@ -67,7 +69,7 @@ class Ledger:
 
   def log(self, message: str, ai: str | None = None, level: str = "INFO", ts: datetime | None = None) -> None:
     self._exec("INSERT INTO events(ts,ai,level,message) VALUES(?,?,?,?)",
-               ((ts or datetime.now()).isoformat(timespec="seconds"), ai, level, message))
+               ((ts or datetime.now(TPE)).isoformat(timespec="seconds"), ai, level, message))
 
   # orders
   def add_order(self, **o) -> int:
