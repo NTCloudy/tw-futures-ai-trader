@@ -22,6 +22,7 @@ DEFAULTS: dict = {
     "capital_multiple": 1.5,  # Capital per AI = 1.5 x initial margin.
     "qty": 1,
     "max_daily_loss_twd": 2000,
+    "enforce_daily_loss": True,  # False = trial run: keep trading regardless of the daily loss.
     "commission_per_side_twd": 20,
     "tax_rate": 0.00002,  # 期交稅 十萬分之二 per side
     "paper_slippage_ticks": 1,

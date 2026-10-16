@@ -172,7 +172,8 @@ class AiTrader:
         self._fire(ts, quote, "TP", p["tp_oid"])
       elif minutes_to_close <= self.cfg["flatten_minutes_before_close"]:
         self.flatten(ts, code, quote, "SESSION_END")
-    if self.locked_day() != td and self.today_pnl(td, last) <= -self.cfg["max_daily_loss_twd"]:
+    if (self.cfg.get("enforce_daily_loss", True) and self.locked_day() != td
+        and self.today_pnl(td, last) <= -self.cfg["max_daily_loss_twd"]):
       self.ledger.set_state(f"lock:{self.ai}", td)
       self.ledger.log(f"今日損益已達 -NT$ {self.cfg['max_daily_loss_twd']:,}，停止今日交易", self.ai, "WARN", ts)
       if self.pos:
@@ -199,7 +200,8 @@ class AiTrader:
              minutes_to_close: float, fresh: bool, kill: bool) -> None:
     if self.pos or self.pending or kill or not fresh:
       return
-    if self.locked_day() == td or minutes_to_close <= self.cfg["no_entry_minutes_before_close"]:
+    locked = self.cfg.get("enforce_daily_loss", True) and self.locked_day() == td
+    if locked or minutes_to_close <= self.cfg["no_entry_minutes_before_close"]:
       return
     last_exit = self.ledger.get_state(f"last_exit:{self.ai}")
     since = None

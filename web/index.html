@@ -84,7 +84,7 @@ function render(s) {
   document.getElementById('mode').textContent = s.mode_label;
   document.getElementById('mode').className = 'badge' + (s.mode === 'sinopac_live' ? ' live' : '');
   const sess = s.session.name === 'day' ? '日盤交易中' : s.session.name === 'night' ? '夜盤交易中' : '休市';
-  document.getElementById('sub').textContent = `${sess}｜交易日 ${s.rollover.trading_day}｜每位 AI 資金 NT$ ${s.capital_per_ai.toLocaleString()}（1.5 × 原始保證金 ${s.initial_margin.toLocaleString()}）｜每日虧損上限 NT$ ${s.max_daily_loss.toLocaleString()}｜更新 ${t(s.generated_at)}`;
+  document.getElementById('sub').textContent = `${sess}｜交易日 ${s.rollover.trading_day}｜每位 AI 資金 NT$ ${s.capital_per_ai.toLocaleString()}（1.5 × 原始保證金 ${s.initial_margin.toLocaleString()}）｜每日虧損上限 ${s.enforce_daily_loss ? 'NT$ ' + s.max_daily_loss.toLocaleString() : '試跑中已關閉'}｜更新 ${t(s.generated_at)}`;
   const m = s.market || {};
   document.getElementById('last').textContent = m.last ? m.last.toLocaleString() : '–';
   document.getElementById('quote').textContent = m.last ? `${m.contract}｜買 ${m.bid ?? '-'} / 賣 ${m.ask ?? '-'}｜${m.fresh ? '即時' : '行情延遲'}` : '';
@@ -114,7 +114,7 @@ function render(s) {
         <div><div class="mute">權益</div><div style="font-size:20px;font-weight:700">NT$ ${a.equity.toLocaleString()}</div></div>
         <div><div class="mute">近 1h / 3h</div><div><span class="${cls(a.pnl_1h)}">${nt(a.pnl_1h)}</span> / <span class="${cls(a.pnl_3h)}">${nt(a.pnl_3h)}</span></div></div>
       </div>
-      <div class="mute" style="margin-top:8px">每日虧損上限使用 ${a.daily_loss_used_pct.toFixed(0)}%</div><div class="bar"><div style="width:${Math.min(100, a.daily_loss_used_pct)}%"></div></div>
+      ${s.enforce_daily_loss ? `<div class="mute" style="margin-top:8px">每日虧損上限使用 ${a.daily_loss_used_pct.toFixed(0)}%</div><div class="bar"><div style="width:${Math.min(100, a.daily_loss_used_pct)}%"></div></div>` : '<div class="mute" style="margin-top:8px">每日虧損上限：試跑中已關閉</div>'}
       <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${pos}${brainHtml(a)}</section>`;
   }).join('');
 

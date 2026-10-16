@@ -236,3 +236,16 @@ class LearningTest(unittest.TestCase):
     self.brain.daily_decay("2026-10-16")
     self.brain.daily_decay("2026-10-19")  # next day halves evidence -> allowed to retry
     self.assertIsNotNone(self.brain.adjust(Entry("B", 15, 20, "x"), bars)[0])
+
+
+class TrialModeTest(unittest.TestCase):
+
+  def test_no_daily_loss_lock_when_disabled(self):
+    c = cfg(enforce_daily_loss=False)
+    ledger = Ledger(":memory:")
+    tr = AiTrader(c, FakeStrategy(Entry("B", 400, 800, "wide")), LocalPaperBroker(c), ledger)
+    bars = bars_from([(47000, 47005, 46995, 47000)] * 20)
+    tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
+    tr.on_price(at(2026, 10, 16, 9, 20), "2026-10-16", "TMFJ6", {"last": 46790, "bid": 46789, "ask": 46791}, 200, False)
+    self.assertIsNotNone(tr.pos)  # -2100 unrealized but no forced exit in trial mode
+    self.assertIsNone(tr.locked_day())
