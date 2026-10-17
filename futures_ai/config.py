@@ -13,7 +13,7 @@ DEFAULTS: dict = {
     # sinopac_sim : 永豐 Shioaji simulation account (simulation=True)
     # sinopac_live: 永豐 Shioaji real account (real money)
     "mode": "local_paper",
-    "broker_ai": "alpha-orb",  # In sinopac modes only this AI routes orders to the broker account.
+    "broker_ai": "nova-nightorb",  # In sinopac modes only this AI routes orders to the broker account.
     "i_understand_real_money": False,
     "product": "TMF",
     "point_value": 10,  # NT$ per index point (微型臺指)

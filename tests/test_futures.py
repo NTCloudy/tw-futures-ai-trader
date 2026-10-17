@@ -341,7 +341,7 @@ class LearningModeTest(unittest.TestCase):
     tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
     self.assertIsNotNone(tr.pos)  # cap of 1 ignored in learning mode
     with self.assertRaises(SystemExit):
-      make_broker(cfg(mode="sinopac_live", i_understand_real_money=True, learning_mode=True), "alpha-orb")
+      make_broker(cfg(mode="sinopac_live", i_understand_real_money=True, learning_mode=True), "nova-nightorb")
 
 
 class TpCapTest(unittest.TestCase):

@@ -9,7 +9,7 @@ import copy
 from .brokers import LocalPaperBroker
 from .config import ROOT
 from .ledger import Ledger
-from .strategies import OrbBreakout, TrendBreakout, TrendPullback
+from .strategies import NightOpenBreakout, OrbBreakout, TrendBreakout, TrendPullback
 from .trader import AiTrader
 
 VARIANTS = [
@@ -22,6 +22,7 @@ VARIANTS = [
     (TrendBreakout, {"lookback": 6, "sl_atr": 2.0, "trail_atr": 4.0}),
     (TrendBreakout, {"lookback": 24, "sl_atr": 2.0, "trail_atr": 4.0}),
     (TrendBreakout, {"lookback": 12, "sl_atr": 3.0, "trail_atr": 3.0}),
+    (NightOpenBreakout, {"window": 120}),  # Control: the original 2-hour Nova.
 ]
 
 

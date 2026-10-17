@@ -297,19 +297,20 @@ class FixedBracket:
 
 class NightOpenBreakout:
   """Nova (replaces Gamma): night-session opening-range breakout. Range = 15:00-15:30 (six 5-min bars);
-  trades a VWAP-confirmed breakout during the next 120 minutes; stop = range width (30-150 pts),
+  trades a VWAP-confirmed breakout during the next 600 minutes (until 01:30; extended from 120 after the
+  one-year check: 10 of 12 20-day blocks profitable vs 7 of 12); stop = range width (30-150 pts),
   take-profit = 3x stop; limit entry at the signal close. Found on one year of data and validated by
   rolling 40-day practice -> 20-day exams: 9 of 10 exam windows profitable."""
 
   id = "nova-nightorb"
   name = "Nova 夜盤開盤突破 AI"
-  style = "夜盤 15:00–15:30 開盤區間突破（VWAP 確認），之後 2 小時內有效；停損＝區間寬度，停利 3 倍，限價進場"
+  style = "夜盤 15:00–15:30 開盤區間突破（VWAP 確認），之後到 01:30 前有效；停損＝區間寬度，停利 3 倍，限價進場"
   color = "#22d3ee"
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
   learn_scale = False  # Keep the validated stop / take-profit geometry.
 
-  def __init__(self, range_min: int = 30, window: int = 120, sl_frac: float = 1.0, tp_mult: float = 3.0):
+  def __init__(self, range_min: int = 30, window: int = 600, sl_frac: float = 1.0, tp_mult: float = 3.0):
     self.range_min, self.window, self.sl_frac, self.tp_mult = range_min, window, sl_frac, tp_mult
     self.limit_atr, self.limit_min = 0.0, 5
 
