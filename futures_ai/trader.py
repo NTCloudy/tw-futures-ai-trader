@@ -15,6 +15,8 @@ from .strategies import vwap
 
 # Actual entries of each AI in this process, so contrarian AIs can mirror real trades (not raw signals).
 ENTRY_BUS: dict[str, dict] = {}
+# Market risk from the news radar (set by the engine): normal / elevated / high / positive, + FOMC window.
+RISK_STATE: dict = {"mode": "normal", "fomc_window": False}
 
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉",
@@ -237,6 +239,11 @@ class AiTrader:
           self.cfg["capital_per_ai_twd"] - self.cfg.get("maintenance_margin_twd", 26900)):
         self.ledger.log("未實現虧損逼近維持保證金，強制平倉避免追繳", self.ai, "WARN", ts)
         self.flatten(ts, code, quote, "RISK")
+      elif p.get("trail") and getattr(self.s, "hold_overnight", False) and not p.get("tightened") and (
+          (RISK_STATE.get("mode") == "high" and p["side"] == "B") or (RISK_STATE.get("mode") == "positive" and p["side"] == "S")):
+        p["trail"], p["tightened"] = round(p["trail"] / 2), True  # News against the position: halve the trailing distance.
+        self.pos = p
+        self.ledger.log(f"📰 新聞風險不利持倉方向，移動停損距離縮小為 {p['trail']} 點", self.ai, "WARN", ts)
       elif p.get("trail"):  # Ratchet the trailing stop (after the stop check, conservative).
         tick = self.cfg["tick"]
         best = p["entry_price"] + p["mfe"] if p["side"] == "B" else p["entry_price"] - p["mfe"]
@@ -272,6 +279,16 @@ class AiTrader:
 
   def _filter(self, sig, bars: list[Bar]) -> str | None:
     """Universal guards applied after learning. Returns a skip reason or None."""
+    mode = RISK_STATE.get("mode", "normal")
+    hold = getattr(self.s, "hold_overnight", False)
+    if mode == "high":
+      return "📰 新聞高風險（戰爭／關稅等重大消息），暫停所有新進場"
+    if mode == "elevated" and sig.side == "B":
+      return "📰 新聞風險升高，暫停新做多"
+    if mode == "positive" and sig.side == "S" and not hold:
+      return "📰 重大利多消息，暫停新放空"
+    if RISK_STATE.get("fomc_window") and not hold:
+      return "🏦 聯準會利率決議前後 1 小時，暫停當沖進場"
     regime, er, direction = market_regime(bars)
     against = (sig.side == "B" and direction < 0) or (sig.side == "S" and direction > 0)
     if regime == "trend" and against and not getattr(self.s, "skip_trend_filter", False):

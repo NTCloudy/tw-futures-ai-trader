@@ -97,6 +97,7 @@
   <a href="#aiCards">🤖 三位 AI 狀態</a>
   <a href="#secCurve">📈 今日損益走勢</a>
   <div class="grp">紀錄（最新在最上面）</div>
+  <a href="#secNews">📰 新聞風險雷達</a>
   <a href="#secTpCmp">🔬 停利縮小對照組</a>
   <a href="#secHist">📅 歷史每盤戰績</a>
   <a href="#secHourly">⏱ 每小時損益</a>
@@ -126,6 +127,7 @@
   <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
   <div class="s12" id="aiCards"></div>
   <section class="card s12" id="secCurve"><h2>今日損益走勢（每分鐘）</h2><svg id="curve" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg><div class="mute" id="legend"></div></section>
+  <section class="card s12" id="secNews"><h2>📰 新聞風險雷達（川普／關稅／戰爭／台海／聯準會）</h2><div id="newsBox"></div></section>
   <section class="card s12" id="secTpCmp"><h2>🔬 停利縮小對照組（同策略，只把停利改成 1 倍停損，與現行同時即時模擬）</h2><div class="scroll"><table id="tpCmp"></table></div><div class="mute" id="tpCmpNote"></div></section>
   <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
   <section class="card s6" id="secHourly"><h2>每小時損益</h2><div class="scroll"><table id="hourly" data-limit="8"></table></div></section>
@@ -246,6 +248,15 @@ function render(s) {
   document.getElementById('orders').innerHTML = '<tr><th>時間</th><th>AI</th><th>用途</th><th>類型</th><th>買賣</th><th>口數</th><th>觸價</th><th>成交價</th><th>狀態</th><th>說明</th></tr>' +
     (s.orders_today.map(o => `<tr><td>${t(o.ts).slice(6)}</td><td>${o.ai_name}</td><td>${o.kind_zh}</td><td>${typeZh[o.order_type] || o.order_type}</td><td class="${o.side === 'B' ? 'up' : 'down'}">${o.side === 'B' ? '買' : '賣'}</td><td>${o.qty}</td><td>${o.trigger_price ?? ''}</td><td>${o.fill_price ?? ''}</td><td>${statusZh[o.status] || o.status}</td><td class="mute">${o.note || ''}</td></tr>`).join('') || '<tr><td colspan="10" class="mute">今日尚無委託</td></tr>');
 
+  const nw = s.news;
+  const MODE = { high: ['🔴 高風險', '暫停所有新進場；Omega 多單移動停損減半'], elevated: ['🟡 風險升高', '暫停新做多'],
+                 positive: ['🟢 偏多消息', '暫停當沖新放空；Omega 空單移動停損減半'], normal: ['⚪ 正常', '不影響交易'] };
+  document.getElementById('newsBox').innerHTML = !nw ? '<div class="mute">下一次更新後顯示（每 10 分鐘）</div>' :
+    `<div style="font-size:16px"><b>${MODE[nw.mode][0]}</b>　風險分數 <b>${nw.total}</b>${nw.warming_up ? '<span class="mute">（建立基準中，約 2 小時後開始判斷）</span>' : `（平常 ${nw.baseline}，目前 ${nw.delta > 0 ? '+' : ''}${nw.delta}）`}　<span class="mute">→ ${MODE[nw.mode][1]}${nw.fomc_window ? '｜🏦 聯準會決議前後，暫停當沖進場' : ''}　｜更新 ${t(nw.updated).slice(6)}</span></div>
+     <div class="mute">下次聯準會利率決議：${(nw.upcoming_fomc || []).join('、') || '–'}（決議當晚前後 1 小時暫停當沖進場）</div>
+     <div class="scroll"><table data-limit="8" id="newsTbl"><tr><th>時間</th><th>分數</th><th>標題</th><th>判斷依據</th></tr>${(nw.headlines || []).map(h =>
+       `<tr><td class="mute">${h.ts.slice(5, 16).replace('T', ' ')}</td><td class="${h.score > 0 ? 'down' : 'up'}">${h.score > 0 ? '+' : ''}${h.score}</td><td style="white-space:normal"><a href="${h.link}" target="_blank" style="color:#e8edff">${h.title}</a></td><td class="mute">${h.hits.join(' ')}</td></tr>`).join('')}</table></div>
+     <div class="mute">分數 &gt; 0 代表利空風險（綠色），&lt; 0 代表利多（紅色）。關鍵字規則判斷，可能誤判；新聞約延遲數分鐘，僅作風險控管，無法回測驗證。</div>`;
   const fmtH = h => !h || !h.n ? '<span class="mute">尚無平倉</span>'
     : `${h.n} 筆｜勝率 <b>${h.win_rate.toFixed(0)}%</b>｜<span class="${cls(h.pnl)}"><b>${nt(h.pnl)}</b></span>｜獲利因子 ${h.profit_factor === null ? '∞' : h.profit_factor.toFixed(2)}`;
   document.getElementById('tpCmp').innerHTML = '<tr><th>AI</th><th>現行（停利 = 幾倍停損）</th><th>停利縮小版（1 倍停損）</th><th>目前誰比較好</th></tr>' +
@@ -408,7 +419,7 @@ const navObserver = new IntersectionObserver(entries => {
     side.querySelectorAll('a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id));
   } });
 }, { rootMargin: '-70px 0px -60% 0px' });
-['secSummary', 'aiCards', 'secCurve', 'secTpCmp', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
+['secSummary', 'aiCards', 'secCurve', 'secNews', 'secTpCmp', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
   .forEach(id => { const el = document.getElementById(id); if (el) navObserver.observe(el); });
 setupCollapsible(document);
 

@@ -86,6 +86,10 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False) -> 
       if pos:
         d = 1 if pos["side"] == "B" else -1
         hit = x.l <= pos["stop"] if d == 1 else x.h >= pos["stop"]
+        tp = pos.get("tp")
+        if not hit and tp and ((d == 1 and x.h >= tp) or (d == -1 and x.l <= tp)):
+          close_pos(tp, "take_profit", x.end)
+          continue
         if hit:
           px = (min(pos["stop"], x.o) - 1) if d == 1 else (max(pos["stop"], x.o) + 1)
           close_pos(px, "trail_stop", x.end)
@@ -109,7 +113,7 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False) -> 
           atr = sum(trs[-14:]) / len(trs[-14:])
           d = 1 if pending["side"] == "B" else -1
           pos = {"side": pending["side"], "entry": px, "stop": round(px - d * p["atr_k"] * atr), "best": px,
-                 "cost_in": cost(cfg, px), "ts": x.end}
+                 "cost_in": cost(cfg, px), "ts": x.end, "tp": round(px + d * p["tp_atr"] * atr) if p.get("tp_atr") else None}
           pending = None
       # ---- build 60-minute bars aligned to the session start ----
       b_idx = int((x.end - start).total_seconds() // 3600 - (1 if (x.end - start).total_seconds() % 3600 == 0 else 0))
@@ -156,7 +160,7 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False) -> 
       else:
         px = h60[-1].c + d * 2
         pos = {"side": side, "entry": px, "stop": round(px - d * p["atr_k"] * atr), "best": px,
-               "cost_in": cost(cfg, px), "ts": x.end}
+               "cost_in": cost(cfg, px), "ts": x.end, "tp": round(px + d * p["tp_atr"] * atr) if p.get("tp_atr") else None}
     # ---- end of session: roll handling ----
     if pos and nxt_month != month:
       side = pos["side"]

@@ -357,10 +357,12 @@ class SwingTrend:
   hold_overnight = True
   limit_min = 60
 
-  def __init__(self, lookback: int = 10, atr_k: float = 4.0, direction: str = "both", limit_atr: float = 0.3):
+  def __init__(self, lookback: int = 10, atr_k: float = 4.0, direction: str = "both", limit_atr: float = 0.3,
+               tp_atr: float = 10.0):
     self.lookback, self.atr_k, self.direction, self.limit_atr_60 = lookback, atr_k, direction, limit_atr
+    self.tp_atr = tp_atr
     self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60 做多（{'多空都做' if direction == 'both' else '只做多'}），"
-                  f"可留倉過夜，{atr_k:g} 倍 ATR 移動停損，限價進場")
+                  f"可留倉過夜，{atr_k:g} 倍 ATR 移動停損、{tp_atr:g} 倍 ATR 停利，限價進場；新聞高風險時收緊停損")
     self.h60: list[Bar] = []  # completed 60-minute bars across sessions (set by the engine)
     self._last_decided = None
     self.reentry_side: str | None = None
@@ -397,7 +399,8 @@ class SwingTrend:
       return None
     d = 1 if side == "B" else -1
     trail = round(self.atr_k * a)
-    return Entry(side, trail, round(a * 60), f"{why}｜移動停損 {trail} 點", trail, round(c - d * self.limit_atr_60 * a))
+    tp = round(a * self.tp_atr)  # 10 x ATR(60m) ~ 2,000-2,500 pts: realistic, and best in the 1-year test.
+    return Entry(side, trail, tp, f"{why}｜移動停損 {trail} 點、停利 {tp} 點", trail, round(c - d * self.limit_atr_60 * a))
 
 
 def ema_series(values: list[float], n: int) -> list[float]:

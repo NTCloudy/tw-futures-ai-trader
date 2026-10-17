@@ -161,6 +161,7 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
 
   return {
       "tp_compare": tp_compare,
+      "news": ledger.get_state("news"),
       "generated_at": now.isoformat(timespec="seconds"),
       "mode": cfg["mode"], "mode_label": MODE_LABEL.get(cfg["mode"], cfg["mode"]),
       "product": cfg["product"], "point_value": cfg["point_value"],

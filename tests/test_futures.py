@@ -529,3 +529,29 @@ class NovaTest(unittest.TestCase):
     self.assertEqual(e.tp_pts, e.sl_pts * 3)
     day = [Bar(at(2026, 10, 16, 9, 0) + timedelta(minutes=5 * i), b.o, b.h, b.l, b.c, b.v) for i, b in enumerate(bars)]
     self.assertIsNone(NightOpenBreakout().decide(day, 0, None))  # day session: never
+
+
+class NewsRiskTest(unittest.TestCase):
+
+  def test_headline_scoring_direction(self):
+    from futures_ai.news import score_headline
+    self.assertGreater(score_headline("川普宣布對台灣晶片加徵關稅")[0], 0)
+    self.assertLess(score_headline("川普突簽行政命令 豁免多項關稅")[0], 0)
+    self.assertGreater(score_headline("China launches missile drills near Taiwan Strait")[0], score_headline("Trump tariff threat")[0])
+    self.assertEqual(score_headline("台積電法說會今日登場")[0], 0)
+
+  def test_risk_modes_block_entries(self):
+    from futures_ai import trader as tm
+    c = cfg()
+    tr = AiTrader(c, FakeStrategy(None), LocalPaperBroker(c), Ledger(":memory:"))
+    bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
+    try:
+      tm.RISK_STATE.update(mode="elevated", fomc_window=False)
+      self.assertIn("暫停新做多", tr._filter(Entry("B", 40, 80, "x"), bars))
+      self.assertIsNone(tr._filter(Entry("S", 40, 80, "x"), bars))
+      tm.RISK_STATE.update(mode="high")
+      self.assertIn("暫停所有新進場", tr._filter(Entry("S", 40, 80, "x"), bars))
+      tm.RISK_STATE.update(mode="normal", fomc_window=True)
+      self.assertIn("聯準會", tr._filter(Entry("S", 40, 80, "x"), bars))
+    finally:
+      tm.RISK_STATE.update(mode="normal", fomc_window=False)

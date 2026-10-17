@@ -162,6 +162,11 @@ class Engine:
       tr.broker.connect()
     notifier = LineNotifier(self.cfg, self.ledger)
     control = GitHubControl(self.cfg, self.ledger, notifier)
+    from .news import NewsRadar
+    from . import trader as trader_mod
+    radar = NewsRadar(self.ledger, self.cfg.get("news_poll_minutes", 10), notifier)
+    st0 = self.ledger.get_state("news") or {}
+    trader_mod.RISK_STATE.update(mode=st0.get("mode", "normal"), fomc_window=st0.get("fomc_window", False))
     names = {t.ai: t.s.name for t in self.traders}
     status, margin_day = None, None
     _, _, prev_end = session_of(self.clock())
@@ -174,6 +179,12 @@ class Engine:
         self.refresh_margin()
         self.archive_history()
       control.poll()
+      try:
+        ns = radar.poll(now)
+        if ns:
+          trader_mod.RISK_STATE.update(mode=ns["mode"], fomc_window=ns["fomc_window"])
+      except Exception as exc:
+        print(f"news radar failed: {exc}")
       try:
         new_status = self.step()
         if new_status != status:
