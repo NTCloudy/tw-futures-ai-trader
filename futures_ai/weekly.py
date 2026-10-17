@@ -41,7 +41,44 @@ def current_params() -> dict:
   return out
 
 
+def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> list[str]:
+  """Concise real-time (paper) results of the last `days` days per visible AI: whole week, and only
+  trades entered within 1 h / 2 h after the US cash open (DST-aware), plus open positions."""
+  from .calendar import us_open_at
+  from .strategies import build_strategies
+  now = now or datetime.now(TPE)
+  since = (now - timedelta(days=days)).isoformat()
+  out = [f"📊 近 {days} 天實戰（模擬）成績", "AI｜全部 筆/勝/損益｜美股開盤後1h｜後2h"]
+  for s in build_strategies():
+    if getattr(s, "hidden", False):
+      continue
+    rows = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (s.id, since))
+    def agg(rs):
+      return f"{len(rs)}/{sum(1 for r in rs if r['pnl_twd'] > 0)}/{sum(r['pnl_twd'] for r in rs):+,.0f}"
+    def us(rs, hours):
+      sel = []
+      for r in rs:
+        t = datetime.fromisoformat(r["entry_ts"])
+        o = us_open_at(t)
+        if o <= t < o + timedelta(hours=hours):
+          sel.append(r)
+      return sel
+    name = s.name.split(" ")[0]
+    line = f"{name}｜{agg(rows)}｜{agg(us(rows, 1))}｜{agg(us(rows, 2))}"
+    miss = ledger.rows("SELECT COUNT(*) n FROM orders WHERE ai=? AND ts>=? AND status='CANCELLED' AND note LIKE '%逾時未成交%'",
+                       (s.id, since))[0]["n"]
+    if miss:
+      line += f"｜限價未成交 {miss}"
+    pos = ledger.get_state(f"pos:{s.id}")
+    if pos:
+      line += f"｜留倉 {'多' if pos['side'] == 'B' else '空'}單@{pos['entry_price']:.0f}"
+    out.append(line)
+  out.append("（筆/勝/損益，單位 NT$；已實現損益，不含留倉浮動）")
+  return out
+
+
 def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: bool = True) -> dict:
+  ledger = Ledger(cfg["db_path"])
   cfg = dict(cfg, max_entries_per_session=999 if cfg.get("learning_mode") else cfg["max_entries_per_session"])
   sessions = wfo.load_sessions(cfg)
   rep = wfo.walk_forward(cfg, train_days, test_days, sessions, ais=tuple(SIM_ID.values()), log=lambda *_: None)
@@ -50,8 +87,8 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
   cur = current_params()
   params_file = ROOT / "data" / "strategy_params.json"
   live_params = json.loads(params_file.read_text(encoding="utf-8")) if params_file.exists() else {}
-  ledger = Ledger(cfg["db_path"])
-  lines = [f"【微台 AI 每週訓練報告】{datetime.now(TPE):%m/%d}",
+  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_summary(ledger), "",
+           "— 訓練（技術細節）—",
            f"資料 {rep['days'][0]} ～ {rep['days'][1]}（{len(days)} 個交易日）"]
   changes = {}
   for live_id, sim_id in SIM_ID.items():
