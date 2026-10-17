@@ -370,7 +370,7 @@ class NightReportTest(unittest.TestCase):
     self.assertEqual(sent, [])
     n.maybe_send_night(at(2026, 10, 17, 8, 30))
     self.assertEqual(len(sent), 1)
-    self.assertIn("昨晚交易", sent[0])
+    self.assertNotIn("昨晚交易", sent[0])
     n.maybe_send_night(at(2026, 10, 17, 9, 0))
     self.assertEqual(len(sent), 1)  # only once
 
@@ -540,18 +540,18 @@ class NewsRiskTest(unittest.TestCase):
     self.assertGreater(score_headline("China launches missile drills near Taiwan Strait")[0], score_headline("Trump tariff threat")[0])
     self.assertEqual(score_headline("台積電法說會今日登場")[0], 0)
 
-  def test_risk_modes_block_entries(self):
+  def test_news_tilt_needs_price_confirmation(self):
     from futures_ai import trader as tm
     c = cfg()
     tr = AiTrader(c, FakeStrategy(None), LocalPaperBroker(c), Ledger(":memory:"))
-    bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
+    flat = bars_from([(47000, 47030, 46970, 47000 + (i % 3) - 1) for i in range(60)])
+    rally = bars_from([(47000 + i * 6, 47010 + i * 6, 46998 + i * 6, 47008 + i * 6) for i in range(60)])
     try:
       tm.RISK_STATE.update(mode="elevated", fomc_window=False)
-      self.assertIn("暫停新做多", tr._filter(Entry("B", 40, 80, "x"), bars))
-      self.assertIsNone(tr._filter(Entry("S", 40, 80, "x"), bars))
-      tm.RISK_STATE.update(mode="high")
-      self.assertIn("暫停所有新進場", tr._filter(Entry("S", 40, 80, "x"), bars))
+      self.assertIn("暫不進場", tr._filter(Entry("B", 40, 80, "x"), flat))
+      self.assertIsNone(tr._filter(Entry("S", 40, 80, "x"), flat))
+      self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), rally))
       tm.RISK_STATE.update(mode="normal", fomc_window=True)
-      self.assertIn("聯準會", tr._filter(Entry("S", 40, 80, "x"), bars))
+      self.assertIn("聯準會", tr._filter(Entry("S", 40, 80, "x"), flat))
     finally:
       tm.RISK_STATE.update(mode="normal", fomc_window=False)
