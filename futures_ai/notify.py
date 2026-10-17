@@ -96,10 +96,8 @@ class LineNotifier:
 
   def defer_night(self, text: str) -> None:
     """Stores the night-session report (with its trades) to be sent the next morning."""
-    if self.pending:
-      text += "\n\n昨晚交易：\n" + "\n".join(self.pending[-25:])
-      self.pending.clear()
-      self.ledger.set_state("notify_pending", [])
+    self.pending.clear()  # Reports stay short: no per-trade list.
+    self.ledger.set_state("notify_pending", [])
     self.ledger.set_state("night_report", text)
 
   def maybe_send_night(self, now: datetime) -> None:
@@ -110,19 +108,35 @@ class LineNotifier:
       self.ledger.set_state("night_report", None)
 
   def session_summary(self, text: str) -> None:
-    if self.pending:
-      text += "\n\n本盤交易：\n" + "\n".join(self.pending[-25:])
-      self.pending.clear()
-      self.ledger.set_state("notify_pending", [])
+    self.pending.clear()
+    self.ledger.set_state("notify_pending", [])
     self._send(text)
     self.last_digest = time.monotonic()
 
 
 def summary_text(state: dict, session_label: str) -> str:
-  title = "昨晚夜盤戰況" if session_label == "夜盤" else "日盤收盤摘要"
-  lines = [f"【微台 AI】{title}（交易日 {state['rollover']['trading_day']}）"]
+  """Short report: each AI's PnL for the session, open positions, and notable news (if any)."""
+  title = "昨晚夜盤" if session_label == "夜盤" else "今日日盤"
+  lines = [f"【微台 AI】{title}結果（交易日 {state['rollover']['trading_day']}）"]
   for a in state["ais"]:
-    lines.append(f"{a['name']}：今日 {a['today_pnl']:+,}｜累計 {a['total_pnl']:+,}｜{a['trades_today']} 筆勝 {a['wins_today']}")
+    lines.append(f"{a['name'].replace(' AI', '')}：{a['today_pnl']:+,}")
   c = state["combined"]
-  lines.append(f"合計：今日 {c['today_pnl']:+,}｜累計 {c['total_pnl']:+,}")
+  lines.append(f"合計：{c['today_pnl']:+,}｜累計 {c['total_pnl']:+,}")
+  held = [a for a in state["ais"] if a.get("position")]
+  if held:
+    lines.append("")
+    lines.append("目前留倉：")
+    for a in held:
+      p = a["position"]
+      lines.append(f"・{a['name'].replace(' AI', '')} {'多' if p['side'] == 'B' else '空'}單 @ {p['entry_price']:.0f}"
+                   f"（停損 {p['sl']:.0f}，未實現 {p['unrealized']:+,}）")
+  else:
+    lines.append("目前無留倉")
+  news = state.get("news") or {}
+  if news.get("mode") in ("elevated", "high", "positive") or news.get("fomc_window"):
+    zh = {"high": "🔴 高風險", "elevated": "🟡 風險升高", "positive": "🟢 偏多消息"}.get(news.get("mode"), "")
+    lines.append("")
+    lines.append(f"新聞：{zh}" + ("（聯準會決議時段）" if news.get("fomc_window") else ""))
+    for h in (news.get("headlines") or [])[:3]:
+      lines.append(f"・{h['title'][:50]}")
   return "\n".join(lines)

@@ -281,14 +281,20 @@ class AiTrader:
     """Universal guards applied after learning. Returns a skip reason or None."""
     mode = RISK_STATE.get("mode", "normal")
     hold = getattr(self.s, "hold_overnight", False)
-    if mode == "high":
-      return "📰 新聞高風險（戰爭／關稅等重大消息），暫停所有新進場"
-    if mode == "elevated" and sig.side == "B":
-      return "📰 新聞風險升高，暫停新做多"
-    if mode == "positive" and sig.side == "S" and not hold:
-      return "📰 重大利多消息，暫停新放空"
     if RISK_STATE.get("fomc_window") and not hold:
       return "🏦 聯準會利率決議前後 1 小時，暫停當沖進場"
+    # News tilt: trades WITH the news direction follow the strategy normally; trades AGAINST it are
+    # only allowed when price action clearly disagrees with the news (e.g. the market rallies anyway).
+    against_news = (mode in ("elevated", "high") and sig.side == "B") or (mode == "positive" and sig.side == "S")
+    if against_news and bars:
+      regime, er, direction = market_regime(bars)
+      vw = vwap(bars)
+      want = 1 if sig.side == "B" else -1
+      need_er = 0.45 if mode == "high" else 0.30
+      confirmed = regime == "trend" and direction == want and er >= need_er and (bars[-1].c - vw) * want > 0
+      if not confirmed:
+        news_zh = "利空新聞" if sig.side == "B" else "利多新聞"
+        return f"📰 {news_zh}期間，逆新聞方向的{'做多' if sig.side == 'B' else '放空'}需價格明確確認（目前未確認），暫不進場"
     regime, er, direction = market_regime(bars)
     against = (sig.side == "B" and direction < 0) or (sig.side == "S" and direction > 0)
     if regime == "trend" and against and not getattr(self.s, "skip_trend_filter", False):
