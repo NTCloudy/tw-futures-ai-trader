@@ -108,7 +108,8 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False) -> 
       if pending and not pos:
         if x.end > pending["expires"]:
           pending = None
-        elif (pending["side"] == "B" and x.l <= pending["price"]) or (pending["side"] == "S" and x.h >= pending["price"]):
+        elif (pending["side"] == "B" and x.l <= pending["price"] - p.get("fill_through", 0)) or (
+            pending["side"] == "S" and x.h >= pending["price"] + p.get("fill_through", 0)):
           px = pending["price"]
           atr = sum(trs[-14:]) / len(trs[-14:])
           d = 1 if pending["side"] == "B" else -1

@@ -434,7 +434,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         p_side, p_px, p_sl, p_tp, p_tr, p_exp = pend
         if x.end > p_exp or mtc <= cfg["no_entry_minutes_before_close"]:
           pend = None
-        elif (p_side == "B" and x.l <= p_px) or (p_side == "S" and x.h >= p_px):
+        elif (p_side == "B" and x.l <= p_px - p.get("fill_through", 0)) or (p_side == "S" and x.h >= p_px + p.get("fill_through", 0)):
           d = 1 if p_side == "B" else -1
           pos = (p_side, p_px, round(p_px - d * p_sl), round(p_px + d * p_tp), side_cost(cfg, p_px), p_tr, abs(p_sl), x.end)
           entries += 1

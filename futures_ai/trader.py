@@ -96,7 +96,8 @@ class AiTrader:
       self.ledger.log(f"{KIND_ZH.get(kind, kind)} 委託失敗：{exc}", self.ai, "ERROR", ts)
       return
     self.ledger.update_order(oid, ts.isoformat(timespec="seconds"), broker_order_id=boid)
-    self.pending[boid] = {"oid": oid, "kind": kind, "entry": entry, "td": td, "code": code}
+    self.pending[boid] = {"oid": oid, "kind": kind, "entry": entry, "td": td, "code": code,
+                          "sent": ts.isoformat()}
 
   def _send_limit(self, ts: datetime, td: str, code: str, side: str, price: float, minutes: float,
                   note: str, entry: dict) -> None:
@@ -125,6 +126,17 @@ class AiTrader:
           self.ledger.log(f"刪除限價單失敗：{exc}", self.ai, "ERROR", ts)
         self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
                                  note=force or "限價單逾時未成交，已刪除")
+        del self.pending[boid]
+
+  def _expire_markets(self, ts: datetime) -> None:
+    """A market (IOC) order with no fill report after `market_timeout_seconds` is treated as unfilled
+    (e.g. cancelled by the exchange), so the stop / take-profit monitor resumes and re-fires next poll."""
+    limit = timedelta(seconds=self.cfg.get("market_timeout_seconds", 20))
+    for boid, info in list(self.pending.items()):
+      if not info.get("limit") and info.get("sent") and ts - datetime.fromisoformat(info["sent"]) > limit:
+        self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
+                                 note="市價單逾時未收到成交回報，視為未成交，重新監控")
+        self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])} 市價單逾時未成交，將重新送出", self.ai, "WARN", ts)
         del self.pending[boid]
 
   def _cancel_working(self, ts: datetime, code: str, reason: str) -> None:
@@ -215,6 +227,7 @@ class AiTrader:
       self._expire_limits(ts, "接近收盤，刪除未成交限價單")
     else:
       self._expire_limits(ts)
+    self._expire_markets(ts)
     p = self.pos
     last = quote["last"]
     hi, lo = max(last, quote.get("hi") or last), min(last, quote.get("lo") or last)
