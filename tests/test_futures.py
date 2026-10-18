@@ -548,7 +548,10 @@ class NewsRiskTest(unittest.TestCase):
     rally = bars_from([(47000 + i * 6, 47010 + i * 6, 46998 + i * 6, 47008 + i * 6) for i in range(60)])
     try:
       tm.RISK_STATE.update(mode="elevated", fomc_window=False)
-      self.assertIn("暫不進場", tr._filter(Entry("B", 40, 80, "x"), flat))
+      self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), flat))  # Elevated news: just keep an eye on it.
+      tm.RISK_STATE.update(mode="high", fomc_window=False)
+      dip = bars_from([(47000, 47030, 46970, 47000)] * 59 + [(47000, 47000, 46940, 46950)])
+      self.assertIn("先不進", tr._filter(Entry("B", 40, 80, "x"), dip))  # Below VWAP during a spike.
       self.assertIsNone(tr._filter(Entry("S", 40, 80, "x"), flat))
       self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), rally))
       tm.RISK_STATE.update(mode="normal", fomc_window=True)

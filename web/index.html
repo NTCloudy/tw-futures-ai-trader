@@ -249,8 +249,8 @@ function render(s) {
     (s.orders_today.map(o => `<tr><td>${t(o.ts).slice(6)}</td><td>${o.ai_name}</td><td>${o.kind_zh}</td><td>${typeZh[o.order_type] || o.order_type}</td><td class="${o.side === 'B' ? 'up' : 'down'}">${o.side === 'B' ? '買' : '賣'}</td><td>${o.qty}</td><td>${o.trigger_price ?? ''}</td><td>${o.fill_price ?? ''}</td><td>${statusZh[o.status] || o.status}</td><td class="mute">${o.note || ''}</td></tr>`).join('') || '<tr><td colspan="10" class="mute">今日尚無委託</td></tr>');
 
   const nw = s.news;
-  const MODE = { high: ['🔴 高風險', '暫停所有新進場；Omega 多單移動停損減半'], elevated: ['🟡 風險升高', '暫停新做多'],
-                 positive: ['🟢 偏多消息', '暫停當沖新放空；Omega 空單移動停損減半'], normal: ['⚪ 正常', '不影響交易'] };
+  const MODE = { high: ['🔴 高風險', 'AI 照策略交易；做多需價格站上 VWAP；Omega 多單移動停損減半'], elevated: ['🟡 風險升高', '留意消息，AI 照常依策略交易'],
+                 positive: ['🟢 偏多消息', 'AI 照策略交易；放空需價格在 VWAP 之下；Omega 空單移動停損減半'], normal: ['⚪ 正常', '不影響交易'] };
   document.getElementById('newsBox').innerHTML = !nw ? '<div class="mute">下一次更新後顯示（每 10 分鐘）</div>' :
     `<div style="font-size:16px"><b>${MODE[nw.mode][0]}</b>　風險分數 <b>${nw.total}</b>${nw.warming_up ? '<span class="mute">（建立基準中，約 2 小時後開始判斷）</span>' : `（平常 ${nw.baseline}，目前 ${nw.delta > 0 ? '+' : ''}${nw.delta}）`}　<span class="mute">→ ${MODE[nw.mode][1]}${nw.fomc_window ? '｜🏦 聯準會決議前後，暫停當沖進場' : ''}　｜更新 ${t(nw.updated).slice(6)}</span></div>
      <div class="mute">下次聯準會利率決議：${(nw.upcoming_fomc || []).join('、') || '–'}（決議當晚前後 1 小時暫停當沖進場）</div>

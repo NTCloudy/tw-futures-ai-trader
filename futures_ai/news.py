@@ -6,10 +6,11 @@ Trump / tariffs / war / Taiwan Strait / chips / Fed, plus the Fed's FOMC meeting
 Each headline (last 12 h, deduplicated) gets a score:
   + risk words (加徵關稅、戰爭、飛彈、制裁、出口管制、暴跌、升息 …)
   - relief words (豁免、暫停關稅、協議、停火、降息、大漲 …)
-  x1.5 if it mentions Taiwan / TSMC / chips / China / US stocks, x1.2 if it mentions Trump,
+  x1.5 Taiwan / chips / US stocks, x1.2 US-China policy, x0.8 US policy, x0.3 China only, x0.15 other;
+  x0.4 for opinion pieces; x1.2 if it mentions Trump;
   decayed with a 3-hour half-life. The total sets the market risk mode:
   compared with the median of the past 7 days (so ever-present background news is ignored):
-  normal / elevated (+6 above baseline) / high (+12) / positive (-6 below). Needs ~2 h to build a baseline.
+  normal / elevated (+8 above baseline) / high (+15) / positive (-8 below). Needs ~2 h to build a baseline.
 
 Limitations: keyword rules can misread a headline, RSS arrives minutes after the news, and the
 effect cannot be back-tested (no historical headline archive). It is a risk filter, not a predictor.
@@ -44,8 +45,15 @@ RISK = ["加徵", "課徵", "提高關稅", "新關稅", "關稅戰", "報復", 
 RELIEF = ["豁免", "暫停關稅", "取消關稅", "降關稅", "協議", "停火", "和談", "降息", "大漲", "創新高", "緩和", "解除",
           "waive", "exempt", "pause tariff", "deal", "agreement", "ceasefire", "truce", "rate cut", "rally", "record high",
           "ease", "lifts"]
-RELEVANT = ["台灣", "台股", "台積電", "半導體", "晶片", "台海", "中國", "美股", "那斯達克", "費半", "taiwan", "tsmc",
-            "semiconductor", "chip", "china", "nasdaq", "s&p", "stocks"]
+# Relevance tiers (what actually moves TAIEX futures): Taiwan / chips / US stocks directly, or US policy
+# toward China / the world. China news without a US link (e.g. China vs Norway) and unrelated
+# geopolitics are heavily discounted, as are opinion / analysis pieces.
+TAIWAN_MKT = ["台灣", "台股", "台積電", "半導體", "晶片", "台海", "美股", "那斯達克", "費半", "taiwan", "tsmc",
+              "semiconductor", "chip", "nasdaq", "s&p", "wall street", "stocks"]
+US_POLICY = ["美國", "美方", "白宮", "川普", "聯準會", "u.s.", "us ", "white house", "trump", "fed "]
+CHINA = ["中國", "中共", "北京", "共軍", "解放軍", "china", "beijing", "chinese"]
+OPINION = ["專欄", "解析", "為何", "分析", "評論", "社論", "觀點", "專家", "opinion", "analysis", "commentary", "explainer"]
+RELEVANT = TAIWAN_MKT + CHINA  # Kept for compatibility.
 TRUMP = ["川普", "trump"]
 
 FED_URL = "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
@@ -74,10 +82,20 @@ def score_headline(title: str) -> tuple[float, list[str]]:
     if w.lower() in t:
       s -= 2
       hits.append(f"-{w.strip()}")
-  if s and any(w in t for w in RELEVANT):
-    s *= 1.5
-  elif s:
-    s *= 0.4  # Geopolitics without a Taiwan / chips / stocks link moves this market much less.
+  if s:
+    us = any(w in t for w in US_POLICY)
+    if any(w in t for w in TAIWAN_MKT):
+      s *= 1.5
+    elif us and any(w in t for w in CHINA):
+      s *= 1.2  # US-China policy.
+    elif us:
+      s *= 0.8  # US policy toward the world.
+    elif any(w in t for w in CHINA):
+      s *= 0.3  # China without a US / Taiwan link (e.g. China vs Norway).
+    else:
+      s *= 0.15  # Unrelated geopolitics.
+    if any(w in t for w in OPINION):
+      s *= 0.4  # Commentary is not news.
   if s and any(w in t for w in TRUMP):
     s *= 1.2
   return s, hits
@@ -154,11 +172,11 @@ class NewsRadar:
     """Mode from the change versus the recent baseline (there is always some background war / tariff news)."""
     if delta is None:
       return "normal"
-    if delta >= 12:
+    if delta >= 15:
       return "high"
-    if delta >= 6:
+    if delta >= 8:
       return "elevated"
-    if delta <= -6:
+    if delta <= -8:
       return "positive"
     return "normal"
 
@@ -194,7 +212,7 @@ class NewsRadar:
     if prev.get("mode") != mode:
       zh = {"high": "🔴 高風險", "elevated": "🟡 風險升高", "positive": "🟢 偏多消息", "normal": "⚪ 正常"}[mode]
       self.ledger.log(f"新聞風險模式：{zh}（分數 {total}，比基準 {delta:+}）" if delta is not None else f"新聞風險模式：{zh}（建立基準中）", level="WARN")
-      if self.notifier and mode in ("high", "elevated") and prev:
+      if self.notifier and mode == "high" and prev:  # Only real spikes are pushed; the rest is on the dashboard.
         lines = "\n".join(f"・{h['title'][:60]}（{h['score']:+.1f}）" for h in heads[:3])
-        self.notifier.urgent(f"新聞風險：{zh}（比平常高 {delta:+}）\n{lines}\n→ {'暫停所有新進場' if mode == 'high' else '暫停新做多'}")
+        self.notifier.urgent(f"新聞風險：{zh}（比平常高 {delta:+}）\n{lines}\n→ AI 照常依策略交易，只是做多會多看一下價格是否確認")
     return state
