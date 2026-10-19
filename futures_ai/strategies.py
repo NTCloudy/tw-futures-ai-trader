@@ -424,10 +424,7 @@ def build_strategies(params: dict | None = None) -> list:
   alpha = OrbBreakout(**params.get("alpha-orb", {}))
   sigma = TrendPullback(**params.get("sigma-vwap", {}))
   omega = SwingTrend(**params.get("omega-swing", {}))
-  eps = InverseOf(OrbBreakout(**params.get("alpha-orb", {})), "eps-inverse-alpha", "Epsilon 反向 Alpha AI", "#ec4899",
-                  **params.get("eps-inverse-alpha", {"sl_scale": 1.0, "tp_mult": 1.5}))
-  zeta = InverseOf(TrendPullback(**params.get("sigma-vwap", {})), "zeta-inverse-sigma", "Zeta 反向 Sigma AI", "#14b8a6",
-                   **params.get("zeta-inverse-sigma", {"sl_scale": 0.5, "tp_mult": 3.0}))
+  # Epsilon (inverse Alpha) and Zeta (inverse Sigma) were removed at the user's request (2026-10-19).
   delta = InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
                     **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0}))
   cloudy = FixedBracket(TrendPullback(**params.get("sigma-vwap", {})), "cloudy-sigma", "Cloudy's strategy", "#a3e635",
@@ -442,4 +439,4 @@ def build_strategies(params: dict | None = None) -> list:
   sigma.hours = ("us_open", "night_open")
   cloudy.hours = ("us_open", "night_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
-  return [hidden_gamma, alpha, sigma, nova, eps, zeta, delta, omega, cloudy]
+  return [hidden_gamma, alpha, sigma, nova, delta, omega, cloudy]

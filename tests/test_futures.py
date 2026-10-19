@@ -381,7 +381,7 @@ class ShadowBuildTest(unittest.TestCase):
     from futures_ai.shadows import build_shadows
     sh = build_shadows(cfg(), Ledger(":memory:"))
     ids = [t.ai for t in sh]
-    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 6)
+    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 4)
     self.assertTrue(all(t.s.tp_mult == 1.0 for t in sh if t.ai.startswith("tp1-")))
 
 
@@ -391,7 +391,7 @@ class InverseOfTest(unittest.TestCase):
     from futures_ai.strategies import build_strategies, InverseOf
     from futures_ai.trader import ENTRY_BUS
     ids = [x.id for x in build_strategies({})]
-    self.assertEqual(ids, ["gamma-scalp", "alpha-orb", "sigma-vwap", "nova-nightorb", "eps-inverse-alpha", "zeta-inverse-sigma",
+    self.assertEqual(ids, ["gamma-scalp", "alpha-orb", "sigma-vwap", "nova-nightorb",
                            "delta-inverse", "omega-swing", "cloudy-sigma"])
     c = cfg()
     ledger = Ledger(":memory:")

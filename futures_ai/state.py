@@ -118,7 +118,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   for o in orders:
     o["ai_name"] = names[o["ai"]].name if o["ai"] in names else o["ai"]
     o["kind_zh"] = KIND_ZH.get(o["kind"], o["kind"])
-  trades = ledger.rows("SELECT * FROM trades WHERE trading_day=? ORDER BY id DESC", (td,))
+  trades = [t for t in ledger.rows("SELECT * FROM trades WHERE trading_day=? ORDER BY id DESC", (td,))
+            if t["ai"] in names]  # Hidden / retired AIs are not shown or counted.
   for t in trades:
     t["ai_name"] = names[t["ai"]].name if t["ai"] in names else t["ai"]
     t["exit_kind_zh"] = KIND_ZH.get(t["exit_kind"], t["exit_kind"])
@@ -126,6 +127,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   # Per trading day x session history (日盤 / 夜盤) for every AI.
   hist: dict[tuple, dict] = {}
   for t in ledger.rows("SELECT ai, trading_day, entry_ts, pnl_twd FROM trades ORDER BY id"):
+    if t["ai"] not in names:
+      continue
     hh = t["entry_ts"][11:16]
     sess_name = "day" if "08:45" <= hh < "13:45" else "night"
     row = hist.setdefault((t["trading_day"], sess_name), {"trading_day": t["trading_day"], "session": sess_name,
