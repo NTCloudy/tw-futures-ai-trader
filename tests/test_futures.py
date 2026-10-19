@@ -576,6 +576,8 @@ class AlertTest(unittest.TestCase):
     ledger.log("做多成交 47000", "sigma-vwap", "TRADE")
     ledger.log("放空成交 47000", "nova-us", "TRADE")
     n.collect({})
-    self.assertEqual(len(sent), 2)
+    ledger.log("📣 訊號：放空", "nova-us", "SIGNAL")
+    n.collect({})
+    self.assertEqual(len(sent), 2)  # Signals only; fills / exits are not pushed.
     self.assertIn("訊號", sent[0])
     self.assertIn("nova-us", sent[1])

@@ -132,7 +132,7 @@ class AiTrader:
                                  note=force or "限價單逾時未成交，已刪除")
         e = info.get("entry") or {}
         self.ledger.log(f"❌ 限價單未成交，已取消（{force or '逾時'}）｜原訊號：{'做多' if e.get('side') == 'B' else '放空'}"
-                        f"｜請一併刪除你的掛單", self.ai, "SIGNAL", ts)
+                        f"｜請一併刪除你的掛單", self.ai, "INFO", ts)
         del self.pending[boid]
 
   def _expire_markets(self, ts: datetime) -> None:
