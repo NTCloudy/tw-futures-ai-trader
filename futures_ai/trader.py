@@ -117,8 +117,9 @@ class AiTrader:
     self.pending[boid] = {"oid": oid, "kind": "ENTRY", "entry": entry, "td": td, "code": code,
                           "expires": (ts + timedelta(minutes=minutes)).isoformat(), "limit": True}
     d = 1 if side == "B" else -1
-    self.ledger.log(f"📣 訊號：{'做多' if side == 'B' else '放空'}限價 {price:.0f}（{minutes:.0f} 分鐘內有效），成交後停損 "
-                    f"{price - d * entry['sl_pts']:.0f}／停利 {price + d * entry['tp_pts']:.0f}｜{note}", self.ai, "SIGNAL", ts)
+    self.ledger.log(f"📣 訊號：{'做多' if side == 'B' else '放空'}｜進場（限價）：{price:.0f}（{minutes:.0f} 分鐘內有效）"
+                    f"｜停損：{price - d * entry['sl_pts']:.0f}（{entry['sl_pts']:.0f} 點）"
+                    f"｜停利：{price + d * entry['tp_pts']:.0f}（{entry['tp_pts']:.0f} 點）｜原因：{note}", self.ai, "SIGNAL", ts)
 
   def _expire_limits(self, ts: datetime, force: str | None = None) -> None:
     for boid, info in list(self.pending.items()):
@@ -129,7 +130,9 @@ class AiTrader:
           self.ledger.log(f"刪除限價單失敗：{exc}", self.ai, "ERROR", ts)
         self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
                                  note=force or "限價單逾時未成交，已刪除")
-        self.ledger.log(f"限價單未成交，已取消（{force or '逾時'}）", self.ai, "SIGNAL", ts)
+        e = info.get("entry") or {}
+        self.ledger.log(f"❌ 限價單未成交，已取消（{force or '逾時'}）｜原訊號：{'做多' if e.get('side') == 'B' else '放空'}"
+                        f"｜請一併刪除你的掛單", self.ai, "SIGNAL", ts)
         del self.pending[boid]
 
   def _expire_markets(self, ts: datetime) -> None:
@@ -185,7 +188,8 @@ class AiTrader:
                 "mfe": 0.0, "mae": 0.0, "trail": e.get("trail_pts")}
     ENTRY_BUS[self.ai] = {"bar_end": e.get("bar_end"), "side": side, "sl_pts": e["sl_pts"], "tp_pts": e["tp_pts"],
                           "price": price, "reason": e["reason"]}
-    self.ledger.log(f"{'做多' if side == 'B' else '放空'}成交 {price:.0f}，同時掛停利觸價 {tp:.0f}／停損觸價 {sl:.0f}"
+    self.ledger.log(f"✅ {'做多' if side == 'B' else '放空'}成交｜進場：{price:.0f}"
+                    f"｜停損：{sl:.0f}（{abs(price - sl):.0f} 點）｜停利：{tp:.0f}（{abs(tp - price):.0f} 點）"
                     f"｜{e['reason']}", self.ai, "TRADE", ts)
 
   def _close(self, ts: datetime, info: dict, price: float) -> None:
@@ -204,8 +208,8 @@ class AiTrader:
     self.pos = None
     self.ledger.set_state(f"last_exit:{self.ai}", ts.isoformat())
     self._cancel_working(ts, info["code"], "部位已平倉，刪除剩餘委託")
-    self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])}平倉 {price:.0f}，{points:+.0f} 點，"
-                    f"淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
+    self.ledger.log(f"🏁 {KIND_ZH.get(info['kind'], info['kind'])}平倉｜進場：{p['entry_price']:.0f} → 出場：{price:.0f}"
+                    f"（{points:+.0f} 點）｜淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
     if info["kind"] == "ROLL" and hasattr(self.s, "reentry_side"):
       self.s.reentry_side = p["side"]  # Re-open in the new contract if the trend is intact.
     if info["kind"] == "SL" and getattr(self.s, "block_after_stop", False):
