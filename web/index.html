@@ -126,7 +126,7 @@
   <section class="card s3"><h2>近幾小時收益</h2><div class="kpis" id="recent"></div></section>
   <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
   <div class="s12" id="aiCards"></div>
-  <section class="card s12" id="secCurve"><h2>今日損益走勢（每分鐘）</h2><svg id="curve" viewBox="0 0 1000 200" preserveAspectRatio="none"></svg><div class="mute" id="legend"></div></section>
+  <section class="card s12" id="secCurve"><h2>今日損益走勢（每分鐘）</h2><div style="position:relative"><svg id="curve" viewBox="0 0 1000 240" style="height:auto;aspect-ratio:1000/240"></svg><div id="curveTip" style="display:none;position:absolute;top:4px;pointer-events:none;background:#0f172aee;border:1px solid #334155;border-radius:6px;padding:6px 8px;font-size:12px;white-space:nowrap"></div></div><div class="mute" id="legend"></div></section>
   <section class="card s12" id="secNews"><h2>📰 新聞風險雷達（川普／關稅／戰爭／台海／聯準會）</h2><div id="newsBox"></div></section>
   <section class="card s12" id="secTpCmp"><h2>🔬 停利縮小對照組（同策略，只把停利改成 1 倍停損，與現行同時即時模擬）</h2><div class="scroll"><table id="tpCmp"></table></div><div class="mute" id="tpCmpNote"></div></section>
   <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
@@ -220,17 +220,55 @@ function render(s) {
       <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${healthHtml(a)}${pos}${brainHtml(a)}</section>`;
   }).join('');
 
-  // Intraday curve
+  // Intraday curve: time-based x axis (session open -> close), hourly grid lines, value labels,
+  // a dot at each AI's latest value, and a hover crosshair with the time and every AI's P&L.
   const all = s.ais.flatMap(a => a.curve.map(p => p.v));
   if (all.length > 1) {
-    const lo = Math.min(0, ...all), hi = Math.max(0, ...all), y = v => 190 - (v - lo) / ((hi - lo) || 1) * 180;
-    let svg = `<line x1="0" x2="1000" y1="${y(0)}" y2="${y(0)}" stroke="#475569" stroke-dasharray="4"/>`;
-    s.ais.forEach(a => {
-      if (a.curve.length < 2) return;
-      const d = a.curve.map((p, i) => `${i ? 'L' : 'M'}${(i / (a.curve.length - 1) * 1000).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
-      svg += `<path d="${d}" fill="none" stroke="${a.color}" stroke-width="2"/>`;
+    const hm = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+    const o = new Date(s.session.open), c = new Date(s.session.close);
+    const om = hm(s.session.open.slice(11, 16));  // Taipei wall-clock time, independent of the viewer's time zone.
+    const span = Math.max(30, (c - o) / 60000);
+    const rel = t => { let m = hm(t) - om; if (m < -60) m += 1440; return m; };
+    const L = 56, R = 990, T = 10, B = 205;
+    const x = m => L + Math.max(0, Math.min(1, m / span)) * (R - L);
+    const lo = Math.min(0, ...all), hi = Math.max(0, ...all), y = v => B - (v - lo) / ((hi - lo) || 1) * (B - T);
+    let svg = '';
+    for (let m = (60 - om % 60) % 60; m <= span; m += 60) {  // Hourly grid + labels.
+      const hh = String(Math.floor(((om + m) % 1440) / 60)).padStart(2, '0');
+      svg += `<line x1="${x(m)}" x2="${x(m)}" y1="${T}" y2="${B}" stroke="#334155" stroke-width="1"/>` +
+             `<text x="${x(m)}" y="${B + 22}" fill="#8d98c4" font-size="14" text-anchor="middle">${hh}:00</text>`;
+    }
+    [hi, lo].concat(lo < 0 && hi > 0 ? [0] : []).forEach(v => {
+      svg += `<text x="${L - 6}" y="${y(v) + 5}" fill="#8d98c4" font-size="13" text-anchor="end">${Math.round(v).toLocaleString()}</text>`;
     });
-    document.getElementById('curve').innerHTML = svg;
+    svg += `<line x1="${L}" x2="${R}" y1="${y(0)}" y2="${y(0)}" stroke="#64748b" stroke-dasharray="4"/>`;
+    s.ais.forEach(a => {
+      if (!a.curve.length) return;
+      const d = a.curve.map((p, i) => `${i ? 'L' : 'M'}${x(rel(p.ts)).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+      const last = a.curve.at(-1);
+      svg += `<path d="${d}" fill="none" stroke="${a.color}" stroke-width="2"/>` +
+             `<circle cx="${x(rel(last.ts))}" cy="${y(last.v)}" r="4" fill="${a.color}"/>`;
+    });
+    svg += `<line id="curveX" x1="0" x2="0" y1="${T}" y2="${B}" stroke="#e2e8f0" stroke-width="1" visibility="hidden"/>`;
+    const el = document.getElementById('curve'), tip = document.getElementById('curveTip');
+    el.innerHTML = svg;
+    el.onpointermove = ev => {
+      const r = el.getBoundingClientRect(), vx = (ev.clientX - r.left) / r.width * 1000;
+      const m = Math.round((vx - L) / (R - L) * span);
+      if (m < 0 || m > span) { el.onmouseleave(); return; }
+      const t = `${String(Math.floor(((om + m) % 1440) / 60)).padStart(2, '0')}:${String((om + m) % 60).padStart(2, '0')}`;
+      const rows = s.ais.map(a => {
+        let best = null;
+        for (const p of a.curve) if (rel(p.ts) <= m) best = p;
+        return best ? `<div><span style="color:${a.color}">■</span> ${a.name.split(' ')[0]}${a.name.includes('美股') ? ' 美股' : ''}：<b class="${cls(best.v)}">${nt(best.v)}</b></div>` : '';
+      }).join('');
+      const line = document.getElementById('curveX');
+      line.setAttribute('x1', x(m)); line.setAttribute('x2', x(m)); line.setAttribute('visibility', 'visible');
+      tip.innerHTML = `<b>${t}</b>${rows}`; tip.style.display = 'block';
+      const px = (ev.clientX - r.left);
+      tip.style.left = (px > r.width / 2 ? px - tip.offsetWidth - 12 : px + 12) + 'px';
+    };
+    el.onpointerleave = el.onmouseleave = () => { tip.style.display = 'none'; document.getElementById('curveX')?.setAttribute('visibility', 'hidden'); };
     document.getElementById('legend').innerHTML = s.ais.map(a => `<span style="color:${a.color}">■</span> ${a.name}（${a.curve[0]?.ts || ''} → ${a.curve.at(-1)?.ts || ''}）`).join('　');
   } else {
     document.getElementById('curve').innerHTML = '<text x="20" y="100" fill="#8d98c4">開盤後每分鐘記錄一次損益</text>';
