@@ -427,17 +427,14 @@ def build_strategies(params: dict | None = None) -> list:
   # Epsilon (inverse Alpha) and Zeta (inverse Sigma) were removed at the user's request (2026-10-19).
   delta = InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
                     **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0}))
-  cloudy = FixedBracket(TrendPullback(**params.get("sigma-vwap", {})), "cloudy-sigma", "Cloudy's strategy", "#a3e635",
-                        **params.get("cloudy-sigma", {"tp_pts": 120, "sl_pts": 70}))
+  # Cloudy's strategy (Sigma entries, fixed 120 / 70 bracket) was removed at the user's request (2026-10-19).
   # 方向 B: limit-order entries (validated on one year of data).
   alpha.limit_atr, alpha.limit_min = 0.0, 5
   sigma.limit_atr, sigma.limit_min = 0.2, 10
-  cloudy.limit_atr, cloudy.limit_min = 0.2, 10
   hidden_gamma.limit_atr, hidden_gamma.limit_min = 0.2, 10
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
   sigma.hours = ("us_open", "night_open")
-  cloudy.hours = ("us_open", "night_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US: same rules as Nova, but entries only in the first hour after the US cash open (DST-aware).
   # One year (trade-through fills): 126 trades, 42% wins, +62,758; both half-years profitable.
@@ -445,4 +442,4 @@ def build_strategies(params: dict | None = None) -> list:
   nova_us.id, nova_us.name, nova_us.color = "nova-us", "Nova 美股開盤 AI", "#818cf8"
   nova_us.style = "Nova 同一套夜盤開盤區間突破，但只在美股開盤後 1 小時內進場；停損＝區間寬度，停利 3 倍，限價進場"
   nova_us.hours = ("us_open",)
-  return [hidden_gamma, alpha, sigma, nova, nova_us, delta, omega, cloudy]
+  return [hidden_gamma, alpha, sigma, nova, nova_us, delta, omega]

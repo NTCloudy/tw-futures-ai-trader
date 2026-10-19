@@ -392,7 +392,7 @@ class InverseOfTest(unittest.TestCase):
     from futures_ai.trader import ENTRY_BUS
     ids = [x.id for x in build_strategies({})]
     self.assertEqual(ids, ["gamma-scalp", "alpha-orb", "sigma-vwap", "nova-nightorb", "nova-us",
-                           "delta-inverse", "omega-swing", "cloudy-sigma"])
+                           "delta-inverse", "omega-swing"])
     c = cfg()
     ledger = Ledger(":memory:")
     base = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "base long")), LocalPaperBroker(c), ledger)
@@ -417,7 +417,6 @@ class CloudyStrategyTest(unittest.TestCase):
 
   def test_fixed_100_50_bracket_not_scaled_or_capped(self):
     from futures_ai.strategies import FixedBracket, build_strategies
-    self.assertEqual(build_strategies({})[-1].name, "Cloudy's strategy")
     c = cfg()
     ledger = Ledger(":memory:")
     fb = FixedBracket(FakeStrategy(Entry("B", 37, 222, "sigma long")), "cloudy-sigma", "Cloudy's strategy", "#fff")
