@@ -439,4 +439,10 @@ def build_strategies(params: dict | None = None) -> list:
   sigma.hours = ("us_open", "night_open")
   cloudy.hours = ("us_open", "night_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
-  return [hidden_gamma, alpha, sigma, nova, delta, omega, cloudy]
+  # Nova US: same rules as Nova, but entries only in the first hour after the US cash open (DST-aware).
+  # One year (trade-through fills): 126 trades, 42% wins, +62,758; both half-years profitable.
+  nova_us = NightOpenBreakout(**params.get("nova-us", {}))
+  nova_us.id, nova_us.name, nova_us.color = "nova-us", "Nova 美股開盤 AI", "#818cf8"
+  nova_us.style = "Nova 同一套夜盤開盤區間突破，但只在美股開盤後 1 小時內進場；停損＝區間寬度，停利 3 倍，限價進場"
+  nova_us.hours = ("us_open",)
+  return [hidden_gamma, alpha, sigma, nova, nova_us, delta, omega, cloudy]
