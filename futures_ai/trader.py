@@ -116,6 +116,9 @@ class AiTrader:
     self.ledger.update_order(oid, t, broker_order_id=boid)
     self.pending[boid] = {"oid": oid, "kind": "ENTRY", "entry": entry, "td": td, "code": code,
                           "expires": (ts + timedelta(minutes=minutes)).isoformat(), "limit": True}
+    d = 1 if side == "B" else -1
+    self.ledger.log(f"📣 訊號：{'做多' if side == 'B' else '放空'}限價 {price:.0f}（{minutes:.0f} 分鐘內有效），成交後停損 "
+                    f"{price - d * entry['sl_pts']:.0f}／停利 {price + d * entry['tp_pts']:.0f}｜{note}", self.ai, "SIGNAL", ts)
 
   def _expire_limits(self, ts: datetime, force: str | None = None) -> None:
     for boid, info in list(self.pending.items()):
@@ -126,6 +129,7 @@ class AiTrader:
           self.ledger.log(f"刪除限價單失敗：{exc}", self.ai, "ERROR", ts)
         self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
                                  note=force or "限價單逾時未成交，已刪除")
+        self.ledger.log(f"限價單未成交，已取消（{force or '逾時'}）", self.ai, "SIGNAL", ts)
         del self.pending[boid]
 
   def _expire_markets(self, ts: datetime) -> None:

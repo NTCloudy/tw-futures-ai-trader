@@ -560,3 +560,22 @@ class NewsRiskTest(unittest.TestCase):
       self.assertIn("聯準會", tr._filter(Entry("S", 40, 80, "x"), flat))
     finally:
       tm.RISK_STATE.update(mode="normal", fomc_window=False)
+
+
+class AlertTest(unittest.TestCase):
+
+  def test_followed_ais_alert_instantly(self):
+    from futures_ai.notify import LineNotifier
+    c = cfg()
+    c.setdefault("notify", {})["alert_ais"] = ["alpha-orb", "nova-us"]
+    ledger = Ledger(":memory:")
+    n = LineNotifier(c, ledger)
+    sent = []
+    n._send = sent.append
+    ledger.log("📣 訊號：做多限價 47000", "alpha-orb", "SIGNAL")
+    ledger.log("做多成交 47000", "sigma-vwap", "TRADE")
+    ledger.log("放空成交 47000", "nova-us", "TRADE")
+    n.collect({})
+    self.assertEqual(len(sent), 2)
+    self.assertIn("訊號", sent[0])
+    self.assertIn("nova-us", sent[1])

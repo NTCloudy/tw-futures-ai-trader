@@ -47,7 +47,8 @@ DEFAULTS: dict = {
     },
     "control_poll_seconds": 10,
     # digest_minutes 0 = no intraday digests; day report at 13:45, night report next morning.
-    "notify": {"line_enabled": True, "digest_minutes": 0, "night_report_time": "08:30"},
+    "notify": {"line_enabled": True, "digest_minutes": 0, "night_report_time": "08:30",
+               "alert_ais": ["alpha-orb", "nova-us"]},  # Instant LINE alert on signal / fill / exit.
     "publish": {
         "enabled": False,
         "repo": "NTCloudy/tw-futures-ai-trader",

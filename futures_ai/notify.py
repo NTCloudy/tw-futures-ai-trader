@@ -73,6 +73,9 @@ class LineNotifier:
     rows = self.ledger.rows("SELECT * FROM events WHERE id>? ORDER BY id", (self.last_event_id,))
     for e in rows:
       self.last_event_id = e["id"]
+      alert = e["ai"] in self.cfg.get("alert_ais", []) and e["level"] in ("TRADE", "SIGNAL")
+      if alert:  # Real-time alert for AIs the user follows by hand (signal, fill, exit, cancel).
+        self.urgent(f"{e['ts'][11:16]} {names.get(e['ai'], e['ai'])}\n{e['message'][:300]}")
       if e["level"] == "TRADE":
         t = e["ts"][11:16]
         self.pending.append(f"{t} {names.get(e['ai'], e['ai'])}：{e['message'].split('｜')[0]}")
