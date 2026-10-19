@@ -162,8 +162,25 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                            "current_tp": getattr(strat, "tp_mult", None), "live": {**live_h, "pnl": live_pnl},
                            "twin": {**twin_h, "pnl": twin_pnl}})
 
+  # 不限時段對照組: live Alpha / Sigma (time-of-day filter) vs the same AI trading at any time.
+  hours_compare = []
+  if shadow_path.exists() and cfg["db_path"] != ":memory:":
+    since2 = sl.get_state("allday_since")
+    if since2:
+      for ai_id in ("alpha-orb", "sigma-vwap"):
+        if ai_id not in names:
+          continue
+        strat = names[ai_id]
+        lr = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, since2))
+        sr = sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (f"allday-{ai_id}", since2))
+        hours_compare.append({"id": ai_id, "name": strat.name, "color": strat.color,
+                              "hours": list(getattr(strat, "hours", None) or []),
+                              "live": {**health(lr), "pnl": sum(t["pnl_twd"] for t in lr)},
+                              "allday": {**health(sr), "pnl": sum(t["pnl_twd"] for t in sr)}})
+
   return {
       "tp_compare": tp_compare,
+      "hours_compare": hours_compare,
       "news": ledger.get_state("news"),
       "generated_at": now.isoformat(timespec="seconds"),
       "mode": cfg["mode"], "mode_label": MODE_LABEL.get(cfg["mode"], cfg["mode"]),

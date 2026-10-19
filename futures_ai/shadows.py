@@ -46,6 +46,26 @@ def build_tp_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
   return out
 
 
+ALLDAY_IDS = ("alpha-orb", "sigma-vwap")  # Live AIs with a time-of-day filter.
+
+
+def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
+  """不限時段對照組: Alpha / Sigma with identical rules and parameters, but no time-of-day filter."""
+  from datetime import datetime
+  from .calendar import TPE
+  from .strategies import build_strategies
+  if not ledger.get_state("allday_since"):
+    ledger.set_state("allday_since", datetime.now(TPE).isoformat(timespec="seconds"))
+  out = []
+  for s in build_strategies():
+    if s.id not in ALLDAY_IDS:
+      continue
+    s.base_id, s.id, s.name = s.id, f"allday-{s.id}", f"{s.name}（不限時段）"
+    s.hours = None
+    out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
+  return out
+
+
 def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   ledger = ledger or shadow_ledger()
   cfg = copy.deepcopy(cfg)
@@ -58,4 +78,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
     s.name = f"影子{i} {cls.name}"
     s.params = params
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out + build_tp_twins(cfg, ledger)
+  return out + build_tp_twins(cfg, ledger) + build_allday_twins(cfg, ledger)

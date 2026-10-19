@@ -383,6 +383,9 @@ class ShadowBuildTest(unittest.TestCase):
     ids = [t.ai for t in sh]
     self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 5)
     self.assertTrue(all(t.s.tp_mult == 1.0 for t in sh if t.ai.startswith("tp1-")))
+    allday = [t for t in sh if t.ai.startswith("allday-")]
+    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-sigma-vwap"])
+    self.assertTrue(all(not t.s.hours for t in allday))
 
 
 class InverseOfTest(unittest.TestCase):
