@@ -306,8 +306,8 @@ function render(s) {
       return `<tr><td style="color:${r.color}">${r.name}</td><td>（${r.hours.map(h => HZ[h] || h).join('＋')}）${fmtH(r.live)}</td><td>${fmtH(r.allday)}</td><td>${better}</td></tr>`;
     }).join('') || '<tr><td class="mute">對照組剛建立，下一筆交易後開始累積</td></tr>');
   const rp = s.replay;
-  const sideZh = x => x === 'B' ? '多' : '空';
-  const tl = arr => arr.map(t => `${t.entry} ${sideZh(t.side)} ${nt(t.pnl)}`).join('<br>') || '–';
+  const rpSide = x => x === 'B' ? '多' : '空';
+  const tl = arr => arr.map(t => `${t.entry} ${rpSide(t.side)} ${nt(t.pnl)}`).join('<br>') || '–';
   document.getElementById('replayTbl').innerHTML = !rp ? '<tr><td class="mute">每盤收盤後自動產生</td></tr>' :
     '<tr><th>AI</th><th>即時 筆數／損益</th><th>回測 筆數／損益</th><th>同一筆</th><th>只有即時有</th><th>只有回測有</th></tr>' +
     rp.ais.map(a => `<tr><td>${a.name}</td><td>${a.live_n}｜<span class="${cls(a.live_pnl)}">${nt(a.live_pnl)}</span></td>` +
