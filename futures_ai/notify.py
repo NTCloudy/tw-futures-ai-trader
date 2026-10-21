@@ -120,11 +120,14 @@ class LineNotifier:
 def summary_text(state: dict, session_label: str) -> str:
   """Short report: each AI's PnL for the session, open positions, and notable news (if any)."""
   title = "昨晚夜盤" if session_label == "夜盤" else "今日日盤"
-  lines = [f"【微台 AI】{title}結果（交易日 {state['rollover']['trading_day']}）"]
+  cs = state.get("curve_session") or {}
+  span = f"{cs['open'][5:10].replace('-', '/')} {cs['open'][11:16]}–{cs['close'][11:16]}" if cs.get("open") else ""
+  lines = [f"【微台 AI】{title}結果（{span}，只計本盤）"]
   for a in state["ais"]:
-    lines.append(f"{a['name'].replace(' AI', '')}：{a['today_pnl']:+,}")
+    n = a.get("session_trades", 0)
+    lines.append(f"{a['name'].replace(' AI', '')}：{a.get('session_pnl', 0):+,}" + (f"（{n} 筆）" if n else ""))
   c = state["combined"]
-  lines.append(f"合計：{c['today_pnl']:+,}｜累計 {c['total_pnl']:+,}")
+  lines.append(f"本盤合計：{c.get('session_pnl', 0):+,}")
   held = [a for a in state["ais"] if a.get("position")]
   if held:
     lines.append("")

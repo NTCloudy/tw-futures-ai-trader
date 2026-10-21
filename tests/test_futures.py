@@ -593,3 +593,16 @@ class ReplayMatchTest(unittest.TestCase):
            {"entry": at(2026, 10, 21, 1, 0), "side": "S", "pnl": -1, "kind": "SL"}]
     both, lo, so = _match(live, sim)
     self.assertEqual((len(both), len(lo), len(so)), (1, 1, 1))
+
+
+class SessionReportTest(unittest.TestCase):
+
+  def test_report_uses_session_pnl_not_cumulative(self):
+    from futures_ai.notify import summary_text
+    st = {"curve_session": {"open": "2026-10-21T08:45:00+08:00", "close": "2026-10-21T13:45:00+08:00"},
+          "ais": [{"name": "Alpha 開盤突破 AI", "session_pnl": 0, "today_pnl": 2438, "total_pnl": 2822}],
+          "combined": {"session_pnl": 0, "today_pnl": 2438, "total_pnl": 14273}, "news": None}
+    txt = summary_text(st, "日盤")
+    self.assertIn("本盤合計：+0", txt)
+    self.assertNotIn("2,438", txt)
+    self.assertNotIn("累計", txt)

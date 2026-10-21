@@ -67,7 +67,7 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     probe -= timedelta(minutes=30)
     cs_name, cs_start, cs_end = session_of(probe)
   ais = []
-  combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0}
+  combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0, "session_pnl": 0.0}
 
   for ai_id, s in names.items():
     pos = ledger.get_state(f"pos:{ai_id}")
@@ -114,6 +114,10 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                                      (ai_id, ledger.get_state(f"strategy_since:{ai_id}", "2000")))),
         "health_since": ledger.get_state(f"strategy_since:{ai_id}"),
         "last_skip": ledger.get_state(f"skip:{ai_id}"),
+        # This session only (realized + unrealized change since the session open) — used by the LINE reports.
+        "session_pnl": round(current - _value_at(series_now, cs_start - timedelta(seconds=1))) if cs_start else 0,
+        "session_trades": len(ledger.rows("SELECT id FROM trades WHERE ai=? AND exit_ts>=? AND exit_ts<=?",
+                                          (ai_id, cs_start.isoformat(), cs_end.isoformat()))) if cs_start else 0,
         # P&L of this session only (realized + unrealized), measured from the session open.
         "curve": ([{"ts": t.strftime("%H:%M"), "v": round(v - _value_at(series_now, cs_start - timedelta(seconds=1)))}
                    for t, v in series_now if cs_start <= t <= cs_end][-900:] if cs_start else []),
