@@ -186,7 +186,17 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                               "live": {**health(lr), "pnl": sum(t["pnl_twd"] for t in lr)},
                               "allday": {**health(sr), "pnl": sum(t["pnl_twd"] for t in sr)}})
 
+  replay_file = ROOT / "data" / "replay_report.json"
+  replay = None
+  if replay_file.exists() and cfg["db_path"] != ":memory:":
+    try:
+      import json as _json
+      replay = _json.loads(replay_file.read_text(encoding="utf-8"))
+    except ValueError:
+      replay = None
+
   return {
+      "replay": replay,
       "tp_compare": tp_compare,
       "hours_compare": hours_compare,
       "news": ledger.get_state("news"),

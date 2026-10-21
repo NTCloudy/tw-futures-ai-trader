@@ -87,7 +87,12 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
   cur = current_params()
   params_file = ROOT / "data" / "strategy_params.json"
   live_params = json.loads(params_file.read_text(encoding="utf-8")) if params_file.exists() else {}
-  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_summary(ledger), "",
+  try:
+    from .replay import run_replay, summary_lines
+    replay_lines = ["", *summary_lines(run_replay(cfg))]
+  except Exception as exc:
+    replay_lines = ["", f"回測 vs 即時 對帳失敗：{exc}"]
+  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_summary(ledger), *replay_lines, "",
            "— 訓練（技術細節）—",
            f"資料 {rep['days'][0]} ～ {rep['days'][1]}（{len(days)} 個交易日）"]
   changes = {}

@@ -581,3 +581,15 @@ class AlertTest(unittest.TestCase):
     self.assertEqual(len(sent), 2)  # Signals only; fills / exits are not pushed.
     self.assertIn("訊號", sent[0])
     self.assertIn("nova-us", sent[1])
+
+
+class ReplayMatchTest(unittest.TestCase):
+
+  def test_match_pairs_same_side_within_window(self):
+    from futures_ai.replay import _match
+    live = [{"entry": at(2026, 10, 20, 22, 1), "side": "B", "pnl": 1, "kind": "TP"},
+            {"entry": at(2026, 10, 20, 23, 0), "side": "S", "pnl": -1, "kind": "SL"}]
+    sim = [{"entry": at(2026, 10, 20, 22, 2), "side": "B", "pnl": 1, "kind": "TP"},
+           {"entry": at(2026, 10, 21, 1, 0), "side": "S", "pnl": -1, "kind": "SL"}]
+    both, lo, so = _match(live, sim)
+    self.assertEqual((len(both), len(lo), len(so)), (1, 1, 1))

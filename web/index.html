@@ -99,6 +99,7 @@
   <div class="grp">紀錄（最新在最上面）</div>
   <a href="#secNews">📰 新聞風險雷達</a>
   <a href="#secHrCmp">🕒 不限時段對照組</a>
+  <a href="#secReplay">🔁 回測 vs 即時 對帳</a>
   <a href="#secHist">📅 歷史每盤戰績</a>
   <a href="#secHourly">⏱ 每小時損益</a>
   <a href="#secTrades">✅ 今日已平倉交易</a>
@@ -129,6 +130,7 @@
   <section class="card s12" id="secCurve"><h2>當盤損益走勢（每分鐘，從本盤開盤起算，含未平倉）</h2><div style="position:relative"><svg id="curve" viewBox="0 0 1000 240" style="height:auto;aspect-ratio:1000/240"></svg><div id="curveTip" style="display:none;position:absolute;top:4px;pointer-events:none;background:#0f172aee;border:1px solid #334155;border-radius:6px;padding:6px 8px;font-size:12px;white-space:nowrap"></div></div><div class="mute" id="legend"></div></section>
   <section class="card s12" id="secNews"><h2>📰 新聞風險雷達（川普／關稅／戰爭／台海／聯準會）</h2><div id="newsBox"></div></section>
   <section class="card s12" id="secHrCmp"><h2>🕒 不限時段對照組（同策略同參數，只是拿掉時段限制，與現行同時即時模擬）</h2><div class="scroll"><table id="hrCmp"></table></div><div class="mute">背景模擬，不影響現行 AI。樣本越多越準，建議至少看 2～3 週再判斷。</div></section>
+  <section class="card s12" id="secReplay"><h2>🔁 回測 vs 即時 對帳（用即時錄下的同一份 K 棒重跑回測，逐筆比對）</h2><div class="scroll"><table id="replayTbl"></table></div><div class="mute" id="replayNote"></div></section>
   <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
   <section class="card s6" id="secHourly"><h2>每小時損益</h2><div class="scroll"><table id="hourly" data-limit="8"></table></div></section>
   <section class="card s6" id="secTrades"><h2>今日已平倉交易</h2><div class="scroll"><table id="trades" data-limit="10"></table></div></section>
@@ -303,6 +305,15 @@ function render(s) {
       const better = !r.live.n && !r.allday.n ? '–' : (r.allday.pnl > r.live.pnl ? '不限時段較好' : r.allday.pnl < r.live.pnl ? '現行較好' : '打平');
       return `<tr><td style="color:${r.color}">${r.name}</td><td>（${r.hours.map(h => HZ[h] || h).join('＋')}）${fmtH(r.live)}</td><td>${fmtH(r.allday)}</td><td>${better}</td></tr>`;
     }).join('') || '<tr><td class="mute">對照組剛建立，下一筆交易後開始累積</td></tr>');
+  const rp = s.replay;
+  const sideZh = x => x === 'B' ? '多' : '空';
+  const tl = arr => arr.map(t => `${t.entry} ${sideZh(t.side)} ${nt(t.pnl)}`).join('<br>') || '–';
+  document.getElementById('replayTbl').innerHTML = !rp ? '<tr><td class="mute">每盤收盤後自動產生</td></tr>' :
+    '<tr><th>AI</th><th>即時 筆數／損益</th><th>回測 筆數／損益</th><th>同一筆</th><th>只有即時有</th><th>只有回測有</th></tr>' +
+    rp.ais.map(a => `<tr><td>${a.name}</td><td>${a.live_n}｜<span class="${cls(a.live_pnl)}">${nt(a.live_pnl)}</span></td>` +
+      `<td>${a.sim_n}｜<span class="${cls(a.sim_pnl)}">${nt(a.sim_pnl)}</span></td><td><b>${a.matched}</b></td>` +
+      `<td class="mute">${tl(a.live_only)}</td><td class="mute">${tl(a.sim_only)}</td></tr>`).join('');
+  document.getElementById('replayNote').textContent = rp ? `${rp.since} 起共 ${rp.sessions} 盤｜更新 ${rp.generated_at.slice(5, 16).replace('T', ' ')}｜兩邊一致代表一年回測的結果可信度高；不一致的筆數會列在右邊兩欄。` : '';
   const sessZh = { day: '日盤', night: '夜盤' };
   document.getElementById('dailyHist').innerHTML = `<tr><th>交易日</th><th>盤別</th>${s.ais.map(a => `<th>${a.name}</th>`).join('')}<th>合計</th></tr>` +
     ((s.daily_history || []).map(r => `<tr><td>${r.trading_day}</td><td>${sessZh[r.session]}</td>${s.ais.map(a => {
@@ -457,7 +468,7 @@ const navObserver = new IntersectionObserver(entries => {
     side.querySelectorAll('a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id));
   } });
 }, { rootMargin: '-70px 0px -60% 0px' });
-['secSummary', 'aiCards', 'secCurve', 'secNews', 'secHrCmp', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
+['secSummary', 'aiCards', 'secCurve', 'secNews', 'secHrCmp', 'secReplay', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
   .forEach(id => { const el = document.getElementById(id); if (el) navObserver.observe(el); });
 setupCollapsible(document);
 

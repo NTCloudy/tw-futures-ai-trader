@@ -100,6 +100,7 @@ def main(argv=None) -> int:
   tr = sub.add_parser("train", help="滾動前進測試 + 參數搜尋（練習期挑參數 → 沒看過的考試期驗證）")
   tr.add_argument("--train-days", type=int, default=10)
   tr.add_argument("--test-days", type=int, default=5)
+  sub.add_parser("replay", help="回測 vs 即時 對帳：用即時錄下的 K 棒重跑回測，逐筆比對")
   sub.add_parser("weekly", help="每週自動訓練：滾動前進測試、比較參數、影子排名、LINE 報告")
   ex = sub.add_parser("export-history", help="（Mac 上執行）唯讀下載永豐微台指 1 分K 歷史資料，上傳到私人資料庫")
   ex.add_argument("--days", type=int, default=365)
@@ -154,6 +155,9 @@ def main(argv=None) -> int:
     ledger.set_state("kill_switch", args.state == "on")
     ledger.log(f"緊急停止 {'啟動' if args.state == 'on' else '解除'}（CLI）", level="WARN")
     print(f"kill_switch = {args.state}")
+  elif args.cmd == "replay":
+    from .replay import run_replay, summary_lines
+    print("\n".join(summary_lines(run_replay(cfg))))
   elif args.cmd == "weekly":
     from .weekly import run_weekly
     run_weekly(cfg)
