@@ -398,6 +398,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           exit_px, kind = (tp - slip) if d == 1 else (tp + slip), "TP"
         elif mtc <= cfg["flatten_minutes_before_close"] or i == len(b) - 1:
           exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "END"
+        elif p.get("flat_us_min") is not None and s.name == "night" and \
+            x.end >= us_open_at(x.end) + timedelta(minutes=p["flat_us_min"]):
+          exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "TIME"  # Flat N minutes after the US cash open.
         be = p.get("be_r")  # Breakeven: once profit >= be_r x initial stop, move stop to entry (+cost cover).
         if exit_px is None and be:
           init = pos[6] if len(pos) > 6 else abs(entry - sl)

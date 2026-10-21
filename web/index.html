@@ -98,7 +98,6 @@
   <a href="#secCurve">📈 當盤損益走勢</a>
   <div class="grp">紀錄（最新在最上面）</div>
   <a href="#secNews">📰 新聞風險雷達</a>
-  <a href="#secTpCmp">🔬 停利縮小對照組</a>
   <a href="#secHrCmp">🕒 不限時段對照組</a>
   <a href="#secHist">📅 歷史每盤戰績</a>
   <a href="#secHourly">⏱ 每小時損益</a>
@@ -129,7 +128,6 @@
   <div class="s12" id="aiCards"></div>
   <section class="card s12" id="secCurve"><h2>當盤損益走勢（每分鐘，從本盤開盤起算，含未平倉）</h2><div style="position:relative"><svg id="curve" viewBox="0 0 1000 240" style="height:auto;aspect-ratio:1000/240"></svg><div id="curveTip" style="display:none;position:absolute;top:4px;pointer-events:none;background:#0f172aee;border:1px solid #334155;border-radius:6px;padding:6px 8px;font-size:12px;white-space:nowrap"></div></div><div class="mute" id="legend"></div></section>
   <section class="card s12" id="secNews"><h2>📰 新聞風險雷達（川普／關稅／戰爭／台海／聯準會）</h2><div id="newsBox"></div></section>
-  <section class="card s12" id="secTpCmp"><h2>🔬 停利縮小對照組（同策略，只把停利改成 1 倍停損，與現行同時即時模擬）</h2><div class="scroll"><table id="tpCmp"></table></div><div class="mute" id="tpCmpNote"></div></section>
   <section class="card s12" id="secHrCmp"><h2>🕒 不限時段對照組（同策略同參數，只是拿掉時段限制，與現行同時即時模擬）</h2><div class="scroll"><table id="hrCmp"></table></div><div class="mute">背景模擬，不影響現行 AI。樣本越多越準，建議至少看 2～3 週再判斷。</div></section>
   <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
   <section class="card s6" id="secHourly"><h2>每小時損益</h2><div class="scroll"><table id="hourly" data-limit="8"></table></div></section>
@@ -299,12 +297,6 @@ function render(s) {
      <div class="mute">分數 &gt; 0 代表利空風險（綠色），&lt; 0 代表利多（紅色）。關鍵字規則判斷，可能誤判；新聞約延遲數分鐘，僅作風險控管，無法回測驗證。</div>`;
   const fmtH = h => !h || !h.n ? '<span class="mute">尚無平倉</span>'
     : `${h.n} 筆｜勝率 <b>${h.win_rate.toFixed(0)}%</b>｜<span class="${cls(h.pnl)}"><b>${nt(h.pnl)}</b></span>｜獲利因子 ${h.profit_factor === null ? '∞' : h.profit_factor.toFixed(2)}`;
-  document.getElementById('tpCmp').innerHTML = '<tr><th>AI</th><th>現行（停利 = 幾倍停損）</th><th>停利縮小版（1 倍停損）</th><th>目前誰比較好</th></tr>' +
-    ((s.tp_compare || []).map(r => {
-      const better = !r.live.n && !r.twin.n ? '–' : (r.twin.pnl > r.live.pnl ? '<span class="up">縮小版較好</span>' : r.twin.pnl < r.live.pnl ? '<span class="up">現行較好</span>' : '打平');
-      return `<tr><td style="color:${r.color}">${r.name}</td><td>（${r.current_tp ?? '-'} 倍）${fmtH(r.live)}</td><td>${fmtH(r.twin)}</td><td>${better}</td></tr>`;
-    }).join('') || '<tr><td class="mute">對照組剛建立，下一筆交易後開始累積</td></tr>');
-  document.getElementById('tpCmpNote').textContent = '兩邊從同一時間開始計算、用同一份即時行情；縮小版只在背景模擬，不影響現行 AI。樣本越多越準，建議至少看 2～3 週再判斷。';
   const HZ = { us_open: '美股開盤 1h', night_open: '夜盤開盤 1h' };
   document.getElementById('hrCmp').innerHTML = '<tr><th>AI</th><th>現行（限時段）</th><th>不限時段版</th><th>目前誰比較好</th></tr>' +
     ((s.hours_compare || []).map(r => {
@@ -465,7 +457,7 @@ const navObserver = new IntersectionObserver(entries => {
     side.querySelectorAll('a').forEach(a => a.classList.toggle('active', a.getAttribute('href') === '#' + en.target.id));
   } });
 }, { rootMargin: '-70px 0px -60% 0px' });
-['secSummary', 'aiCards', 'secCurve', 'secNews', 'secTpCmp', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
+['secSummary', 'aiCards', 'secCurve', 'secNews', 'secHrCmp', 'secHist', 'secHourly', 'secTrades', 'secOrders', 'secJournal', 'secEvents']
   .forEach(id => { const el = document.getElementById(id); if (el) navObserver.observe(el); });
 setupCollapsible(document);
 

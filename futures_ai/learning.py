@@ -198,6 +198,9 @@ class Brain:
         st["loss_streak"] = 0
     if slip >= 3:
       diag += f"；觸發後滑價 {slip:.0f} 點"
+    if getattr(self, "frozen", False):  # Weekly-only changes: keep the multipliers, list the ideas as suggestions.
+      st["sl_mult"], st["tp_mult"] = 1.0, 1.0
+      adjust = [f"建議（不即時套用，每週統一檢討）：{a}" for a in adjust if "冷靜" not in a]
     nxt, why = self.choose_mode(regime)
     adjust.append(f"下次{REGIME_ZH[regime]}：{self.modes[nxt] if nxt else '暫停進場'}（{why}）")
     entry = {"ts": now.isoformat(timespec="seconds"), "ai": self.ai, "pnl": round(pnl), "side": pos["side"],

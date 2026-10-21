@@ -100,7 +100,13 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
       cur_oos += wfo.simulate(cfg, sim_id, cur_sim, [s for d in test_days_ for s in by_day[d]])["pnl"]
     new = r["latest_params"]
     switched = False
-    if cfg.get("learning_mode") and not new.get("off") and r["windows"] and r["oos_pnl"] > cur_oos:
+    frozen = datetime.now(TPE).date().isoformat() <= cfg.get("params_frozen_until", "")
+    if frozen and not new.get("off") and r["oos_pnl"] > cur_oos:
+      kw = {k: new[k] for k in LIVE_KEYS[live_id] if k in new}
+      lines.append(f"\n{NAMES[live_id]}：評選期間參數凍結（至 {cfg['params_frozen_until']}），"
+                   f"建議改為 {kw}（考試期 {r['oos_pnl']:+,} vs 目前 {cur_oos:+,.0f}），評選後統一決定")
+      continue
+    if not frozen and cfg.get("learning_mode") and not new.get("off") and r["windows"] and r["oos_pnl"] > cur_oos:
       kw = {k: new[k] for k in LIVE_KEYS[live_id] if k in new}
       if kw != {k: cur[live_id].get(k) for k in kw}:
         live_params[live_id] = kw

@@ -381,8 +381,8 @@ class ShadowBuildTest(unittest.TestCase):
     from futures_ai.shadows import build_shadows
     sh = build_shadows(cfg(), Ledger(":memory:"))
     ids = [t.ai for t in sh]
-    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 5)
-    self.assertTrue(all(t.s.tp_mult == 1.0 for t in sh if t.ai.startswith("tp1-")))
+    self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 0)  # Take-profit twins retired.
+    self.assertIn("sh1-nova-nightorb", ids)  # 2-hour Nova control.
     allday = [t for t in sh if t.ai.startswith("allday-")]
     self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-sigma-vwap"])
     self.assertTrue(all(not t.s.hours for t in allday))

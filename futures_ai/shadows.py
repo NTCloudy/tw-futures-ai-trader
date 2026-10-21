@@ -9,20 +9,13 @@ import copy
 from .brokers import LocalPaperBroker
 from .config import ROOT
 from .ledger import Ledger
-from .strategies import NightOpenBreakout, OrbBreakout, TrendBreakout, TrendPullback
+from .strategies import NightOpenBreakout
 from .trader import AiTrader
 
 VARIANTS = [
-    (OrbBreakout, {"range_bars": 6, "sl_frac": 0.75, "tp_mult": 3.0}),
-    (OrbBreakout, {"range_bars": 3, "sl_frac": 0.5, "tp_mult": 2.0}),
-    (OrbBreakout, {"range_bars": 3, "sl_frac": 0.75, "tp_mult": 1.5}),
-    (TrendPullback, {"pull_atr": 0.2, "sl_atr": 2.0, "tp_mult": 3.0}),
-    (TrendPullback, {"pull_atr": 0.5, "sl_atr": 1.5, "tp_mult": 3.0}),
-    (TrendPullback, {"pull_atr": 0.5, "sl_atr": 2.0, "tp_mult": 4.0, "trail_atr": 3.0}),
-    (TrendBreakout, {"lookback": 6, "sl_atr": 2.0, "trail_atr": 4.0}),
-    (TrendBreakout, {"lookback": 24, "sl_atr": 2.0, "trail_atr": 4.0}),
-    (TrendBreakout, {"lookback": 12, "sl_atr": 3.0, "trail_atr": 3.0}),
-    (NightOpenBreakout, {"window": 120}),  # Control: the original 2-hour Nova.
+    # 2026-10-21: the old Alpha / Sigma / Gamma parameter variants and the take-profit twins were
+    # retired (conclusions reached). Kept: the original 2-hour Nova as a control.
+    (NightOpenBreakout, {"window": 120}),
 ]
 
 
@@ -78,4 +71,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
     s.name = f"影子{i} {cls.name}"
     s.params = params
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out + build_tp_twins(cfg, ledger) + build_allday_twins(cfg, ledger)
+  return out + build_allday_twins(cfg, ledger)

@@ -51,6 +51,10 @@ class AiTrader:
     self.pending: dict[str, dict] = {}  # broker_order_id -> {"oid", "kind", "entry"}
     self.learning = bool(cfg.get("learning_mode"))
     self.brain = Brain(ledger, strategy, learning=self.learning)
+    if not cfg.get("learn_per_trade", True):
+      # Parameters change at most once a week (weekly job), never after a single trade: no stop /
+      # take-profit rescaling and no switching to the reversed strategy. Reviews are still written.
+      self.brain.fixed, self.brain.allow_flip, self.brain.frozen = True, False, True
 
   # ---------- persisted state ----------
   @property
