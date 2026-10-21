@@ -116,7 +116,7 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
         "last_skip": ledger.get_state(f"skip:{ai_id}"),
         # P&L of this session only (realized + unrealized), measured from the session open.
         "curve": ([{"ts": t.strftime("%H:%M"), "v": round(v - _value_at(series_now, cs_start - timedelta(seconds=1)))}
-                   for t, v in series_now if cs_start <= t <= cs_end][-600:] if cs_start else []),
+                   for t, v in series_now if cs_start <= t <= cs_end][-900:] if cs_start else []),
     }
     for k in combined:
       combined[k] += item[k]
