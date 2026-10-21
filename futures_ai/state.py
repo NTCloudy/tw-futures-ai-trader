@@ -60,6 +60,12 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   last = market.get("last") or 0.0
   cap = cfg["capital_per_ai_twd"]
   names = {s.id: s for s in build_strategies() if not getattr(s, "hidden", False)}
+  # Session shown on the intraday chart: the current one, or the most recent one while the market is closed.
+  cs_name, cs_start, cs_end = sess, s_start, s_end
+  probe = now
+  while cs_start is None and probe > now - timedelta(days=4):
+    probe -= timedelta(minutes=30)
+    cs_name, cs_start, cs_end = session_of(probe)
   ais = []
   combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0}
 
@@ -108,7 +114,9 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                                      (ai_id, ledger.get_state(f"strategy_since:{ai_id}", "2000")))),
         "health_since": ledger.get_state(f"strategy_since:{ai_id}"),
         "last_skip": ledger.get_state(f"skip:{ai_id}"),
-        "curve": [{"ts": t.strftime("%H:%M"), "v": round(v)} for t, v in pts][-600:],
+        # P&L of this session only (realized + unrealized), measured from the session open.
+        "curve": ([{"ts": t.strftime("%H:%M"), "v": round(v - _value_at(series_now, cs_start - timedelta(seconds=1)))}
+                   for t, v in series_now if cs_start <= t <= cs_end][-600:] if cs_start else []),
     }
     for k in combined:
       combined[k] += item[k]
@@ -192,6 +200,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
       "margin_live": ledger.get_state("margin"),
       "line_enabled": bool(cfg["notify"].get("line_enabled")) and load_cred() is not None,
       "rollover": rollover_info(now, cfg["product"], cfg["roll_days_before"]),
+      "curve_session": {"name": cs_name, "open": cs_start.isoformat() if cs_start else None,
+                        "close": cs_end.isoformat() if cs_end else None},
       "session": {"name": sess, "open": s_start.isoformat() if s_start else None,
                   "close": s_end.isoformat() if s_end else None},
       "market": market, "kill_switch": ledger.get_state("kill_switch", False),
