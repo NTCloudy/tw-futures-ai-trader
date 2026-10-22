@@ -3,7 +3,8 @@
 Sources (free, no API key): Google News RSS searches in Traditional Chinese and English for
 Trump / tariffs / war / Taiwan Strait / chips / Fed, plus the Fed's FOMC meeting calendar.
 
-Each headline (last 12 h, deduplicated) gets a score:
+Each headline (last 12 h) gets a score; headlines about the same story (similar titles from several
+outlets) are merged and counted once:
   + risk words (加徵關稅、戰爭、飛彈、制裁、出口管制、暴跌、升息 …)
   - relief words (豁免、暫停關稅、協議、停火、降息、大漲 …)
   x1.5 Taiwan / chips / US stocks, x1.2 US-China policy, x0.8 US policy, x0.3 China only, x0.15 other;
@@ -67,9 +68,50 @@ def _get(url: str, timeout: int = 15) -> str:
     return r.read().decode("utf-8", errors="ignore")
 
 
+# Phrases that negate or reverse a risk word ("no sanctions", "eases sanctions", "end of the war"):
+# they count as relief and the risk word inside them is not scored.
+NEGATED = ["不會施加制裁", "不會制裁", "不制裁", "放寬制裁", "暫緩制裁", "解除制裁", "放寬對", "暫緩對", "結束戰爭", "戰爭結束",
+           "終戰", "停戰", "no sanctions", "ease sanctions", "eases sanctions", "lift sanctions", "end the war", "end of the war"]
+STORY_SIM = 0.3  # Character-bigram Jaccard similarity above which two headlines are the same story.
+
+
+def _story_key(title: str) -> set[str]:
+  t = re.sub(r"\s+-\s+[^-]+$", "", title)  # Drop the " - Source" suffix.
+  t = re.sub(r"[【\[].*?[】\]]", "", t)  # Drop topic tags such as 【俄烏戰爭】.
+  t = re.sub(r"[\W_]+", "", t.lower())
+  return {t[i:i + 2] for i in range(len(t) - 1)}
+
+
+def _similar(a: set[str], b: set[str]) -> bool:
+  return bool(a and b) and len(a & b) / len(a | b) >= STORY_SIM
+
+
+def cluster_stories(items: list[dict]) -> list[dict]:
+  """Merges headlines about the same story (several outlets, reworded titles) into one entry so a
+  story is scored once, not once per outlet. Keeps the strongest headline; `n` = number of reports."""
+  out: list[dict] = []
+  for h in sorted(items, key=lambda x: -abs(x["score"])):
+    k = _story_key(h["title"])
+    for c in out:
+      if any(_similar(k, m) for m in c["_keys"]):
+        c["n"] += 1
+        c["_keys"].append(k)
+        break
+    else:
+      out.append({**h, "n": 1, "_keys": [k]})
+  for c in out:
+    del c["_keys"]
+  return out
+
+
 def score_headline(title: str) -> tuple[float, list[str]]:
   t = title.lower()
   hits, s = [], 0.0
+  for w in NEGATED:
+    if w.lower() in t:
+      s -= 2
+      hits.append(f"-{w}")
+      t = t.replace(w.lower(), " ")
   for w in STRONG_RISK:
     if w.lower() in t:
       s += 3
@@ -128,8 +170,7 @@ def fetch_headlines(now: datetime, hours: int = 12) -> list[dict]:
       age_h = max(0.0, (now - ts).total_seconds() / 3600)
       out.append({"title": title, "link": html.unescape(link), "ts": ts.isoformat(timespec="minutes"),
                   "raw": s, "score": round(s * 0.5 ** (age_h / 3), 2), "hits": hits[:5]})
-  out.sort(key=lambda h: -abs(h["score"]))
-  return out
+  return cluster_stories(out)  # Sorted by |score|, one entry per story.
 
 
 def fomc_decision_days(page: str) -> list[date]:

@@ -295,7 +295,7 @@ function render(s) {
     `<div style="font-size:16px"><b>${MODE[nw.mode][0]}</b>　風險分數 <b>${nw.total}</b>${nw.warming_up ? '<span class="mute">（建立基準中，約 2 小時後開始判斷）</span>' : `（平常 ${nw.baseline}，目前 ${nw.delta > 0 ? '+' : ''}${nw.delta}）`}　<span class="mute">→ ${MODE[nw.mode][1]}${nw.fomc_window ? '｜🏦 聯準會決議前後，暫停當沖進場' : ''}　｜更新 ${t(nw.updated).slice(6)}</span></div>
      <div class="mute">下次聯準會利率決議：${(nw.upcoming_fomc || []).join('、') || '–'}（決議當晚前後 1 小時暫停當沖進場）</div>
      <div class="scroll"><table data-limit="8" id="newsTbl"><tr><th>時間</th><th>分數</th><th>標題</th><th>判斷依據</th></tr>${(nw.headlines || []).map(h =>
-       `<tr><td class="mute">${h.ts.slice(5, 16).replace('T', ' ')}</td><td class="${h.score > 0 ? 'down' : 'up'}">${h.score > 0 ? '+' : ''}${h.score}</td><td style="white-space:normal"><a href="${h.link}" target="_blank" style="color:#e8edff">${h.title}</a></td><td class="mute">${h.hits.join(' ')}</td></tr>`).join('')}</table></div>
+       `<tr><td class="mute">${h.ts.slice(5, 16).replace('T', ' ')}</td><td class="${h.score > 0 ? 'down' : 'up'}">${h.score > 0 ? '+' : ''}${h.score}</td><td style="white-space:normal"><a href="${h.link}" target="_blank" style="color:#e8edff">${h.title}</a>${h.n > 1 ? `<span class="mute">（同一事件 ${h.n} 則報導，只算一次）</span>` : ''}</td><td class="mute">${h.hits.join(' ')}</td></tr>`).join('')}</table></div>
      <div class="mute">分數 &gt; 0 代表利空風險（綠色），&lt; 0 代表利多（紅色）。關鍵字規則判斷，可能誤判；新聞約延遲數分鐘，僅作風險控管，無法回測驗證。</div>`;
   const fmtH = h => !h || !h.n ? '<span class="mute">尚無平倉</span>'
     : `${h.n} 筆｜勝率 <b>${h.win_rate.toFixed(0)}%</b>｜<span class="${cls(h.pnl)}"><b>${nt(h.pnl)}</b></span>｜獲利因子 ${h.profit_factor === null ? '∞' : h.profit_factor.toFixed(2)}`;

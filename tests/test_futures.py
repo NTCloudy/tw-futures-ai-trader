@@ -606,3 +606,16 @@ class SessionReportTest(unittest.TestCase):
     self.assertIn("本盤合計：+0", txt)
     self.assertNotIn("2,438", txt)
     self.assertNotIn("累計", txt)
+
+
+class NewsClusterTest(unittest.TestCase):
+
+  def test_same_story_counted_once(self):
+    from futures_ai.news import cluster_stories, score_headline
+    titles = ["川普：俄烏戰爭距終戰可能已到最近時刻 - TVBS新聞網", "俄烏戰爭距終戰！川普發聲：可能已到最近時刻 - 三立新聞",
+              "期中選後再轟伊朗？美以已演練空襲 川普尚未拍板 - 經濟日報"]
+    items = [{"title": t, "score": 2.0} for t in titles]
+    out = cluster_stories(items)
+    self.assertEqual(len(out), 2)
+    self.assertEqual(max(o["n"] for o in out), 2)
+    self.assertLess(score_headline("川普：近達成協議不會施加制裁")[0], 0)  # Negated sanctions = relief.
