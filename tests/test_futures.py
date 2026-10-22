@@ -383,6 +383,7 @@ class ShadowBuildTest(unittest.TestCase):
     ids = [t.ai for t in sh]
     self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 0)  # Take-profit twins retired.
     self.assertIn("sh1-nova-nightorb", ids)  # 2-hour Nova control.
+    self.assertIn("nova-us", ids)  # US-open-only Nova runs as a shadow.
     allday = [t for t in sh if t.ai.startswith("allday-")]
     self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-sigma-vwap"])
     self.assertTrue(all(not t.s.hours for t in allday))
@@ -394,8 +395,7 @@ class InverseOfTest(unittest.TestCase):
     from futures_ai.strategies import build_strategies, InverseOf
     from futures_ai.trader import ENTRY_BUS
     ids = [x.id for x in build_strategies({})]
-    self.assertEqual(ids, ["gamma-scalp", "alpha-orb", "sigma-vwap", "nova-nightorb", "nova-us",
-                           "delta-inverse", "omega-swing"])
+    self.assertEqual(ids, ["alpha-orb", "sigma-vwap", "nova-nightorb", "omega-swing"])
     c = cfg()
     ledger = Ledger(":memory:")
     base = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "base long")), LocalPaperBroker(c), ledger)

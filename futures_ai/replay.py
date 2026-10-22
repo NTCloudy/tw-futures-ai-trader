@@ -82,9 +82,14 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
   from .strategies import build_strategies
   for s in build_strategies():
     names[s.id] = s.name
+  names["nova-us"] = "Nova 美股開盤（影子）"
+
+  shadow = Ledger(str(ROOT / "data" / "shadow.db")) if (ROOT / "data" / "shadow.db").exists() else None
 
   def live_trades(ai: str) -> list[dict]:
     rows = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai, since))
+    if ai == "nova-us" and shadow is not None:  # Front-stage until 10/22, a background shadow since then.
+      rows += shadow.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai, since))
     return [{"entry": datetime.fromisoformat(r["entry_ts"]), "side": r["side"], "pnl": r["pnl_twd"],
              "kind": r["exit_kind"]} for r in rows]
 

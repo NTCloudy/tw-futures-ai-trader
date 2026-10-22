@@ -174,19 +174,22 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                            "current_tp": getattr(strat, "tp_mult", None), "live": {**live_h, "pnl": live_pnl},
                            "twin": {**twin_h, "pnl": twin_pnl}})
 
-  # 不限時段對照組: live Alpha / Sigma (time-of-day filter) vs the same AI trading at any time.
+  # 時段對照組: each live AI vs the same rules with a different time window, both simulated live.
   hours_compare = []
   if shadow_path.exists() and cfg["db_path"] != ":memory:":
     since2 = sl.get_state("allday_since")
     if since2:
-      for ai_id in ("alpha-orb", "sigma-vwap"):
+      pairs = [("alpha-orb", "allday-alpha-orb", "不限時段版"), ("sigma-vwap", "allday-sigma-vwap", "不限時段版"),
+               ("nova-nightorb", "nova-us", "只在美股開盤 1h 版")]
+      for ai_id, sh_id, sh_label in pairs:
         if ai_id not in names:
           continue
         strat = names[ai_id]
-        lr = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, since2))
-        sr = sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (f"allday-{ai_id}", since2))
-        hours_compare.append({"id": ai_id, "name": strat.name, "color": strat.color,
-                              "hours": list(getattr(strat, "hours", None) or []),
+        t0 = since2 if sh_id.startswith("allday-") else "2026-10-22T10:33:00+08:00"  # Nova US became a shadow then.
+        lr = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, t0))
+        sr = sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (sh_id, t0))
+        hours_compare.append({"id": ai_id, "name": strat.name, "color": strat.color, "shadow_label": sh_label,
+                              "hours": list(getattr(strat, "hours", None) or ["night_all"]),
                               "live": {**health(lr), "pnl": sum(t["pnl_twd"] for t in lr)},
                               "allday": {**health(sr), "pnl": sum(t["pnl_twd"] for t in sr)}})
 

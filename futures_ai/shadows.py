@@ -59,6 +59,14 @@ def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
   return out
 
 
+def build_nova_us_shadow(cfg: dict, ledger: Ledger) -> list[AiTrader]:
+  """Nova US (entries only in the first hour after the US cash open) as a background shadow."""
+  from .strategies import build_nova_us
+  s = build_nova_us()
+  s.base_id = "nova-nightorb"
+  return [AiTrader(cfg, s, LocalPaperBroker(cfg), ledger)]
+
+
 def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   ledger = ledger or shadow_ledger()
   cfg = copy.deepcopy(cfg)
@@ -71,4 +79,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
     s.name = f"影子{i} {cls.name}"
     s.params = params
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out + build_allday_twins(cfg, ledger)
+  return out + build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger)

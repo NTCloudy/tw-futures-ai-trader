@@ -21,7 +21,7 @@ from .notify import load_cred, push
 from .state import health
 from . import wfo
 
-SIM_ID = {"alpha-orb": "alpha-orb", "sigma-vwap": "sigma-pullback", "gamma-scalp": "gamma-trend"}
+SIM_ID = {"alpha-orb": "alpha-orb", "sigma-vwap": "sigma-pullback"}
 LIVE_KEYS = {"alpha-orb": ("range_bars", "sl_frac", "tp_mult"),
              "sigma-vwap": ("pull_atr", "sl_atr", "tp_mult", "trail_atr"),
              "gamma-scalp": ("lookback", "sl_atr", "trail_atr")}

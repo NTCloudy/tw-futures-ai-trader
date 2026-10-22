@@ -418,28 +418,27 @@ def build_strategies(params: dict | None = None) -> list:
     from .config import ROOT
     f = ROOT / "data" / "strategy_params.json"
     params = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
-  # Hidden Gamma (not shown, not counted) only drives Delta's mirror trades; it runs first.
-  hidden_gamma = TrendBreakout(**params.get("gamma-scalp", {}))
-  hidden_gamma.hidden = True
   alpha = OrbBreakout(**params.get("alpha-orb", {}))
   sigma = TrendPullback(**params.get("sigma-vwap", {}))
   omega = SwingTrend(**params.get("omega-swing", {}))
-  # Epsilon (inverse Alpha) and Zeta (inverse Sigma) were removed at the user's request (2026-10-19).
-  delta = InverseOf(TrendBreakout(**params.get("gamma-scalp", {})), "delta-inverse", "Delta 反向 Gamma AI", "#eab308",
-                    **params.get("delta-inverse", {"sl_scale": 1.0, "tp_mult": 3.0}))
-  # Cloudy's strategy (Sigma entries, fixed 120 / 70 bracket) was removed at the user's request (2026-10-19).
+  # Removed at the user's request: Epsilon / Zeta (inverse Alpha / Sigma, 2026-10-19), Cloudy's strategy
+  # (2026-10-19), Delta (inverse Gamma; one-year backtest -212,029) and the hidden Gamma that drove it (2026-10-22).
   # 方向 B: limit-order entries (validated on one year of data).
   alpha.limit_atr, alpha.limit_min = 0.0, 5
   sigma.limit_atr, sigma.limit_min = 0.2, 10
-  hidden_gamma.limit_atr, hidden_gamma.limit_min = 0.2, 10
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
   sigma.hours = ("us_open", "night_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
-  # Nova US: same rules as Nova, but entries only in the first hour after the US cash open (DST-aware).
-  # One year (trade-through fills): 126 trades, 42% wins, +62,758; both half-years profitable.
-  nova_us = NightOpenBreakout(**params.get("nova-us", {}))
-  nova_us.id, nova_us.name, nova_us.color = "nova-us", "Nova 美股開盤 AI", "#818cf8"
+  # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
+  return [alpha, sigma, nova, omega]
+
+
+def build_nova_us(params: dict | None = None) -> "NightOpenBreakout":
+  """Nova US: same rules as Nova, but entries only in the first hour after the US cash open (DST-aware).
+  One year (trade-through fills): 126 trades, 42% wins, +62,758; both half-years profitable."""
+  nova_us = NightOpenBreakout(**(params or {}).get("nova-us", {}))
+  nova_us.id, nova_us.name, nova_us.color = "nova-us", "Nova 美股開盤（影子）", "#818cf8"
   nova_us.style = "Nova 同一套夜盤開盤區間突破，但只在美股開盤後 1 小時內進場；停損＝區間寬度，停利 3 倍，限價進場"
   nova_us.hours = ("us_open",)
-  return [hidden_gamma, alpha, sigma, nova, nova_us, delta, omega]
+  return nova_us
