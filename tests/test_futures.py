@@ -619,3 +619,20 @@ class NewsClusterTest(unittest.TestCase):
     self.assertEqual(len(out), 2)
     self.assertEqual(max(o["n"] for o in out), 2)
     self.assertLess(score_headline("川普：近達成協議不會施加制裁")[0], 0)  # Negated sanctions = relief.
+
+
+class AlertWindowTest(unittest.TestCase):
+
+  def test_nova_alert_only_in_us_open_hour(self):
+    from futures_ai.notify import LineNotifier
+    c = cfg()
+    c.setdefault("notify", {}).update(alert_ais=["nova-nightorb"], alert_windows={"nova-nightorb": ["us_open"]})
+    ledger = Ledger(":memory:")
+    n = LineNotifier(c, ledger)
+    sent = []
+    n._send = sent.append
+    ledger.log("📣 訊號：做多", "nova-nightorb", "SIGNAL", at(2026, 10, 22, 16, 0))  # Night open: no alert.
+    ledger.log("📣 訊號：放空", "nova-nightorb", "SIGNAL", at(2026, 10, 22, 21, 40))  # US-open hour (DST).
+    n.collect({})
+    self.assertEqual(len(sent), 1)
+    self.assertIn("放空", sent[0])

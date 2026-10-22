@@ -74,6 +74,10 @@ class LineNotifier:
     for e in rows:
       self.last_event_id = e["id"]
       alert = e["ai"] in self.cfg.get("alert_ais", []) and e["level"] == "SIGNAL"
+      win = self.cfg.get("alert_windows", {}).get(e["ai"])
+      if alert and win:  # Only signals inside the given time-of-day buckets (e.g. Nova: US-open hour).
+        from .calendar import tod_bucket
+        alert = tod_bucket(datetime.fromisoformat(e["ts"])) in win
       if alert:  # Real-time alert for AIs the user follows by hand: the entry signal only (user's choice).
         self.urgent(f"{e['ts'][11:16]} {names.get(e['ai'], e['ai'])}\n" + e["message"][:400].replace("｜", "\n"))
       if e["level"] == "TRADE":
