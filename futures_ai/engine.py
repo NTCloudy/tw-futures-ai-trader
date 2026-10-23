@@ -161,7 +161,8 @@ class Engine:
     for tr in self.traders:
       tr.broker.connect()
     notifier = LineNotifier(self.cfg, self.ledger)
-    control = GitHubControl(self.cfg, self.ledger, notifier)
+    control = GitHubControl(self.cfg, self.ledger, notifier) if self.cfg.get("control_enabled", True) else None
+    shown = self.ledger.rows("SELECT COALESCE(MAX(id),0) m FROM events")[0]["m"]
     from .news import NewsRadar
     from . import trader as trader_mod
     radar = NewsRadar(self.ledger, self.cfg.get("news_poll_minutes", 10), notifier)
@@ -171,14 +172,58 @@ class Engine:
     status, margin_day = None, None
     _, _, prev_end = session_of(self.clock())
     prev_session = session_of(self.clock())[0]
+    try:
+      self._loop(notifier, control, radar, trader_mod, names, status, margin_day, prev_end, prev_session, shown)
+    except KeyboardInterrupt:
+      print("\n收到 Ctrl+C：先平倉並刪除所有委託，再結束…")
+      self.shutdown("STOP_TIME")
+      raise SystemExit(0)
+
+  def shutdown(self, kind: str) -> None:
+    """Flattens every open position (market), cancels working orders and waits briefly for the fills."""
+    now = self.clock()
+    q = self.ledger.get_state("market", {}) or {}
+    quote = {"last": q.get("last"), "bid": q.get("bid"), "ask": q.get("ask")}
+    for tr in self.traders:
+      try:
+        tr._expire_limits(now, "結束運作，刪除未成交限價單")
+        p = tr.pos
+        if p and quote["last"]:
+          tr.flatten(now, p["contract"], quote, kind)
+      except Exception as exc:
+        print(f"平倉失敗 {tr.ai}: {exc}")
+    for _ in range(20):  # Up to ~20 s for the broker's fill reports.
+      for tr in self.traders:
+        tr.process_fills(self.clock())
+      if not any(tr.pending for tr in self.traders):
+        break
+      time.sleep(1)
+    left = [tr.ai for tr in self.traders if tr.pos]
+    msg = f"⚠️ 仍有未平倉：{left}，請手動確認" if left else "✅ 已全部平倉、刪除委託"
+    self.ledger.log(msg, level="WARN")
+    print(msg)
+
+  def _loop(self, notifier, control, radar, trader_mod, names, status, margin_day, prev_end, prev_session, shown):
+    stop_at = self.cfg.get("stop_at")
     while True:
       now = self.clock()
+      if stop_at and now.hour >= 15 and now.strftime("%H:%M") >= stop_at:
+        print(f"{now:%H:%M} 到達試跑結束時間 {stop_at}：平倉並結束")
+        self.shutdown("STOP_TIME")
+        return
+      if self.cfg.get("console_events"):
+        for e in self.ledger.rows("SELECT * FROM events WHERE id>? ORDER BY id", (shown,)):
+          shown = e["id"]
+          if e["level"] in ("TRADE", "SIGNAL", "WARN", "ERROR", "KILL"):
+            print(f"{e['ts'][11:19]} {names.get(e['ai'], e['ai'] or '')} {e['message'].replace('｜', ' ｜ ')}")
       td = now.strftime("%Y-%m-%d")
       if margin_day != td:
         margin_day = td
         self.refresh_margin()
-        self.archive_history()
-      control.poll()
+        if self.cfg.get("archive_history", True):
+          self.archive_history()
+      if control:
+        control.poll()
       try:
         ns = radar.poll(now)
         if ns:

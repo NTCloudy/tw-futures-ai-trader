@@ -41,3 +41,41 @@ def sinopac_test(cfg: dict) -> bool:
   api.logout()
   print("完成。永豐會依這次模擬登入與下單紀錄開通正式環境（請以永豐通知為準）。")
   return True
+
+
+def sinopac_status(cfg: dict) -> bool:
+  """Read-only view of the Sinopac SIMULATION futures account: open positions and today's orders.
+  (Simulation orders do not appear in the Sinopac mobile app; this is where to see them.)"""
+  import shioaji as sj
+  from .brokers import assert_futures_only
+  from .export_history import _login
+
+  s = cfg["sinopac"]
+  api = _login(sj, simulation=True, key=os.environ[s["api_key_env"]], sec=os.environ[s["secret_key_env"]],
+               attempts=[{"fetch_contract": True}, {}])
+  assert_futures_only(api, cfg, strict=False)
+  acct = api.futopt_account
+  print("\n=== 永豐模擬帳戶：期貨持倉 ===")
+  try:
+    pos = api.list_positions(acct)
+    if not pos:
+      print("（無持倉）")
+    for p in pos:
+      print(f"{getattr(p, 'code', '?')} {getattr(p, 'direction', '?')} {getattr(p, 'quantity', '?')} 口 "
+            f"均價 {getattr(p, 'price', '?')} 現價 {getattr(p, 'last_price', '?')} 損益 {getattr(p, 'pnl', '?')}")
+  except Exception as exc:
+    print("查詢持倉失敗：", exc)
+  print("\n=== 今日委託／成交 ===")
+  try:
+    api.update_status(acct)
+    trades = api.list_trades()
+    if not trades:
+      print("（今日無委託）")
+    for t in trades:
+      o, st = t.order, t.status
+      print(f"{getattr(st, 'order_datetime', '')} {getattr(t.contract, 'code', '')} {o.action} {o.quantity} 口 "
+            f"{o.price_type} {o.price} → {st.status}（成交 {getattr(st, 'deal_quantity', 0)} 口）")
+  except Exception as exc:
+    print("查詢委託失敗：", exc)
+  api.logout()
+  return True

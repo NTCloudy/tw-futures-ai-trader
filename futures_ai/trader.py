@@ -20,7 +20,7 @@ RISK_STATE: dict = {"mode": "normal", "fomc_window": False}
 
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉",
-           "RETIRE": "AI 下架平倉"}
+           "RETIRE": "AI 下架平倉", "STOP_TIME": "試跑結束時間平倉"}
 
 
 def tp_cap(sl_pts: float, tp_pts: float, bars: list, minutes_to_close: float, reason: str) -> tuple[float, str]:

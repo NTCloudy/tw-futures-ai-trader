@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest import mock
 from datetime import date, datetime, timedelta
 
@@ -654,3 +655,16 @@ class FuturesOnlyGuardTest(unittest.TestCase):
       assert_futures_only(Api("S-999"), c)
     assert_futures_only(Api(None), c)  # Futures-only key: allowed.
     assert_futures_only(Api("S-999"), c, strict=False)  # Simulation: warning only.
+
+
+class MacSimConfigTest(unittest.TestCase):
+
+  def test_run_only_builds_nova_us_with_sinopac_broker_selection(self):
+    from futures_ai.cli import build_traders
+    from futures_ai.config import load_config
+    c = load_config(str(Path(__file__).resolve().parents[1] / "config" / "mac_sim.json"))
+    self.assertEqual((c["mode"], c["broker_ai"], c["run_only"]), ("sinopac_sim", "nova-us", ["nova-us"]))
+    c.update(mode="local_paper", db_path=":memory:")
+    tr = build_traders(c, Ledger(":memory:"))
+    self.assertEqual([t.ai for t in tr], ["nova-us"])
+    self.assertEqual(tr[0].s.hours, ("us_open",))

@@ -1,0 +1,15 @@
+{
+  "mode": "sinopac_sim",
+  "broker_ai": "nova-us",
+  "run_only": ["nova-us"],
+  "shadows_enabled": false,
+  "control_enabled": false,
+  "archive_history": false,
+  "console_events": true,
+  "stop_at": "23:30",
+  "learning_mode": true,
+  "enforce_daily_loss": false,
+  "db_path": "data/mac_sim.db",
+  "publish": {"enabled": false},
+  "notify": {"line_enabled": false}
+}

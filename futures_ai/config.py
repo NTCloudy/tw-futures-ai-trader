@@ -60,6 +60,12 @@ DEFAULTS: dict = {
         "interval_seconds": 60,
     },
     "db_path": "data/futures.db",
+    # Options used by the Mac broker-simulation run (config/mac_sim.json); defaults keep Cloudtop as is.
+    "run_only": None,  # List of AI ids to run (None = all front-stage AIs).
+    "control_enabled": True,  # Dashboard / GitHub emergency-stop polling.
+    "archive_history": True,  # Nightly TAIFEX tick-file archive.
+    "stop_at": None,  # "HH:MM" (evening): flatten every position, cancel orders and exit.
+    "console_events": False,  # Print trade / signal events to the terminal.
     "dashboard_port": 8766,
 }
 

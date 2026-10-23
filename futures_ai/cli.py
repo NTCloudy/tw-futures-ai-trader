@@ -22,7 +22,11 @@ def build_traders(cfg: dict, ledger: Ledger) -> list[AiTrader]:
   from .shadows import shadow_ledger
   sl = None
   out = []
-  for s in build_strategies():
+  strategies = build_strategies()
+  if cfg.get("run_only"):  # e.g. the Mac broker-simulation run: only the AI(s) routed to Sinopac.
+    from .strategies import build_nova_us
+    strategies = [x for x in strategies + [build_nova_us()] if x.id in cfg["run_only"]]
+  for s in strategies:
     if getattr(s, "hidden", False):
       sl = sl or shadow_ledger()
       out.append(AiTrader(cfg, s, make_broker(dict(cfg, mode="local_paper"), s.id), sl))
@@ -94,6 +98,7 @@ def main(argv=None) -> int:
   db.add_argument("--port", type=int)
   k = sub.add_parser("kill", help="緊急停止：平掉所有部位並停止新單")
   k.add_argument("state", choices=["on", "off"])
+  sub.add_parser("sinopac-status", help="查詢永豐模擬帳戶的持倉與今日委託（唯讀）")
   sub.add_parser("sinopac-test", help="永豐模擬環境：登入 + 期貨下單測試（開通正式環境用）")
   pt = sub.add_parser("pretrain", help="背景學習：用期交所過去 N 個交易日的真實逐筆資料預先累積 AI 經驗（不顯示在儀表板）")
   pt.add_argument("--days", type=int, default=20)
@@ -172,6 +177,9 @@ def main(argv=None) -> int:
       print(f"  {ai}: 歷史模擬 {info['trades']} 筆，勝 {info['wins']}，損益 NT$ {info['pnl']:+,.0f}")
     merge_into_live(ledger, res)
     print("已把歷史經驗合併到 AI 學習狀態（交易紀錄不會出現在儀表板）。請重新啟動引擎讓它載入。")
+  elif args.cmd == "sinopac-status":
+    from .sinopac_setup import sinopac_status
+    return 0 if sinopac_status(cfg) else 1
   elif args.cmd == "sinopac-test":
     from .sinopac_setup import sinopac_test
     return 0 if sinopac_test(cfg) else 1
