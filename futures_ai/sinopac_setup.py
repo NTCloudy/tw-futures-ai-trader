@@ -16,7 +16,9 @@ def sinopac_test(cfg: dict) -> bool:
   api = sj.Shioaji(simulation=True)
   accounts = api.login(api_key=os.environ[s["api_key_env"]], secret_key=os.environ[s["secret_key_env"]],
                        fetch_contract=True)
-  print("登入成功，帳號：", accounts)
+  from .brokers import assert_futures_only
+  assert_futures_only(api, cfg)  # The key must see the futures account only (never the stock account).
+  print("登入成功，期貨帳號：", api.futopt_account)
   code = rollover_info(now_tpe(), cfg["product"], cfg["roll_days_before"])["contract"]
   contract = [c for c in getattr(api.Contracts.Futures, cfg["product"]) if c.code == code][0]
   ref = float(contract.reference)

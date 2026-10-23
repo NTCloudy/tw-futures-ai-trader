@@ -13,9 +13,9 @@ DEFAULTS: dict = {
     # sinopac_sim : 永豐 Shioaji simulation account (simulation=True)
     # sinopac_live: 永豐 Shioaji real account (real money)
     "mode": "local_paper",
-    "broker_ai": "nova-nightorb",
+    "broker_ai": "nova-nightorb",  # In sinopac modes only this AI routes orders to the broker account.
     "learn_per_trade": False,  # No per-trade parameter changes; strategies change at most once a week.
-    "params_frozen_until": "2026-10-31",  # Evaluation period: the weekly job reports but does not switch params.  # In sinopac modes only this AI routes orders to the broker account.
+    "params_frozen_until": "2026-10-31",  # Evaluation period: the weekly job reports but does not switch params.
     "i_understand_real_money": False,
     "product": "TMF",
     "point_value": 10,  # NT$ per index point (微型臺指)
@@ -46,6 +46,7 @@ DEFAULTS: dict = {
         "ca_path": "certs/Sinopac.pfx",
         "ca_password_env": "SINOPAC_CA_PASSWORD",
         "person_id_env": "SINOPAC_PERSON_ID",
+        "require_futures_only": True,  # Refuse to start if the API key can see a stock account.
     },
     "control_poll_seconds": 10,
     # digest_minutes 0 = no intraday digests; day report at 13:45, night report next morning.

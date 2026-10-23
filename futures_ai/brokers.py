@@ -94,6 +94,7 @@ class ShioajiBroker:
     self.sj = sj
     self.api = sj.Shioaji(simulation=self.simulation)
     self.api.login(api_key=_env(s["api_key_env"]), secret_key=_env(s["secret_key_env"]), fetch_contract=True)
+    assert_futures_only(self.api, self.cfg)
     if not self.simulation:
       ca = Path(s["ca_path"])
       ca = ca if ca.is_absolute() else ROOT / ca
@@ -175,6 +176,27 @@ def _env(name: str) -> str:
   if not v:
     raise RuntimeError(f"請設定環境變數 {name}")
   return v
+
+
+def assert_futures_only(api, cfg: dict) -> None:
+  """Safety guard: refuse to run if the API key can also see a securities (stock) account.
+  The key must be created with ONLY the futures account bound, so it can never trade stocks."""
+  if not cfg.get("sinopac", {}).get("require_futures_only", True):
+    return
+  stock = None
+  try:
+    stock = api.stock_account
+  except Exception:
+    stock = None
+  if stock is not None:
+    try:
+      api.logout()
+    except Exception:
+      pass
+    raise SystemExit("⛔ 這把永豐 API 金鑰看得到證券（現股）帳戶，系統拒絕啟動。\n"
+                     "請到永豐 API 管理頁面重新申請一把「只綁定期貨帳戶」的金鑰，再更新環境變數。")
+  if getattr(api, "futopt_account", None) is None:
+    raise SystemExit("找不到期貨帳戶：請確認 API 金鑰有綁定期貨帳戶。")
 
 
 def make_broker(cfg: dict, ai_id: str):

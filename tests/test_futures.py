@@ -636,3 +636,20 @@ class AlertWindowTest(unittest.TestCase):
     n.collect({})
     self.assertEqual(len(sent), 1)
     self.assertIn("放空", sent[0])
+
+
+class FuturesOnlyGuardTest(unittest.TestCase):
+
+  def test_refuses_key_that_sees_stock_account(self):
+    from futures_ai.brokers import assert_futures_only
+
+    class Api:
+      def __init__(self, stock):
+        self.stock_account, self.futopt_account = stock, "F-123"
+      def logout(self):
+        pass
+    c = cfg()
+    c["sinopac"] = {"require_futures_only": True}
+    with self.assertRaises(SystemExit):
+      assert_futures_only(Api("S-999"), c)
+    assert_futures_only(Api(None), c)  # Futures-only key: allowed.
