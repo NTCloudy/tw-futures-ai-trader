@@ -653,3 +653,4 @@ class FuturesOnlyGuardTest(unittest.TestCase):
     with self.assertRaises(SystemExit):
       assert_futures_only(Api("S-999"), c)
     assert_futures_only(Api(None), c)  # Futures-only key: allowed.
+    assert_futures_only(Api("S-999"), c, strict=False)  # Simulation: warning only.

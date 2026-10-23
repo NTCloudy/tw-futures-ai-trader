@@ -92,9 +92,10 @@ class ShioajiBroker:
 
     s = self.cfg["sinopac"]
     self.sj = sj
-    self.api = sj.Shioaji(simulation=self.simulation)
-    self.api.login(api_key=_env(s["api_key_env"]), secret_key=_env(s["secret_key_env"]), fetch_contract=True)
-    assert_futures_only(self.api, self.cfg)
+    from .export_history import _login
+    self.api = _login(sj, simulation=self.simulation, key=_env(s["api_key_env"]), sec=_env(s["secret_key_env"]),
+                      attempts=[{"fetch_contract": True}, {}])
+    assert_futures_only(self.api, self.cfg, strict=not self.simulation)
     if not self.simulation:
       ca = Path(s["ca_path"])
       ca = ca if ca.is_absolute() else ROOT / ca
@@ -178,9 +179,10 @@ def _env(name: str) -> str:
   return v
 
 
-def assert_futures_only(api, cfg: dict) -> None:
+def assert_futures_only(api, cfg: dict, strict: bool = True) -> None:
   """Safety guard: refuse to run if the API key can also see a securities (stock) account.
-  The key must be created with ONLY the futures account bound, so it can never trade stocks."""
+  The key must be created with ONLY the futures account bound, so it can never trade stocks.
+  strict=False (simulation environment, virtual accounts, no real money): warn instead of stopping."""
   if not cfg.get("sinopac", {}).get("require_futures_only", True):
     return
   stock = None
@@ -188,7 +190,10 @@ def assert_futures_only(api, cfg: dict) -> None:
     stock = api.stock_account
   except Exception:
     stock = None
-  if stock is not None:
+  if stock is not None and not strict:
+    print("⚠️ 模擬環境中看得到證券帳戶（可能是永豐的虛擬帳戶）。模擬不影響真錢；"
+          "但上真錢前，請確認 API 金鑰只綁定期貨帳戶，否則系統會拒絕以真實帳戶啟動。")
+  elif stock is not None:
     try:
       api.logout()
     except Exception:

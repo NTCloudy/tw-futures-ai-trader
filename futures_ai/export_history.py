@@ -31,8 +31,9 @@ def _creds() -> tuple[str, str]:
   return key, sec
 
 
-def _login(sj, simulation: bool, key: str, sec: str):
-  """Logs in using only the keyword arguments the installed Shioaji version supports."""
+def _login(sj, simulation: bool, key: str, sec: str, attempts: list | None = None):
+  """Logs in using only the keyword arguments the installed Shioaji version supports
+  (newer versions dropped `fetch_contract`; contracts are then fetched separately)."""
   import inspect
   version = getattr(sj, "__version__", "?")
   print(f"shioaji 版本：{version}")
@@ -45,7 +46,7 @@ def _login(sj, simulation: bool, key: str, sec: str):
     params = set()
   if params and "api_key" not in params:
     raise SystemExit(f"shioaji {version} 太舊（不支援 API Key 登入）。請執行：pip install -U shioaji 後再試一次")
-  attempts = [{"fetch_contract": True, "subscribe_trade": False}, {"fetch_contract": True}, {}]
+  attempts = attempts or [{"fetch_contract": True, "subscribe_trade": False}, {"fetch_contract": True}, {}]
   if params:
     attempts = [{k: v for k, v in a.items() if k in params} for a in attempts]
   last = None
