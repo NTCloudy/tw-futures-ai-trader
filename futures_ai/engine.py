@@ -71,8 +71,14 @@ class Engine:
     info = rollover_info(now, self.cfg["product"], self.cfg["roll_days_before"])
     code, td = info["contract"], info["trading_day"]
     snap = self.feed.snapshot(code, name, start, now)
-    if name == "day" and snap.cdate and snap.cdate != now.strftime("%Y%m%d"):
-      return "holiday"  # Exchange closed today (quote date is not today).
+    # Exchange closed (holiday / typhoon day): the exchange keeps serving the previous session's chart.
+    # Its date (CDate) is the session's own date: today for the day session, the 15:00 start date for
+    # the night session. A replayed chart also has bars far in the future relative to "now".
+    expect = now.strftime("%Y%m%d") if name == "day" else start.strftime("%Y%m%d")
+    if snap.cdate and snap.cdate != expect:
+      return "holiday"
+    if snap.live_bar and snap.live_bar.end > now + timedelta(minutes=2):
+      return "holiday"
     if snap.quote_time is None or not snap.last:
       return "no-data"
     hi, lo = self._touched_range(snap)

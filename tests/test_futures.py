@@ -668,3 +668,23 @@ class MacSimConfigTest(unittest.TestCase):
     tr = build_traders(c, Ledger(":memory:"))
     self.assertEqual([t.ai for t in tr], ["nova-us"])
     self.assertEqual(tr[0].s.hours, ("us_open",))
+
+
+class HolidayReplayTest(unittest.TestCase):
+
+  def test_previous_night_chart_is_not_traded(self):
+    from futures_ai.engine import Engine
+    from futures_ai.feed import Snapshot
+
+    class Feed:
+      def __init__(self, snap):
+        self.snap = snap
+      def snapshot(self, code, name, start, now):
+        return self.snap
+    now = at(2026, 10, 23, 22, 25)  # Typhoon day: no night session; exchange still serves 10/22's chart.
+    bars = bars_from([(46300, 46310, 46290, 46300)] * 30)
+    stale = Snapshot("TMFK6", 45671.0, None, None, bars, now, None, "20261022")
+    e = Engine(cfg(), Ledger(":memory:"), [], feed=Feed(stale), clock=lambda: now)
+    self.assertEqual(e.step(), "holiday")
+    ok = Snapshot("TMFK6", 45671.0, None, None, bars, now, None, "20261023")
+    self.assertNotEqual(Engine(cfg(), Ledger(":memory:"), [], feed=Feed(ok), clock=lambda: now).step(), "holiday")
