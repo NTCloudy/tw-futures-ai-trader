@@ -128,8 +128,7 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
 
 
 def summary_lines(rep: dict) -> list[str]:
-  lines = [f"🔁 回測 vs 即時 對帳（{rep['since']} 起，{rep['sessions']} 盤）", "AI｜即時 筆/損益｜回測 筆/損益｜同一筆"]
+  lines = ["🔁 回測 vs 即時（同一段行情重跑回測，NT$）", "AI｜即時｜回測"]
   for a in rep["ais"]:
-    lines.append(f"{a['name'].split(' ')[0]}{' 美股' if a['id'] == 'nova-us' else ''}｜{a['live_n']}/{a['live_pnl']:+,}"
-                 f"｜{a['sim_n']}/{a['sim_pnl']:+,}｜{a['matched']}")
+    lines.append(f"{a['name'].split(' ')[0]}{' 美股' if a['id'] == 'nova-us' else ''}｜{a['live_pnl']:+,}｜{a['sim_pnl']:+,}")
   return lines

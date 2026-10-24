@@ -41,39 +41,63 @@ def current_params() -> dict:
   return out
 
 
+SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "allday-sigma-vwap": "Sigma（不限時段版）",
+                "nova-us": "Nova（只在美股開盤 1h 版）", "sh1-nova-nightorb": "Nova（舊版，只到 17:30）"}
+
+
 def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> list[str]:
-  """Concise real-time (paper) results of the last `days` days per visible AI: whole week, and only
-  trades entered within 1 h / 2 h after the US cash open (DST-aware), plus open positions."""
+  """This week's P&L per AI (realized, NT$): whole week, and only trades entered within 1 h / 2 h after
+  the US cash open (DST-aware); then the top three AIs of the week."""
   from .calendar import us_open_at
   from .strategies import build_strategies
   now = now or datetime.now(TPE)
   since = (now - timedelta(days=days)).isoformat()
-  out = [f"📊 近 {days} 天實戰（模擬）成績", "AI｜全部 筆/勝/損益｜美股開盤後1h｜後2h"]
+  out = ["📊 本週收益（模擬，NT$）", "AI｜本週｜美股開盤後1h｜後2h"]
+  totals = []
+
+  def us(rs, hours):
+    sel = []
+    for r in rs:
+      t = datetime.fromisoformat(r["entry_ts"])
+      o = us_open_at(t)
+      if o <= t < o + timedelta(hours=hours):
+        sel.append(r)
+    return sel
+
+  def tot(rs):
+    return sum(r["pnl_twd"] for r in rs)
+
   for s in build_strategies():
     if getattr(s, "hidden", False):
       continue
     rows = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (s.id, since))
-    def agg(rs):
-      return f"{len(rs)}/{sum(1 for r in rs if r['pnl_twd'] > 0)}/{sum(r['pnl_twd'] for r in rs):+,.0f}"
-    def us(rs, hours):
-      sel = []
-      for r in rs:
-        t = datetime.fromisoformat(r["entry_ts"])
-        o = us_open_at(t)
-        if o <= t < o + timedelta(hours=hours):
-          sel.append(r)
-      return sel
     name = s.name.split(" ")[0]
-    line = f"{name}｜{agg(rows)}｜{agg(us(rows, 1))}｜{agg(us(rows, 2))}"
-    miss = ledger.rows("SELECT COUNT(*) n FROM orders WHERE ai=? AND ts>=? AND status='CANCELLED' AND note LIKE '%逾時未成交%'",
-                       (s.id, since))[0]["n"]
-    if miss:
-      line += f"｜限價未成交 {miss}"
-    pos = ledger.get_state(f"pos:{s.id}")
-    if pos:
-      line += f"｜留倉 {'多' if pos['side'] == 'B' else '空'}單@{pos['entry_price']:.0f}"
-    out.append(line)
-  out.append("（筆/勝/損益，單位 NT$；已實現損益，不含留倉浮動）")
+    out.append(f"{name}｜{tot(rows):+,.0f}｜{tot(us(rows, 1)):+,.0f}｜{tot(us(rows, 2)):+,.0f}")
+    totals.append((tot(rows), name))
+  totals.sort(reverse=True)
+  medals = ["🥇", "🥈", "🥉"]
+  out.append("")
+  out.append("🏆 本週前三：" + "　".join(f"{medals[i]} {n} {v:+,.0f}" for i, (v, n) in enumerate(totals[:3])))
+  return out
+
+
+def shadow_summary(now: datetime | None = None, days: int = 7, ledger: Ledger | None = None) -> list[str]:
+  """Background shadow versions (same rules, different time window), in plain names: win rate + total."""
+  shadow_db = ROOT / "data" / "shadow.db"
+  if not shadow_db.exists():
+    return []
+  sl = Ledger(str(shadow_db))
+  since = ((now or datetime.now(TPE)) - timedelta(days=days)).isoformat()
+  out = ["", "👥 影子版本（背景模擬，近 7 天）"]
+  for ai, label in SHADOW_NAMES.items():
+    rs = sl.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (ai, since))
+    if ai == "nova-us" and ledger is not None:  # Front-stage until 10/22, then a shadow: count both.
+      rs += ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (ai, since))
+    if not rs:
+      out.append(f"{label}：本週沒有交易")
+      continue
+    wins = sum(1 for r in rs if r["pnl_twd"] > 0)
+    out.append(f"{label}：勝率 {wins / len(rs) * 100:.0f}%｜合計 {sum(r['pnl_twd'] for r in rs):+,.0f}")
   return out
 
 
@@ -131,21 +155,7 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
 
-  shadow_db = ROOT / "data" / "shadow.db"
-  if shadow_db.exists():
-    sl = Ledger(str(shadow_db))
-    since = (datetime.now(TPE) - timedelta(days=7)).isoformat()
-    ranks = []
-    for ai in {r["ai"] for r in sl.rows("SELECT DISTINCT ai FROM trades")}:
-      h = health(sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai, since)))
-      if h["n"]:
-        ranks.append((h["expectancy"] * h["n"], ai, h))
-    ranks.sort(reverse=True)
-    if ranks:
-      lines.append("\n影子版本近 7 天即時表現（前 3 名）：")
-      for total, ai, h in ranks[:3]:
-        pf = "∞" if h["profit_factor"] is None else f"{h['profit_factor']:.2f}"
-        lines.append(f"  {ai}：{h['n']} 筆，勝率 {h['win_rate']:.0f}%，獲利因子 {pf}，合計 {total:+,.0f}")
+  lines += shadow_summary(ledger=ledger)
 
   report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes, "text": "\n".join(lines)}
   (ROOT / "data" / "weekly_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
