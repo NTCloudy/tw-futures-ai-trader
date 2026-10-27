@@ -211,8 +211,18 @@ class Engine:
 
   def _loop(self, notifier, control, radar, trader_mod, names, status, margin_day, prev_end, prev_session, shown):
     stop_at = self.cfg.get("stop_at")
+    beat = 0.0
+    if self.cfg.get("console_events"):
+      print(f"✅ 引擎啟動：{', '.join(t.s.name for t in self.traders)}，下單到 {self.cfg['mode']}；每 5 分鐘顯示一次運作狀態")
     while True:
       now = self.clock()
+      if self.cfg.get("console_events") and time.monotonic() - beat >= 300:  # Heartbeat for the terminal.
+        beat = time.monotonic()
+        m = self.ledger.get_state("market", {}) or {}
+        pos = [f"{t.s.name.split(' ')[0]} {'多' if t.pos['side'] == 'B' else '空'}單@{t.pos['entry_price']:.0f}"
+               for t in self.traders if t.pos]
+        print(f"{now:%H:%M} 運作中｜狀態 {status or '啟動中'}｜{m.get('contract', '')} 最新價 {m.get('last', '-')}"
+              f"｜{'持倉：' + '、'.join(pos) if pos else '空手，等待訊號'}")
       if stop_at and now.hour >= 15 and now.strftime("%H:%M") >= stop_at:
         print(f"{now:%H:%M} 到達試跑結束時間 {stop_at}：平倉並結束")
         self.shutdown("STOP_TIME")
