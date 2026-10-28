@@ -75,9 +75,13 @@ class Engine:
     # Its date (CDate) is the session's own date: today for the day session, the 15:00 start date for
     # the night session. A replayed chart also has bars far in the future relative to "now".
     expect = now.strftime("%Y%m%d") if name == "day" else start.strftime("%Y%m%d")
-    if snap.cdate and snap.cdate != expect:
-      return "holiday"
-    if snap.live_bar and snap.live_bar.end > now + timedelta(minutes=2):
+    if getattr(self, "_holiday", None) == start:
+      return "holiday"  # Already confirmed closed for this whole session.
+    closed = (snap.cdate and snap.cdate != expect) or (snap.live_bar and snap.live_bar.end > now + timedelta(minutes=2))
+    if closed or (snap.cdate is None and getattr(self, "_maybe_holiday", None) == start):
+      self._maybe_holiday = start
+      if now - start >= timedelta(minutes=10):  # Still closed 10 min after the open: latch for the session
+        self._holiday = start  # so a fallback quote without a date cannot let replayed bars through.
       return "holiday"
     if snap.quote_time is None or not snap.last:
       return "no-data"

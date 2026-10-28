@@ -39,7 +39,8 @@ def build_tp_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
   return out
 
 
-ALLDAY_IDS = ("alpha-orb", "sigma-vwap")  # Live AIs with a time-of-day filter.
+ALLDAY_IDS = ("alpha-orb",)  # Live AIs with a time-of-day filter (all-day twin runs in the background).
+SIGMA_HOURS = ("us_open", "night_open")  # Sigma's former time filter, now a background shadow.
 
 
 def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
@@ -57,6 +58,15 @@ def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
     s.hours = None
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
   return out
+
+
+def build_sigma_hours_shadow(cfg: dict, ledger: Ledger) -> list[AiTrader]:
+  """Sigma limited to the night-open hour + the US-open hour (front-stage until 2026-10-28)."""
+  from .strategies import build_strategies
+  s = [x for x in build_strategies() if x.id == "sigma-vwap"][0]
+  s.base_id, s.id, s.name = "sigma-vwap", "hours-sigma-vwap", "Sigma（限時段版）"
+  s.hours = SIGMA_HOURS
+  return [AiTrader(cfg, s, LocalPaperBroker(cfg), ledger)]
 
 
 def build_nova_us_shadow(cfg: dict, ledger: Ledger) -> list[AiTrader]:
@@ -79,4 +89,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
     s.name = f"影子{i} {cls.name}"
     s.params = params
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out + build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger)
+  return out + build_allday_twins(cfg, ledger) + build_sigma_hours_shadow(cfg, ledger) + build_nova_us_shadow(cfg, ledger)

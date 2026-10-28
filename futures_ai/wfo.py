@@ -449,7 +449,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         continue
       if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
         continue
-      if p.get("hours") and tod_bucket(x.end) not in p["hours"]:
+      if p.get("hours") and tod_bucket(x.end) not in p["hours"] and \
+          not (p.get("hours_until") and x.end.isoformat() >= p["hours_until"]):
         continue
       ew = p.get("entry_window")  # ("HH:MM", "HH:MM") wall-clock entry window (may cross midnight).
       if ew:

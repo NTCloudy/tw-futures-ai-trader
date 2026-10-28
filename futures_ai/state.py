@@ -187,17 +187,21 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   if shadow_path.exists() and cfg["db_path"] != ":memory:":
     since2 = sl.get_state("allday_since")
     if since2:
-      pairs = [("alpha-orb", "allday-alpha-orb", "不限時段版"), ("sigma-vwap", "allday-sigma-vwap", "不限時段版"),
+      pairs = [("alpha-orb", "allday-alpha-orb", "不限時段版"),
+               ("sigma-vwap", "hours-sigma-vwap", "限時段版（夜盤開盤＋美股開盤各 1h）"),
                ("nova-nightorb", "nova-us", "只在美股開盤 1h 版")]
+      t0s = {"allday-alpha-orb": since2, "hours-sigma-vwap": "2026-10-28T12:00:00+08:00",  # Swapped then.
+             "nova-us": "2026-10-22T10:33:00+08:00"}  # Nova US became a shadow then.
       for ai_id, sh_id, sh_label in pairs:
         if ai_id not in names:
           continue
         strat = names[ai_id]
-        t0 = since2 if sh_id.startswith("allday-") else "2026-10-22T10:33:00+08:00"  # Nova US became a shadow then.
+        t0 = t0s[sh_id]
         lr = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, t0))
         sr = sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (sh_id, t0))
         hours_compare.append({"id": ai_id, "name": strat.name, "color": strat.color, "shadow_label": sh_label,
-                              "hours": list(getattr(strat, "hours", None) or ["night_all"]),
+                              "hours": list(getattr(strat, "hours", None) or
+                                            (["night_all"] if ai_id == "nova-nightorb" else ["all_day"])),
                               "live": {**health(lr), "pnl": sum(t["pnl_twd"] for t in lr)},
                               "allday": {**health(sr), "pnl": sum(t["pnl_twd"] for t in sr)}})
 

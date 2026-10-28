@@ -428,7 +428,7 @@ def build_strategies(params: dict | None = None) -> list:
   sigma.limit_atr, sigma.limit_min = 0.2, 10
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
-  sigma.hours = ("us_open", "night_open")
+  sigma.hours = None  # 2026-10-28 (user's choice): Sigma trades at any time; the time-limited version is a shadow.
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   return [alpha, sigma, nova, omega]

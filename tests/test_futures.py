@@ -386,8 +386,10 @@ class ShadowBuildTest(unittest.TestCase):
     self.assertIn("sh1-nova-nightorb", ids)  # 2-hour Nova control.
     self.assertIn("nova-us", ids)  # US-open-only Nova runs as a shadow.
     allday = [t for t in sh if t.ai.startswith("allday-")]
-    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-sigma-vwap"])
+    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb"])
     self.assertTrue(all(not t.s.hours for t in allday))
+    sig = [t for t in sh if t.ai == "hours-sigma-vwap"][0]  # Sigma's former time filter, now a shadow.
+    self.assertEqual(sig.s.hours, ("us_open", "night_open"))
 
 
 class InverseOfTest(unittest.TestCase):
@@ -688,3 +690,23 @@ class HolidayReplayTest(unittest.TestCase):
     self.assertEqual(e.step(), "holiday")
     ok = Snapshot("TMFK6", 45671.0, None, None, bars, now, None, "20261023")
     self.assertNotEqual(Engine(cfg(), Ledger(":memory:"), [], feed=Feed(ok), clock=lambda: now).step(), "holiday")
+
+
+class HolidayLatchTest(unittest.TestCase):
+
+  def test_holiday_latched_after_ten_minutes(self):
+    from futures_ai.engine import Engine
+    from futures_ai.feed import Snapshot
+
+    class Feed:
+      snap = None
+      def snapshot(self, code, name, start, now):
+        return self.snap
+    f = Feed()
+    clock = {"t": at(2026, 10, 26, 15, 20)}
+    bars = bars_from([(46300, 46310, 46290, 46300)] * 30)
+    e = Engine(cfg(), Ledger(":memory:"), [], feed=f, clock=lambda: clock["t"])
+    f.snap = Snapshot("TMFK6", 45671.0, None, None, bars, clock["t"], None, "20261022")
+    self.assertEqual(e.step(), "holiday")
+    f.snap = Snapshot("TMFK6", 45671.0, None, None, bars, clock["t"], None, None)  # Fallback quote, no date.
+    self.assertEqual(e.step(), "holiday")

@@ -41,7 +41,7 @@ def current_params() -> dict:
   return out
 
 
-SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "allday-sigma-vwap": "Sigma（不限時段版）",
+SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "hours-sigma-vwap": "Sigma（限時段版）",
                 "nova-us": "Nova（只在美股開盤 1h 版）", "sh1-nova-nightorb": "Nova（舊版，只到 17:30）"}
 
 
