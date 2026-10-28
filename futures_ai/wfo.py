@@ -398,6 +398,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           exit_px, kind = (tp - slip) if d == 1 else (tp + slip), "TP"
         elif mtc <= cfg["flatten_minutes_before_close"] or i == len(b) - 1:
           exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "END"
+        elif p.get("flat_at") and s.name == "night" and x.end.hour >= 15 and x.end.strftime("%H:%M") >= p["flat_at"]:
+          exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "TIME"  # Flat at a fixed evening time.
         elif p.get("flat_us_min") is not None and s.name == "night" and \
             x.end >= us_open_at(x.end) + timedelta(minutes=p["flat_us_min"]):
           exit_px, kind = (x.c - 2) if d == 1 else (x.c + 2), "TIME"  # Flat N minutes after the US cash open.
@@ -449,6 +451,11 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         continue
       if p.get("hours") and tod_bucket(x.end) not in p["hours"]:
         continue
+      ew = p.get("entry_window")  # ("HH:MM", "HH:MM") wall-clock entry window (may cross midnight).
+      if ew:
+        hm = x.end.strftime("%H:%M")
+        if not ((ew[0] <= hm < ew[1]) if ew[0] < ew[1] else (hm >= ew[0] or hm < ew[1])):
+          continue
       sig = signal5(ai, p, s, s.k_at[i], i)
       if not sig and chase_side and p.get("chase"):
         k = s.k_at[i]
