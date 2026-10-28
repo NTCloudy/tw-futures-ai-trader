@@ -93,7 +93,7 @@
 <div class="layout">
 <nav id="side">
   <div class="grp">總覽</div>
-  <a href="#secSummary">📊 今日總覽</a>
+  <a href="#secSummary">📊 本盤總覽</a>
   <a href="#aiCards">🤖 三位 AI 狀態</a>
   <a href="#secCurve">📈 當盤損益走勢</a>
   <div class="grp">紀錄（最新在最上面）</div>
@@ -102,8 +102,8 @@
   <a href="#secReplay">🔁 回測 vs 即時 對帳</a>
   <a href="#secHist">📅 歷史每盤戰績</a>
   <a href="#secHourly">⏱ 每小時損益</a>
-  <a href="#secTrades">✅ 今日已平倉交易</a>
-  <a href="#secOrders">📝 今日下單狀況</a>
+  <a href="#secTrades">✅ 本盤已平倉交易</a>
+  <a href="#secOrders">📝 本盤下單狀況</a>
   <a href="#secJournal">🧠 AI 學習日誌</a>
   <a href="#secEvents">⚙️ 系統事件</a>
   <div class="grp">工具</div>
@@ -122,7 +122,7 @@
   </div>
 </header>
 <main>
-  <section class="card s3" id="secSummary"><h2>今日總損益（全部 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
+  <section class="card s3" id="secSummary"><h2>本盤總損益（全部 AI）</h2><div class="big" id="today">–</div><div class="mute" id="todaySub"></div></section>
   <section class="card s3"><h2>累計總收益</h2><div class="big" id="total">–</div><div class="mute" id="totalSub"></div></section>
   <section class="card s3"><h2>近幾小時收益</h2><div class="kpis" id="recent"></div></section>
   <section class="card s3"><h2>合約／換倉</h2><div id="roll" style="font-size:14px;line-height:1.7"></div></section>
@@ -133,8 +133,8 @@
   <section class="card s12" id="secReplay"><h2>🔁 回測 vs 即時 對帳（用即時錄下的同一份 K 棒重跑回測，逐筆比對）</h2><div class="scroll"><table id="replayTbl"></table></div><div class="mute" id="replayNote"></div></section>
   <section class="card s12" id="secHist"><h2>📅 歷史每盤戰績（每個交易日的日盤／夜盤，各 AI 總損益）</h2><div class="scroll"><table id="dailyHist" data-limit="7"></table></div></section>
   <section class="card s6" id="secHourly"><h2>每小時損益</h2><div class="scroll"><table id="hourly" data-limit="8"></table></div></section>
-  <section class="card s6" id="secTrades"><h2>今日已平倉交易</h2><div class="scroll"><table id="trades" data-limit="10"></table></div></section>
-  <section class="card s12" id="secOrders"><h2>今日下單狀況（含停利／停損觸價單）</h2><div class="scroll"><table id="orders" data-limit="15"></table></div></section>
+  <section class="card s6" id="secTrades"><h2>本盤已平倉交易</h2><div class="scroll"><table id="trades" data-limit="10"></table></div></section>
+  <section class="card s12" id="secOrders"><h2>本盤下單狀況（含停利／停損觸價單）</h2><div class="scroll"><table id="orders" data-limit="15"></table></div></section>
   <section class="card s12" id="secJournal"><h2>🧠 AI 學習日誌（每筆平倉後自動檢討：為什麼賺／賠、下次怎麼調整）</h2><div class="scroll"><table id="journal" data-limit="8"></table></div></section>
   <section class="card s12" id="secEvents"><h2>系統事件</h2><div class="scroll"><table id="events" data-limit="10"></table></div></section>
 </main>
@@ -189,9 +189,8 @@ function render(s) {
   document.getElementById('quote').textContent = m.last ? `${m.contract}｜買 ${m.bid ?? '-'} / 賣 ${m.ask ?? '-'}｜${m.fresh ? '即時' : '行情延遲'}` : '';
 
   const c = s.combined;
-  document.getElementById('today').innerHTML = `<span class="${cls(c.today_pnl)}">${nt(c.today_pnl)}</span>`;
-  const nTrades = s.ais.reduce((a, x) => a + x.trades_today, 0), nWins = s.ais.reduce((a, x) => a + x.wins_today, 0);
-  document.getElementById('todaySub').textContent = `今日 ${nTrades} 筆平倉，勝 ${nWins} 筆`;
+  document.getElementById('today').innerHTML = `<span class="${cls(c.session_pnl)}">${nt(c.session_pnl)}</span>`;
+  document.getElementById('todaySub').textContent = `${(s.curve_session || {}).label || ''}｜${c.session_trades} 筆平倉，勝 ${c.session_wins} 筆`;
   document.getElementById('total').innerHTML = `<span class="${cls(c.total_pnl)}">${nt(c.total_pnl)}</span>`;
   document.getElementById('totalSub').textContent = `全部 AI 合計資金 NT$ ${(s.capital_per_ai * s.ais.length).toLocaleString()}，報酬 ${(c.total_pnl / (s.capital_per_ai * s.ais.length) * 100).toFixed(2)}%`;
   document.getElementById('recent').innerHTML = [['近 1 小時', c.pnl_1h], ['近 3 小時', c.pnl_3h], ['近 6 小時', c.pnl_6h]]
@@ -213,13 +212,13 @@ function render(s) {
     return `<section class="card" style="border-top:3px solid ${a.color};${place(a)}"><h2 style="color:${a.color}">${a.name} <span class="badge">${a.broker === 'local_paper' ? '本機模擬' : a.broker}</span></h2>
       <div class="mute">${a.style}</div>
       <div class="kpis">
-        <div><div class="mute">今日損益</div><div class="${cls(a.today_pnl)}" style="font-size:20px;font-weight:700">${nt(a.today_pnl)}</div></div>
+        <div><div class="mute">本盤損益</div><div class="${cls(a.session_pnl)}" style="font-size:20px;font-weight:700">${nt(a.session_pnl)}</div></div>
         <div><div class="mute">累計</div><div class="${cls(a.total_pnl)}" style="font-size:20px;font-weight:700">${nt(a.total_pnl)}</div></div>
         <div><div class="mute">權益</div><div style="font-size:20px;font-weight:700">NT$ ${a.equity.toLocaleString()}</div></div>
         <div><div class="mute">近 1h / 3h</div><div><span class="${cls(a.pnl_1h)}">${nt(a.pnl_1h)}</span> / <span class="${cls(a.pnl_3h)}">${nt(a.pnl_3h)}</span></div></div>
       </div>
       ${s.enforce_daily_loss ? `<div class="mute" style="margin-top:8px">每日虧損上限使用 ${a.daily_loss_used_pct.toFixed(0)}%</div><div class="bar"><div style="width:${Math.min(100, a.daily_loss_used_pct)}%"></div></div>` : '<div class="mute" style="margin-top:8px">每日虧損上限：試跑中已關閉</div>'}
-      <div class="mute">今日 ${a.trades_today} 筆，勝 ${a.wins_today} 筆</div>${healthHtml(a)}${pos}${brainHtml(a)}</section>`;
+      <div class="mute">本盤 ${a.session_trades} 筆，勝 ${a.session_wins} 筆</div>${healthHtml(a)}${pos}${brainHtml(a)}</section>`;
   }).join('');
 
   // Intraday curve: time-based x axis (session open -> close), hourly grid lines, value labels,

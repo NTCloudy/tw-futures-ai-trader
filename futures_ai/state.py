@@ -67,7 +67,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     probe -= timedelta(minutes=30)
     cs_name, cs_start, cs_end = session_of(probe)
   ais = []
-  combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0, "session_pnl": 0.0}
+  combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0, "session_pnl": 0.0,
+              "session_trades": 0, "session_wins": 0}
 
   for ai_id, s in names.items():
     pos = ledger.get_state(f"pos:{ai_id}")
@@ -84,6 +85,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     trades_today = ledger.rows("SELECT * FROM trades WHERE ai=? AND trading_day=? ORDER BY id", (ai_id, td))
     wins = sum(1 for t in trades_today if t["pnl_twd"] > 0)
 
+    sess_rows = ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND exit_ts>=? AND exit_ts<=?",
+                            (ai_id, cs_start.isoformat(), cs_end.isoformat())) if cs_start else []
     hourly = []
     start_of_day = datetime.combine(datetime.fromisoformat(td).date(), datetime.min.time(), TPE) - timedelta(hours=9)
     pts = [(t, v) for t, v in series_now if t >= start_of_day]
@@ -116,8 +119,8 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
         "last_skip": ledger.get_state(f"skip:{ai_id}"),
         # This session only (realized + unrealized change since the session open) — used by the LINE reports.
         "session_pnl": round(current - _value_at(series_now, cs_start - timedelta(seconds=1))) if cs_start else 0,
-        "session_trades": len(ledger.rows("SELECT id FROM trades WHERE ai=? AND exit_ts>=? AND exit_ts<=?",
-                                          (ai_id, cs_start.isoformat(), cs_end.isoformat()))) if cs_start else 0,
+        "session_trades": len(sess_rows),
+        "session_wins": sum(1 for r in sess_rows if r["pnl_twd"] > 0),
         # P&L of this session only (realized + unrealized), measured from the session open.
         "curve": ([{"ts": t.strftime("%H:%M"), "v": round(v - _value_at(series_now, cs_start - timedelta(seconds=1)))}
                    for t, v in series_now if cs_start <= t <= cs_end][-900:] if cs_start else []),
@@ -126,12 +129,17 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
       combined[k] += item[k]
     ais.append(item)
 
-  orders = ledger.rows("SELECT * FROM orders WHERE trading_day=? ORDER BY id DESC LIMIT 200", (td,))
+  # Orders / closed trades of the session shown on the dashboard (current one, or the last one while closed).
+  if cs_start:
+    orders = [o for o in ledger.rows("SELECT * FROM orders WHERE ts>=? AND ts<=? ORDER BY id DESC LIMIT 200",
+                                     (cs_start.isoformat(), cs_end.isoformat())) if o["ai"] in names]
+  else:
+    orders = []
   for o in orders:
     o["ai_name"] = names[o["ai"]].name if o["ai"] in names else o["ai"]
     o["kind_zh"] = KIND_ZH.get(o["kind"], o["kind"])
-  trades = [t for t in ledger.rows("SELECT * FROM trades WHERE trading_day=? ORDER BY id DESC", (td,))
-            if t["ai"] in names]  # Hidden / retired AIs are not shown or counted.
+  trades = [t for t in ledger.rows("SELECT * FROM trades WHERE exit_ts>=? AND exit_ts<=? ORDER BY id DESC",
+                                   (cs_start.isoformat(), cs_end.isoformat())) if t["ai"] in names] if cs_start else []
   for t in trades:
     t["ai_name"] = names[t["ai"]].name if t["ai"] in names else t["ai"]
     t["exit_kind_zh"] = KIND_ZH.get(t["exit_kind"], t["exit_kind"])
@@ -218,7 +226,10 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
       "line_enabled": bool(cfg["notify"].get("line_enabled")) and load_cred() is not None,
       "rollover": rollover_info(now, cfg["product"], cfg["roll_days_before"]),
       "curve_session": {"name": cs_name, "open": cs_start.isoformat() if cs_start else None,
-                        "close": cs_end.isoformat() if cs_end else None},
+                        "close": cs_end.isoformat() if cs_end else None,
+                        "label": (f"{'日盤' if cs_name == 'day' else '夜盤'} {cs_start:%m/%d %H:%M}–"
+                                  f"{cs_end:%H:%M}" + ("" if cs_name == "day" else f"（{cs_end:%m/%d}）")
+                                  + ("" if sess else "，已收盤")) if cs_start else ""},
       "session": {"name": sess, "open": s_start.isoformat() if s_start else None,
                   "close": s_end.isoformat() if s_end else None},
       "market": market, "kill_switch": ledger.get_state("kill_switch", False),
