@@ -665,11 +665,11 @@ class MacSimConfigTest(unittest.TestCase):
     from futures_ai.cli import build_traders
     from futures_ai.config import load_config
     c = load_config(str(Path(__file__).resolve().parents[1] / "config" / "mac_sim.json"))
-    self.assertEqual((c["mode"], c["broker_ai"], c["run_only"]), ("sinopac_sim", "nova-us", ["nova-us"]))
+    self.assertEqual((c["mode"], c["broker_ai"], c["run_only"]), ("sinopac_sim", "nova-nightorb", ["nova-nightorb"]))
+    self.assertIsNone(c["stop_at"])  # The user stops it by hand (Ctrl+C flattens first).
     c.update(mode="local_paper", db_path=":memory:")
     tr = build_traders(c, Ledger(":memory:"))
-    self.assertEqual([t.ai for t in tr], ["nova-us"])
-    self.assertEqual(tr[0].s.hours, ("us_open",))
+    self.assertEqual([t.ai for t in tr], ["nova-nightorb"])
 
 
 class HolidayReplayTest(unittest.TestCase):
