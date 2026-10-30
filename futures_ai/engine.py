@@ -269,6 +269,13 @@ class Engine:
             notifier.session_summary(summary_text(st, "日盤"))  # 13:45 report
           else:
             notifier.defer_night(summary_text(st, "夜盤"))  # Sent at notify.night_report_time (08:30)
+          # Monthly report right after the last session that starts in the calendar month.
+          from .monthly import month_closes_after, monthly_text
+          start = prev_end - (timedelta(hours=5) if prev_session == "day" else timedelta(hours=14))
+          key = start.strftime("%Y-%m")
+          if month_closes_after(start) and self.ledger.get_state("monthly_sent") != key:
+            self.ledger.set_state("monthly_sent", key)
+            notifier._send(monthly_text(self.ledger, names, start.date()))
         elif sess:
           notifier.maybe_digest(f"{'日盤' if sess == 'day' else '夜盤'} {now.strftime('%H:%M')}")
         notifier.maybe_send_night(self.clock())

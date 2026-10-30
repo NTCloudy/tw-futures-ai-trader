@@ -754,3 +754,13 @@ class SinopacStatusTest(unittest.TestCase):
     out = buf.getvalue()
     self.assertIn("合計 2 筆，勝 0 筆", out)
     self.assertIn("-163 點", out)
+
+
+class MonthlyTest(unittest.TestCase):
+
+  def test_last_session_of_month(self):
+    from futures_ai.monthly import month_closes_after
+    self.assertTrue(month_closes_after(at(2026, 10, 30, 15, 0)))  # Fri night -> next session Mon 11/2.
+    self.assertFalse(month_closes_after(at(2026, 10, 30, 8, 45)))  # Fri day: the night session follows.
+    self.assertFalse(month_closes_after(at(2026, 10, 29, 15, 0)))  # Thu night -> Fri 10/30.
+    self.assertTrue(month_closes_after(at(2026, 9, 30, 15, 0)))  # Wed night -> Thu 10/1.
