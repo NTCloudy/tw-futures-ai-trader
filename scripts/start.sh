@@ -11,7 +11,7 @@ if pgrep -f "^python3 -m futures_ai run$" >/dev/null; then echo "already running
 if command -v systemd-run >/dev/null && systemctl --user show-environment >/dev/null 2>&1; then
   systemd-run --user --collect --quiet --unit="tw-futures-engine-$(date +%s)" -p WorkingDirectory="$PWD" \
     --setenv=PATH="$PATH" --setenv=HOME="$HOME" \
-    bash -c 'exec python3 -m futures_ai run >> logs/engine.log 2>&1 < /dev/null'
+    bash -c 'PYTHONUNBUFFERED=1 exec python3 -m futures_ai run >> logs/engine.log 2>&1 < /dev/null'
   sleep 1
   echo "started pid $(pgrep -f '^python3 -m futures_ai run$' || echo '?') (systemd user unit)"
 else

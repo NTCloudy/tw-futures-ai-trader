@@ -214,6 +214,8 @@ class Engine:
     print(msg)
 
   def _loop(self, notifier, control, radar, trader_mod, names, status, margin_day, prev_end, prev_session, shown):
+    from .notify import summary_text
+    from .state import build_state
     stop_at = self.cfg.get("stop_at")
     beat = 0.0
     if self.cfg.get("console_events"):
@@ -280,7 +282,8 @@ class Engine:
           notifier.maybe_digest(f"{'日盤' if sess == 'day' else '夜盤'} {now.strftime('%H:%M')}")
         notifier.maybe_send_night(self.clock())
       except Exception as exc:
-        print(f"notify failed: {exc}")
+        print(f"notify failed: {exc}", flush=True)
+        self.ledger.log(f"通知失敗：{exc}", level="ERROR")
       prev_session, prev_end = sess, sess_end or prev_end
       if self.publisher and time.monotonic() - self.last_publish >= self.cfg["publish"]["interval_seconds"]:
         self.last_publish = time.monotonic()

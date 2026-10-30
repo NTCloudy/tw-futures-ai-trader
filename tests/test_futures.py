@@ -764,3 +764,38 @@ class MonthlyTest(unittest.TestCase):
     self.assertFalse(month_closes_after(at(2026, 10, 30, 8, 45)))  # Fri day: the night session follows.
     self.assertFalse(month_closes_after(at(2026, 10, 29, 15, 0)))  # Thu night -> Fri 10/30.
     self.assertTrue(month_closes_after(at(2026, 9, 30, 15, 0)))  # Wed night -> Thu 10/1.
+
+
+class SessionCloseReportTest(unittest.TestCase):
+
+  def test_reports_sent_when_session_closes(self):
+    import futures_ai.engine as E
+    import futures_ai.notify as N
+    import time as _t
+    from futures_ai.cli import build_traders
+    c = cfg()
+    c.update(control_enabled=False, archive_history=False)
+    l = Ledger(":memory:")
+    times = iter([at(2026, 10, 31, 4, 59, 50)] * 3 + [at(2026, 10, 31, 5, 0, 5)] * 50)
+    sent = []
+    orig_send, orig_sleep = N.LineNotifier._send, _t.sleep
+    N.LineNotifier._send = lambda self, t: sent.append(t)
+
+    class Feed:
+      def snapshot(self, *a):
+        raise RuntimeError("offline")
+
+    def stop(_s):
+      raise KeyboardInterrupt
+    e = E.Engine(c, l, build_traders(c, l), feed=Feed(), clock=lambda: next(times))
+    e.refresh_margin = lambda: None
+    e.shutdown = lambda kind: None
+    _t.sleep = stop
+    try:
+      with self.assertRaises(SystemExit):
+        e.run_forever()
+    finally:
+      N.LineNotifier._send, _t.sleep = orig_send, orig_sleep
+    self.assertEqual(l.get_state("monthly_sent"), "2026-10")
+    self.assertTrue(any("10 月月報" in x for x in sent))
+    self.assertTrue(l.get_state("night_report"))
