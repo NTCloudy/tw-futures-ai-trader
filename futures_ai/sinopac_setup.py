@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import datetime
 
-from .calendar import now_tpe, rollover_info
+from .calendar import TPE, now_tpe, rollover_info
 
 
 def sinopac_test(cfg: dict) -> bool:
@@ -65,17 +66,40 @@ def sinopac_status(cfg: dict) -> bool:
             f"均價 {getattr(p, 'price', '?')} 現價 {getattr(p, 'last_price', '?')} 損益 {getattr(p, 'pnl', '?')}")
   except Exception as exc:
     print("查詢持倉失敗：", exc)
-  print("\n=== 今日委託／成交 ===")
+  print("\n=== 今日每筆交易（依永豐成交回報配對進出場）===")
   try:
     api.update_status(acct)
-    trades = api.list_trades()
-    if not trades:
-      print("（今日無委託）")
-    for t in trades:
-      o, st = t.order, t.status
-      print(f"{getattr(st, 'order_datetime', '')} {getattr(t.contract, 'code', '')} {o.action} {o.quantity} 口 "
-            f"{o.price_type} {o.price} → {st.status}（成交 {getattr(st, 'deal_quantity', 0)} 口）")
+    fills = []
+    for t in api.list_trades():
+      for d in (getattr(t.status, "deals", None) or []):
+        side = 1 if "Buy" in str(t.order.action) else -1
+        ts = getattr(d, "ts", 0)
+        when = datetime.fromtimestamp(ts, TPE) if isinstance(ts, (int, float)) and ts else getattr(t.status, "order_datetime", None)
+        fills.append((when, side, float(d.price), int(d.quantity)))
+    fills.sort(key=lambda f: f[0])
+    pos, entry, entry_t, total, n, wins = 0, 0.0, None, 0.0, 0, 0
+    pv, fee, tax = cfg["point_value"], cfg["commission_per_side_twd"], cfg["tax_rate"]
+    for when, side, price, qty in fills:
+      cost = fee * qty + round(price * pv * qty * tax)
+      if pos == 0:
+        pos, entry, entry_t, entry_cost = side * qty, price, when, cost
+        continue
+      if side == -1 * (1 if pos > 0 else -1):  # Closing fill.
+        pts = (price - entry) * (1 if pos > 0 else -1)
+        pnl = pts * pv * abs(pos) - entry_cost - cost
+        total += pnl
+        n += 1
+        wins += pnl > 0
+        print(f"{entry_t:%m/%d %H:%M} {'做多' if pos > 0 else '放空'} {entry:.0f} → {when:%H:%M} 出場 {price:.0f}"
+              f"｜{pts:+.0f} 點｜{pnl:+,.0f} 元")
+        pos = 0
+    if pos:
+      print(f"{entry_t:%m/%d %H:%M} {'多' if pos > 0 else '空'}單 {entry:.0f} 尚未平倉")
+    if n:
+      print(f"合計 {n} 筆，勝 {wins} 筆，損益 {total:+,.0f} 元（已扣手續費 {fee} 元/邊與期交稅估計）")
+    elif not fills:
+      print("（今日沒有成交）")
   except Exception as exc:
-    print("查詢委託失敗：", exc)
+    print("查詢成交失敗：", exc)
   api.logout()
   return True

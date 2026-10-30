@@ -1,3 +1,4 @@
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -710,3 +711,46 @@ class HolidayLatchTest(unittest.TestCase):
     self.assertEqual(e.step(), "holiday")
     f.snap = Snapshot("TMFK6", 45671.0, None, None, bars, clock["t"], None, None)  # Fallback quote, no date.
     self.assertEqual(e.step(), "holiday")
+
+
+class SinopacStatusTest(unittest.TestCase):
+
+  def test_round_trips_from_deals(self):
+    import io, contextlib, sys, types
+    from futures_ai import sinopac_setup as m
+
+    class D:
+      def __init__(self, price, ts):
+        self.price, self.quantity, self.ts = price, 1, ts
+    class T:
+      def __init__(self, action, price, ts):
+        self.order = types.SimpleNamespace(action=action)
+        self.status = types.SimpleNamespace(deals=[D(price, ts)], order_datetime=None)
+    class Api:
+      futopt_account, stock_account = "F", None
+      def list_positions(self, a): return []
+      def update_status(self, a): pass
+      def list_trades(self):
+        return [T("Action.Sell", 46327, 1793000000), T("Action.Buy", 46490, 1793002000),
+                T("Action.Buy", 46533, 1793003000), T("Action.Sell", 46382, 1793004000)]
+      def logout(self): pass
+    fake = types.ModuleType("shioaji")
+    old = sys.modules.get("shioaji")
+    sys.modules["shioaji"] = fake
+    orig = m.__dict__.get("_login")
+    import futures_ai.export_history as eh
+    saved = eh._login
+    eh._login = lambda *a, **k: Api()
+    os.environ.setdefault("SINOPAC_API_KEY", "x"); os.environ.setdefault("SINOPAC_SECRET_KEY", "x")
+    buf = io.StringIO()
+    try:
+      c = cfg(); c["sinopac"] = {"api_key_env": "SINOPAC_API_KEY", "secret_key_env": "SINOPAC_SECRET_KEY"}
+      with contextlib.redirect_stdout(buf):
+        m.sinopac_status(c)
+    finally:
+      eh._login = saved
+      if old is not None: sys.modules["shioaji"] = old
+      else: del sys.modules["shioaji"]
+    out = buf.getvalue()
+    self.assertIn("合計 2 筆，勝 0 筆", out)
+    self.assertIn("-163 點", out)
