@@ -305,7 +305,7 @@ class NightOpenBreakout:
   id = "nova-nightorb"
   name = "Nova 夜盤開盤突破 AI"
   style = "夜盤 15:00–15:30 開盤區間突破（VWAP 確認），之後到 01:30 前有效；停損＝區間寬度，停利 3 倍，限價進場"
-  color = "#22d3ee"
+  color = "#facc15"  # Yellow: distinct from Alpha (sky blue)
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
   learn_scale = False  # Keep the validated stop / take-profit geometry.
