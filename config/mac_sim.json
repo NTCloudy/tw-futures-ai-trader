@@ -1,8 +1,8 @@
 {
   "mode": "sinopac_sim",
-  "broker_ai": "nova-us",
+  "broker_ai": "nova-nightorb",
   "run_only": [
-    "nova-us"
+    "nova-nightorb"
   ],
   "shadows_enabled": false,
   "control_enabled": false,
