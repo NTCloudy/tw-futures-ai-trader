@@ -452,6 +452,11 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
       if p.get("hours") and tod_bucket(x.end) not in p["hours"] and \
           not (p.get("hours_until") and x.end.isoformat() >= p["hours_until"]):
         continue
+      ue = p.get("us_entry_min")  # Entries only within N minutes after the US cash open (DST-aware).
+      if ue is not None:
+        o = us_open_at(x.end)
+        if not (o < x.end <= o + timedelta(minutes=ue)):
+          continue
       ew = p.get("entry_window")  # ("HH:MM", "HH:MM") wall-clock entry window (may cross midnight).
       if ew:
         hm = x.end.strftime("%H:%M")
