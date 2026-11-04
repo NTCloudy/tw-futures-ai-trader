@@ -60,6 +60,9 @@ class Engine:
         if done:
           hi = max(hi, done.h) if done.h > prev[1] else hi
           lo = min(lo, done.l) if done.l < prev[2] else lo
+        for b in snap.bars:  # Bars completed during a gap (e.g. Wi-Fi outage): their whole range counts,
+          if prev[0] < b.end < lv.end:  # so a stop / target touched while offline fires as soon as we are back.
+            hi, lo = max(hi, b.h), min(lo, b.l)
     self.prev_live = (lv.end, lv.h, lv.l) if lv else None
     return hi, lo
 
@@ -254,12 +257,31 @@ class Engine:
         print(f"news radar failed: {exc}")
       try:
         new_status = self.step()
+        if getattr(self, "_outage", None):  # Back online after a network / data outage.
+          mins = (self.clock() - self._outage).total_seconds() / 60
+          msg = f"✅ 連線恢復（中斷約 {mins:.0f} 分鐘），已立即檢查停損／停利"
+          self.ledger.log(msg, level="WARN")
+          print(f"{self.clock():%H:%M} {msg}", flush=True)
+          self._outage = None
         if new_status != status:
           self.ledger.log(f"狀態：{new_status}")
           status = new_status
       except Exception as exc:
-        self.ledger.log(f"引擎錯誤：{exc}", level="ERROR")
-        traceback.print_exc()
+        net = "行情取得失敗" in str(exc) or "urlopen" in str(exc) or "timed out" in str(exc)
+        if net:  # Network outage: report once (and every 10 min), keep retrying quietly.
+          now_ = self.clock()
+          if not getattr(self, "_outage", None):
+            self._outage, self._outage_logged = now_, now_
+            msg = "⚠️ 網路或行情中斷，持續自動重試中（恢復後會立刻檢查停損／停利）"
+            self.ledger.log(f"{msg}：{exc}", level="ERROR")
+            print(f"{now_:%H:%M} {msg}", flush=True)
+          elif (now_ - self._outage_logged).total_seconds() >= 600:
+            self._outage_logged = now_
+            self.ledger.log(f"⚠️ 仍在中斷中（已 {(now_ - self._outage).total_seconds() / 60:.0f} 分鐘）", level="ERROR")
+            print(f"{now_:%H:%M} ⚠️ 仍在中斷中，持續重試", flush=True)
+        else:
+          self.ledger.log(f"引擎錯誤：{exc}", level="ERROR")
+          traceback.print_exc()
         new_status = "error"
       sess, _, sess_end = session_of(self.clock())
       try:

@@ -799,3 +799,18 @@ class SessionCloseReportTest(unittest.TestCase):
     self.assertEqual(l.get_state("monthly_sent"), "2026-10")
     self.assertTrue(any("10 月月報" in x for x in sent))
     self.assertTrue(l.get_state("night_report"))
+
+
+class GapRangeTest(unittest.TestCase):
+
+  def test_bars_missed_during_outage_count_for_stops(self):
+    from futures_ai.engine import Engine
+    from futures_ai.feed import Snapshot
+    from futures_ai.trader import Bar
+    e = Engine(cfg(), Ledger(":memory:"), [])
+    t = at(2026, 11, 4, 21, 0)
+    e.prev_live = (t, 47010, 46990)
+    gap = [Bar(t + timedelta(minutes=k), 47000, 47020, 46800 if k == 3 else 46980, 47000, 1) for k in range(0, 6)]
+    live = Bar(t + timedelta(minutes=6), 47000, 47005, 46995, 47000, 1)
+    hi, lo = e._touched_range(Snapshot("TMFK6", 47000.0, None, None, gap, t, live, None))
+    self.assertEqual(lo, 46800)  # The dip that happened while offline is seen.

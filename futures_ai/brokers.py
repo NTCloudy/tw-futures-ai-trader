@@ -120,7 +120,40 @@ class ShioajiBroker:
       self._fills.put({"broker_order_id": str(msg.get("trade_id")), "price": float(msg["price"]),
                        "qty": int(msg["quantity"]), "ts": datetime.now()})
 
+  def _retry(self, fn, *args, again: bool = True):
+    """Broker call with an automatic re-login after a connection error (e.g. Wi-Fi dropped).
+    Orders are NOT re-sent here (the first attempt may have reached the exchange): the error goes back
+    to the trader, which records it and re-fires on the next check if the stop / target is still hit.
+    Cancels are safe to repeat, so they are retried once after the re-login."""
+    try:
+      return fn(*args)
+    except Exception:
+      try:
+        self.api.logout()
+      except Exception:
+        pass
+      self._contracts.clear()
+      try:
+        self.connect()
+      except Exception:
+        pass
+      if not again:
+        raise
+      return fn(*args)
+
   def market(self, code: str, side: str, qty: int, quote: dict) -> str:
+    return self._retry(self._market, code, side, qty, quote, again=False)
+
+  def limit(self, code: str, side: str, qty: int, price: float) -> str:
+    return self._retry(self._limit, code, side, qty, price, again=False)
+
+  def cancel(self, order_id: str) -> None:
+    return self._retry(self._cancel, order_id)
+
+  def cancel_all(self, code: str) -> int:
+    return self._retry(self._cancel_all, code)
+
+  def _market(self, code: str, side: str, qty: int, quote: dict) -> str:
     c = self.sj.constant
     order = self.api.Order(
         action=c.Action.Buy if side == "B" else c.Action.Sell,
@@ -132,7 +165,7 @@ class ShioajiBroker:
     trade = self.api.place_order(self.contract(code), order)
     return str(trade.order.id)
 
-  def limit(self, code: str, side: str, qty: int, price: float) -> str:
+  def _limit(self, code: str, side: str, qty: int, price: float) -> str:
     c = self.sj.constant
     order = self.api.Order(action=c.Action.Buy if side == "B" else c.Action.Sell, price=price, quantity=qty,
                            price_type=c.FuturesPriceType.LMT, order_type=c.OrderType.ROD,
@@ -145,13 +178,13 @@ class ShioajiBroker:
   def on_quote(self, quote: dict) -> None:
     pass  # Exchange-side matching; fills arrive via the order callback.
 
-  def cancel(self, order_id: str) -> None:
+  def _cancel(self, order_id: str) -> None:
     trade = getattr(self, "_trades", {}).pop(order_id, None)
     if trade is not None:
       self.api.update_status(self.account)
       self.api.cancel_order(trade)
 
-  def cancel_all(self, code: str) -> int:
+  def _cancel_all(self, code: str) -> int:
     self.api.update_status(self.account)
     live = {"PendingSubmit", "PreSubmitted", "Submitted", "PartFilled"}
     n = 0

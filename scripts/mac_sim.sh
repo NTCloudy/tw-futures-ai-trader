@@ -6,5 +6,6 @@ cd "$(dirname "$0")/.."
 source ~/.venvs/shioaji/bin/activate
 source ~/.config/tw-futures-ai/sinopac.env
 mkdir -p logs data
+git pull -q 2>/dev/null || echo "⚠️ 無法連到 GitHub 更新程式（可能網路不穩），先用目前的版本啟動"
 echo "永豐模擬試跑（設定：config/mac_sim.json）。結束時按一次 Ctrl+C：會先平倉、刪單再結束。"
 PYTHONUNBUFFERED=1 caffeinate -dimsu python -u -m futures_ai --config config/mac_sim.json run 2>&1 | tee -ia logs/mac_sim.log  # -i: tee ignores Ctrl+C so the shutdown messages are kept
