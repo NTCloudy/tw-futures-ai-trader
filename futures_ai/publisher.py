@@ -27,16 +27,24 @@ class GitPublisher:
     """Runs git without any interactive prompt. Auth comes from GH_TOKEN or the token file
     ~/.config/tw-futures-ai/gh_token, so it works under cron / Task Scheduler on any OS."""
     env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
-    extra = []
     token = os.environ.get("GH_TOKEN", "")
     token_file = Path.home() / ".config" / "tw-futures-ai" / "gh_token"
     if not token and token_file.exists():
       token = token_file.read_text(encoding="utf-8").strip()
     if token:
       basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-      extra = ["-c", "credential.helper=", "-c", f"http.https://github.com/.extraheader=Authorization: Basic {basic}"]
-    return subprocess.run(["git", *extra, *args], cwd=self.dir, check=True, capture_output=True, text=True,
-                          env=env, timeout=60).stdout
+      env.update({
+          "GIT_CONFIG_COUNT": "2",
+          "GIT_CONFIG_KEY_0": "credential.helper",
+          "GIT_CONFIG_VALUE_0": "",
+          "GIT_CONFIG_KEY_1": "http.https://github.com/.extraheader",
+          "GIT_CONFIG_VALUE_1": f"Authorization: Basic {basic}",
+      })
+    try:
+      return subprocess.run(["git", *args], cwd=self.dir, check=True, capture_output=True, text=True,
+                            env=env, timeout=60).stdout
+    except subprocess.CalledProcessError as exc:
+      raise RuntimeError(f"git {args[0] if args else ''} failed (exit {exc.returncode})") from None
 
   def _ensure_repo(self) -> None:
     if (self.dir / ".git").exists():
