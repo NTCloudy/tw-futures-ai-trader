@@ -774,7 +774,7 @@ class SessionCloseReportTest(unittest.TestCase):
     import time as _t
     from futures_ai.cli import build_traders
     c = cfg()
-    c.update(control_enabled=False, archive_history=False)
+    c.update(control_enabled=False, archive_history=False, stock_reports=False)
     l = Ledger(":memory:")
     times = iter([at(2026, 10, 31, 4, 59, 50)] * 3 + [at(2026, 10, 31, 5, 0, 5)] * 50)
     sent = []

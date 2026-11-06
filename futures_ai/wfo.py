@@ -382,6 +382,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
     chase_side = None  # set after a take-profit: allow trend-continuation re-entries
     chase_k = None
     pend = None  # limit entry: (side, limit_px, sl_pts, tp_pts, trail, expires_end)
+    gb_peak = 0.0  # best favorable excursion of the open position (give-back exit)
     for i in range(len(b)):
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
@@ -411,8 +412,18 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           if fav >= be * init and ((d == 1 and sl < be_px) or (d == -1 and sl > be_px)):
             pos = (side, entry, be_px, tp, cost_in, trail, init) + tuple(pos[7:])
             sl = be_px
+        gb_keep = p.get("gb_keep")  # Give-back exit: once peak profit >= gb_act x TP distance, lock gb_keep of it.
+        if exit_px is None and gb_keep:
+          fav = (x.h - entry) if d == 1 else (entry - x.l)
+          gb_peak = max(gb_peak, fav)
+          if gb_peak >= p.get("gb_act", 0.5) * abs(tp - entry):
+            lock = round(entry + d * gb_keep * gb_peak)
+            cur = pos[2]
+            if (d == 1 and lock > cur) or (d == -1 and lock < cur):
+              pos = (side, entry, lock) + tuple(pos[3:])
         if exit_px is None and trail:  # Ratchet the stop after this bar (conservative ordering).
           new_sl = round(x.h - trail) if d == 1 else round(x.l + trail)
+          sl = pos[2]
           if (d == 1 and new_sl > sl) or (d == -1 and new_sl < sl):
             pos = (side, entry, new_sl, tp, cost_in, trail) + tuple(pos[6:])
         if exit_px is not None:
@@ -443,6 +454,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           d = 1 if p_side == "B" else -1
           pos = (p_side, p_px, round(p_px - d * p_sl), round(p_px + d * p_tp), side_cost(cfg, p_px), p_tr, abs(p_sl), x.end)
           entries += 1
+          gb_peak = 0.0
           pend = None
           continue
       if pos or pend or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
@@ -503,6 +515,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
       d = 1 if side == "B" else -1
       pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail, abs(sl_pts), x.end)
       entries += 1
+      gb_peak = 0.0
   return {"pnl": pnl, "trades": trades, "wins": wins, "maxdd": maxdd, "log": tlog}
 
 

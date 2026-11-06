@@ -300,6 +300,14 @@ class Engine:
           if month_closes_after(start) and self.ledger.get_state("monthly_sent") != key:
             self.ledger.set_state("monthly_sent", key)
             notifier._send(monthly_text(self.ledger, names, start.date()))
+            if self.cfg.get("stock_reports", True):  # Slow (git pull + price refresh): don't block the engine.
+              import threading
+              from .monthly import stock_month_text
+              def _stocks(d=start.date()):
+                txt = stock_month_text(d)
+                if txt:
+                  notifier._send(txt)
+              threading.Thread(target=_stocks, daemon=True).start()
         elif sess:
           notifier.maybe_digest(f"{'日盤' if sess == 'day' else '夜盤'} {now.strftime('%H:%M')}")
         notifier.maybe_send_night(self.clock())

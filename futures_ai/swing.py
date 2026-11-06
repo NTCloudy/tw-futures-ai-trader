@@ -102,6 +102,11 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False) -> 
             pos["best"] = max(pos["best"], x.h) if d == 1 else min(pos["best"], x.l)
             atr = trs and sum(trs[-14:]) / len(trs[-14:]) or 50
             new_stop = round(pos["best"] - d * p["atr_k"] * atr)
+            if p.get("gb_keep") and pos.get("tp"):  # Give-back exit: lock gb_keep of the peak profit.
+              peak_fav = (pos["best"] - pos["entry"]) * d
+              if peak_fav >= p.get("gb_act", 0.5) * abs(pos["tp"] - pos["entry"]):
+                lock = round(pos["entry"] + d * p["gb_keep"] * peak_fav)
+                new_stop = max(new_stop, lock) if d == 1 else min(new_stop, lock)
             if (d == 1 and new_stop > pos["stop"]) or (d == -1 and new_stop < pos["stop"]):
               pos["stop"] = new_stop
       # ---- pending limit entry ----
