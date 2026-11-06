@@ -116,7 +116,14 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
     replay_lines = ["", *summary_lines(run_replay(cfg))]
   except Exception as exc:
     replay_lines = ["", f"回測 vs 即時 對帳失敗：{exc}"]
-  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_summary(ledger), *replay_lines, "",
+  try:
+    from .stocks import stock_lines
+    stock_week = stock_lines("week", (datetime.now(TPE) - timedelta(days=1)).strftime("%Y-%m-%d"))
+    if stock_week:
+      stock_week = ["", "— 本週股票 AI 損益 —", *stock_week[1:]]
+  except Exception as exc:
+    stock_week = ["", f"股票週報讀取失敗：{exc}"]
+  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_summary(ledger), *replay_lines, *stock_week, "",
            "— 訓練（技術細節）—",
            f"資料 {rep['days'][0]} ～ {rep['days'][1]}（{len(days)} 個交易日）"]
   changes = {}

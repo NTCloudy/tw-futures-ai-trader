@@ -68,4 +68,9 @@ def monthly_text(ledger, names: dict, month: date) -> str:
     lines += ["", "₿ 虛擬貨幣（USDT）"]
     lines += [f"{n}：{v:+,.0f}" for n, v in cry]
     lines.append(f"合計：{sum(v for _, v in cry):+,.0f}")
+  try:
+    from .stocks import stock_lines
+    lines += stock_lines("month", month.strftime("%Y-%m"))
+  except Exception as exc:
+    lines += ["", f"股票月報讀取失敗：{exc}"]
   return "\n".join(lines)
