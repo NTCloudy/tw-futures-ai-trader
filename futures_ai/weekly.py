@@ -159,6 +159,26 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
       verdict = "維持目前參數"
     lines.append(f"\n{NAMES[live_id]}：考試期 訓練挑選 {r['oos_pnl']:+,} vs 目前參數 {cur_oos:+,.0f}"
                  f"（{r['oos_trades']} 筆，勝 {r['oos_wins']}）→ {verdict}")
+  # Nova and Omega: longer rolling windows (they trade less often); same "switch only if better" rule.
+  from . import slowtrain
+  frozen = datetime.now(TPE).date().isoformat() <= cfg.get("params_frozen_until", "")
+  for ai in ("nova-nightorb", "omega-swing"):
+    try:
+      r = slowtrain.train(cfg, ai, sessions, live_params.get(ai))
+    except Exception as exc:
+      lines.append(f"\n{slowtrain.NAMES[ai]}：訓練失敗（{exc}），維持目前參數")
+      continue
+    head = (f"\n{slowtrain.NAMES[ai]}：考試期 訓練挑選 {r['oos_pnl']:+,} vs 目前參數 {r['cur_oos']:+,}"
+            f"（{r['trades']} 筆，勝 {r['wins']}）")
+    if r["switch"] and cfg.get("learning_mode") and not frozen:
+      live_params[ai] = r["latest"]
+      changes[ai] = r["latest"]
+      ledger.set_state(f"strategy_since:{ai}", datetime.now(TPE).isoformat(timespec="seconds"))
+      lines.append(f"{head} → ✅ 已換成新參數 {r['latest']}")
+    elif r["switch"]:
+      lines.append(f"{head} → 建議改為 {r['latest']}（參數凍結中，暫不更換）")
+    else:
+      lines.append(f"{head} → 目前參數考得比較好，維持")
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
 
