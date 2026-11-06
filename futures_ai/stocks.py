@@ -1,4 +1,4 @@
-"""Weekly / monthly P&L of the US-stock (owner's portfolio) and Taiwan-stock AI arenas, for the LINE reports.
+"""Weekly / monthly P&L of the US-stock AI arena (owner's portfolio), for the LINE reports.
 
 Each arena is a Node project cloned next to this repo; it is refreshed (git pull + fresh Yahoo prices) and asked
 for its period P&L via `node scripts/report.mjs`. Local data changes are reverted so later pulls stay clean.
@@ -14,8 +14,7 @@ from pathlib import Path
 SCRATCH = Path(__file__).resolve().parents[2]
 ARENAS = [
     ("ai-quant-trading-arena", "🇺🇸 美股（你的持倉，USD）"),
-    ("tw-ai-quant-trading-arena", "🇹🇼 台股（NT$）"),
-]
+]  # Taiwan stocks: no real holdings, so not included in the LINE reports.
 NODE = str(Path.home() / ".local" / "bin" / "node")
 
 
