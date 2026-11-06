@@ -32,10 +32,11 @@ def arena_report(repo: str, kind: str, arg: str) -> dict | None:
     _run(["git", "pull", "-q", "--ff-only"], d, 60)
   except Exception:
     pass  # Offline: use the local copy.
-  try:
-    _run([NODE, "scripts/sync-market-data.mjs"], d, 300)
-  except Exception:
-    pass  # Keep the last synced prices.
+  for script in ("scripts/sync-market-data.mjs", "scripts/sync-broad.mjs"):
+    try:
+      _run([NODE, script], d, 300)
+    except Exception:
+      pass  # Keep the last synced prices.
   try:
     return json.loads(_run([NODE, "scripts/report.mjs", kind, arg], d, 120).strip().splitlines()[-1])
   finally:
