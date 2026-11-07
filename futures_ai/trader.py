@@ -264,11 +264,8 @@ class AiTrader:
           self.cfg["capital_per_ai_twd"] - self.cfg.get("maintenance_margin_twd", 26900)):
         self.ledger.log("未實現虧損逼近維持保證金，強制平倉避免追繳", self.ai, "WARN", ts)
         self.flatten(ts, code, quote, "RISK")
-      elif p.get("trail") and getattr(self.s, "hold_overnight", False) and not p.get("tightened") and (
-          (RISK_STATE.get("mode") == "high" and p["side"] == "B") or (RISK_STATE.get("mode") == "positive" and p["side"] == "S")):
-        p["trail"], p["tightened"] = round(p["trail"] / 2), True  # News against the position: halve the trailing distance.
-        self.pos = p
-        self.ledger.log(f"📰 新聞風險不利持倉方向，移動停損距離縮小為 {p['trail']} 點", self.ai, "WARN", ts)
+      # 2026-11-07: removed "news against the position -> halve the trailing distance" (never in the backtest;
+      # its only trigger, 11/03, cut a swing short: live +15,468 vs simulated +26,129).
       elif p.get("trail"):  # Ratchet the trailing stop (after the stop check, conservative).
         tick = self.cfg["tick"]
         best = p["entry_price"] + p["mfe"] if p["side"] == "B" else p["entry_price"] - p["mfe"]
@@ -322,10 +319,21 @@ class AiTrader:
     if regime == "trend" and against and not getattr(self.s, "skip_trend_filter", False):
       return f"5 分K 強{'多' if direction > 0 else '空'}趨勢（ER {er:.2f}），不逆勢{'做多' if sig.side == 'B' else '放空'}"
     block = self.ledger.get_state(f"block:{self.ai}")
+    if block and bars and block["ts"] < (bars[0].end - timedelta(minutes=5)).isoformat():
+      self.ledger.set_state(f"block:{self.ai}", None)  # Stop-loss in an earlier session: reset (as in wfo).
+      block = None
     if block and block["side"] == sig.side:
-      vw = vwap(bars)
-      touched = any(b.end.isoformat() > block["ts"] and b.l <= vw <= b.h for b in bars)
+      # Same as the simulator: a bar after the stop touched the session VWAP as it was AT that bar.
+      touched, pv, vol = False, 0.0, 0.0
+      for b in bars:
+        pv += (b.h + b.l + b.c) / 3 * b.v
+        vol += b.v
+        vw_b = pv / vol if vol else b.c
+        if b.end.isoformat() > block["ts"] and b.l <= vw_b <= b.h:
+          touched = True
+          break
       if not touched:
+        vw = vwap(bars)
         return f"上一筆{'多' if sig.side == 'B' else '空'}單停損，價格尚未回到均價 {vw:.0f}，暫不同向進場"
       self.ledger.set_state(f"block:{self.ai}", None)
     return self._lesson_filter(sig, bars)

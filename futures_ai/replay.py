@@ -37,10 +37,10 @@ def sim_specs() -> dict:
   specs = {
       "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
                                       hours=("us_open",), fill_through=1)),
-      # Sigma: time-limited until 2026-10-28 noon, any time since then (user's choice).
+      # Sigma: time-limited, except any time from 2026-10-28 noon until 2026-11-07T12:30 (user's choices).
       "sigma-vwap": ("sigma-pullback", dict(g, regimes=("trend",), flip=(), limit_atr=0.2, limit_min=10,
                                              hours=("us_open", "night_open"), fill_through=1,
-                                             hours_until="2026-10-28T12:00:00+08:00")),
+                                             hours_free=("2026-10-28T12:00:00+08:00", "2026-11-07T12:30:00+08:00"))),
       "nova-nightorb": ("anchor-orb", nova),
       "nova-us": ("anchor-orb", dict(nova, hours=("us_open",))),
   }

@@ -188,9 +188,9 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     since2 = sl.get_state("allday_since")
     if since2:
       pairs = [("alpha-orb", "allday-alpha-orb", "不限時段版"),
-               ("sigma-vwap", "hours-sigma-vwap", "限時段版（夜盤開盤＋美股開盤各 1h）"),
+               ("sigma-vwap", "allday-sigma-vwap", "不限時段版"),
                ("nova-nightorb", "nova-us", "只在美股開盤 1h 版")]
-      t0s = {"allday-alpha-orb": since2, "hours-sigma-vwap": "2026-10-28T12:00:00+08:00",  # Swapped then.
+      t0s = {"allday-alpha-orb": since2, "allday-sigma-vwap": "2026-11-07T12:30:00+08:00",  # Sigma swapped back then.
              "nova-us": "2026-10-22T10:33:00+08:00"}  # Nova US became a shadow then.
       for ai_id, sh_id, sh_label in pairs:
         if ai_id not in names:

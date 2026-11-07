@@ -387,10 +387,15 @@ class ShadowBuildTest(unittest.TestCase):
     self.assertIn("sh1-nova-nightorb", ids)  # 2-hour Nova control.
     self.assertIn("nova-us", ids)  # US-open-only Nova runs as a shadow.
     allday = [t for t in sh if t.ai.startswith("allday-")]
-    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb"])
-    self.assertTrue(all(not t.s.hours for t in allday))
-    sig = [t for t in sh if t.ai == "hours-sigma-vwap"][0]  # Sigma's former time filter, now a shadow.
-    self.assertEqual(sig.s.hours, ("us_open", "night_open"))
+    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-sigma-vwap"])
+    self.assertTrue(all(not t.s.hours for t in allday))  # Any-time twins (Sigma is time-limited again).
+    dual = [t for t in sh if t.ai == "dual-nova-nightorb"][0]
+    self.assertEqual(dual.s.skip_window, ("17:30", "20:30"))
+
+  def test_live_sigma_is_time_limited(self):
+    from futures_ai.strategies import build_strategies
+    sig = [s for s in build_strategies({}) if s.id == "sigma-vwap"][0]
+    self.assertEqual(sig.hours, ("us_open", "night_open"))
 
 
 class InverseOfTest(unittest.TestCase):

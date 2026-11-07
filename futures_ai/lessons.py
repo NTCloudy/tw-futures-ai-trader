@@ -112,8 +112,8 @@ def _specs(lessons: dict) -> dict:
   from .replay import sim_specs
   specs = sim_specs()
   sim_ai, p = specs["sigma-vwap"]
-  p = dict(p, hours=None)  # Sigma trades at any time now (time-limited only until 2026-10-28).
-  p.pop("hours_until", None)
+  p = dict(p)  # Current live Sigma: time-limited throughout (drop the historical any-time period).
+  p.pop("hours_free", None)
   specs["sigma-vwap"] = (sim_ai, p)
   return {ai: (sa, {**sp, **lessons.get(ai, {})}) for ai, (sa, sp) in specs.items() if ai in AIS}
 

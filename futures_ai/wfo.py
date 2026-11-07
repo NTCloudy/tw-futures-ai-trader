@@ -467,8 +467,10 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         continue
       if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
         continue
+      hf = p.get("hours_free")  # (start_iso, end_iso): period in which the live AI traded at any time.
       if p.get("hours") and tod_bucket(x.end) not in p["hours"] and \
-          not (p.get("hours_until") and x.end.isoformat() >= p["hours_until"]):
+          not (p.get("hours_until") and x.end.isoformat() >= p["hours_until"]) and \
+          not (hf and hf[0] <= x.end.isoformat() < hf[1]):
         continue
       ue = p.get("us_entry_min")  # Entries only within N minutes after the US cash open (DST-aware).
       if ue is not None:
@@ -572,8 +574,13 @@ LIVE_TO_SIM = {"alpha-orb": "alpha-orb", "sigma-vwap": "sigma-pullback", "gamma-
 
 
 def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Session] | None = None, log=print,
-                 ais: tuple = ("alpha-orb", "sigma-pullback", "gamma-trend")) -> dict:
+                 ais: tuple = ("alpha-orb", "sigma-pullback", "gamma-trend"), base: dict | None = None) -> dict:
+  """base: optional {sim_ai: dict} of live execution settings (limit entry, hours, ...) merged under every grid
+  point, so training simulates the same execution as the live AI (only the grid keys are searched)."""
   sessions = sessions or load_sessions(cfg)
+  base = base or {}
+  def grid_(ai):
+    return [p if p.get("off") else {**base.get(ai, {}), **p} for p in grid(ai)]
   days = sorted({s.td for s in sessions})
   by_day = {d: [s for s in sessions if s.td == d] for d in days}
   report = {"days": [str(days[0]), str(days[-1])] if days else None, "train_days": train_days,
@@ -584,7 +591,7 @@ def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Sess
     while start + test_days <= len(days):
       train = [s for d in days[start - train_days: start] for s in by_day[d]]
       test = [s for d in days[start: start + test_days] for s in by_day[d]]
-      results = [(score(r := {**simulate(cfg, ai, p, train), "off": p.get("off", False)}), p, r) for p in grid(ai)]
+      results = [(score(r := {**simulate(cfg, ai, p, train), "off": p.get("off", False)}), p, r) for p in grid_(ai)]
       best_score, best_p, best_r = max(results, key=lambda t: t[0])
       t = simulate(cfg, ai, best_p, test)
       oos_pnl += t["pnl"]
@@ -597,7 +604,7 @@ def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Sess
                       "test_trades": t["trades"], "test_wins": t["wins"]})
       start += test_days
     latest_train = [s for d in days[-train_days:] for s in by_day[d]]
-    latest = max(((score({**simulate(cfg, ai, p, latest_train), "off": p.get("off", False)}), p) for p in grid(ai)),
+    latest = max(((score({**simulate(cfg, ai, p, latest_train), "off": p.get("off", False)}), p) for p in grid_(ai)),
                  key=lambda t: t[0])[1]
     report["ais"][ai] = {"oos_pnl": round(oos_pnl), "oos_trades": oos_trades, "oos_wins": oos_wins,
                          "windows": windows, "latest_params": latest, "latest_desc": describe(ai, latest)}

@@ -1,6 +1,7 @@
 """Weekly self-improvement job (cron, Saturdays 10:00 Taipei):
 
-1. Walk-forward training on all archived TAIFEX data (practice 10 days -> exam 5 days, rolling).
+1. Walk-forward training on all archived TAIFEX data (practice 40 days -> exam 20 days, rolling; 10 -> 5
+   until 2026-11-07, too few trades per window for Alpha's US-open-only entries).
 2. Compare the latest recommended parameters with the CURRENT live parameters on the same exam
    windows. In learning mode, switch an AI only if the recommendation scored better on unseen data.
 3. Review the week's losing trades and validate recurring lessons as rules (lessons.py).
@@ -30,6 +31,39 @@ DEFAULT_REGIMES = {"alpha-orb": ("trend", "chop"), "sigma-vwap": ("trend",), "ga
 NAMES = {"alpha-orb": "Alpha 開盤突破", "sigma-vwap": "Sigma 趨勢回測", "gamma-scalp": "Gamma 趨勢突破"}
 
 
+def live_exec() -> dict:
+  """Live execution settings of Alpha / Sigma that the grid does not search (limit entry, entry hours, adopted
+  lesson rules), taken from replay.sim_specs so training, the replay check and live trading stay identical."""
+  from .replay import sim_specs
+  specs = sim_specs()
+  out = {}
+  for live_id in SIM_ID:
+    p = {k: v for k, v in specs[live_id][1].items() if k not in LIVE_KEYS[live_id] and k not in ("regimes", "flip")}
+    p.pop("hours_free", None)  # Historical replay detail only; training uses the current hours.
+    out[live_id] = p
+  return out
+
+
+def health_lines(cfg: dict, sessions: list) -> list[str]:
+  """One-year backtest of every live AI with its current live settings: an AI losing money over the whole
+  year is flagged for a structural review (small lesson rules alone are not enough)."""
+  from . import lessons, slowtrain
+  from .swing import simulate_swing
+  params = json.loads((ROOT / "data" / "strategy_params.json").read_text(encoding="utf-8")) \
+      if (ROOT / "data" / "strategy_params.json").exists() else {}
+  c = dict(cfg, max_entries_per_session=999)
+  out = ["", "🩺 策略健康度（一年回測，目前設定）"]
+  rows = []
+  for ai, (sim_ai, p) in lessons._specs(params.get("lessons", {})).items():
+    rows.append((lessons.NAMES[ai], wfo.simulate(c, sim_ai, p, sessions)))
+  om = {**slowtrain.OMEGA_BASE, **slowtrain.LIVE_DEFAULTS["omega-swing"], **params.get("omega-swing", {})}
+  rows.append(("Omega", simulate_swing(c, om, sessions)))
+  for name, r in rows:
+    flag = "🟢" if r["pnl"] > 0 else "🔴 待結構檢討"
+    out.append(f"{name}：{r['pnl']:+,.0f}｜回撤 {r['maxdd']:,.0f}｜{r['trades']} 筆 {flag}")
+  return out
+
+
 def current_params() -> dict:
   from .strategies import build_strategies
   out = {}
@@ -42,8 +76,9 @@ def current_params() -> dict:
   return out
 
 
-SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "hours-sigma-vwap": "Sigma（限時段版）",
-                "nova-us": "Nova（只在美股開盤 1h 版）", "sh1-nova-nightorb": "Nova（舊版，只到 17:30）"}
+SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "allday-sigma-vwap": "Sigma（不限時段版）",
+                "nova-us": "Nova（只在美股開盤 1h 版）", "sh1-nova-nightorb": "Nova（舊版，只到 17:30）",
+                "dual-nova-nightorb": "Nova（雙峰時段版，17:30–20:30 不進場）"}
 
 
 def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> list[str]:
@@ -102,11 +137,13 @@ def shadow_summary(now: datetime | None = None, days: int = 7, ledger: Ledger | 
   return out
 
 
-def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: bool = True) -> dict:
+def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bool = True) -> dict:
   ledger = Ledger(cfg["db_path"])
   cfg = dict(cfg, max_entries_per_session=999 if cfg.get("learning_mode") else cfg["max_entries_per_session"])
   sessions = wfo.load_sessions(cfg)
-  rep = wfo.walk_forward(cfg, train_days, test_days, sessions, ais=tuple(SIM_ID.values()), log=lambda *_: None)
+  exec_base = live_exec()
+  rep = wfo.walk_forward(cfg, train_days, test_days, sessions, ais=tuple(SIM_ID.values()), log=lambda *_: None,
+                         base={SIM_ID[k]: v for k, v in exec_base.items()})
   days = sorted({s.td for s in sessions})
   by_day = {d: [s for s in sessions if s.td == d] for d in days}
   cur = current_params()
@@ -130,7 +167,7 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
   changes = {}
   for live_id, sim_id in SIM_ID.items():
     r = rep["ais"][sim_id]
-    cur_sim = {**cur[live_id], "regimes": DEFAULT_REGIMES[live_id], "flip": ()}
+    cur_sim = {**exec_base[live_id], **cur[live_id], "regimes": DEFAULT_REGIMES[live_id], "flip": ()}
     cur_oos = 0.0
     for w in r["windows"]:
       test_days_ = [d for d in days if w["test"][0] <= str(d) <= w["test"][1]]
@@ -182,6 +219,10 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
       lines.append(f"{head} → 目前參數考得比較好，維持")
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
+  try:
+    lines += health_lines(cfg, sessions)
+  except Exception as exc:
+    lines.append(f"\n🩺 策略健康度計算失敗：{exc}")
   # Losing-trade review -> recurring lessons -> backtested + forward-validated rules (lessons.py).
   try:
     from . import lessons

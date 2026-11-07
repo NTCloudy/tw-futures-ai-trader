@@ -327,6 +327,9 @@ class NightOpenBreakout:
     r_end = anchor + _td(minutes=self.range_min)
     if not (r_end < t <= r_end + _td(minutes=self.window)):
       return None
+    sw = getattr(self, "skip_window", None)  # ("HH:MM", "HH:MM"): no new entries in this window (shadow test).
+    if sw and sw[0] <= t.strftime("%H:%M") < sw[1]:
+      return None
     rng = [b for b in bars if anchor < b.end <= r_end]
     if len(rng) < self.range_min // 5 - 1:
       return None
@@ -363,7 +366,7 @@ class SwingTrend:
     self.lookback, self.atr_k, self.direction, self.limit_atr_60 = lookback, atr_k, direction, limit_atr
     self.tp_atr = tp_atr
     self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60 做多（{'多空都做' if direction == 'both' else '只做多'}），"
-                  f"可留倉過夜，{atr_k:g} 倍 ATR 移動停損、{tp_atr:g} 倍 ATR 停利，限價進場；新聞高風險時收緊停損")
+                  f"可留倉過夜，{atr_k:g} 倍 ATR 移動停損、{tp_atr:g} 倍 ATR 停利，限價進場")
     self.h60: list[Bar] = []  # completed 60-minute bars across sessions (set by the engine)
     self._last_decided = None
     self.reentry_side: str | None = None
@@ -428,7 +431,9 @@ def build_strategies(params: dict | None = None) -> list:
   sigma.limit_atr, sigma.limit_min = 0.2, 10
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
-  sigma.hours = None  # 2026-10-28 (user's choice): Sigma trades at any time; the time-limited version is a shadow.
+  # Sigma: any time from 2026-10-28; back to the time-limited version on 2026-11-07 (user's choice after the
+  # one-year comparison: +56,205 / max DD 19,984 vs any time -23,383 / 76,208). Any-time version = shadow.
+  sigma.hours = ("us_open", "night_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
