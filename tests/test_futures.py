@@ -814,3 +814,28 @@ class GapRangeTest(unittest.TestCase):
     live = Bar(t + timedelta(minutes=6), 47000, 47005, 46995, 47000, 1)
     hi, lo = e._touched_range(Snapshot("TMFK6", 47000.0, None, None, gap, t, live, None))
     self.assertEqual(lo, 46800)  # The dip that happened while offline is seen.
+
+
+class LessonReviewTest(unittest.TestCase):
+  def test_tags_whipsaw_and_consecutive_stops(self):
+    from futures_ai import lessons
+    t = lambda h, m: f"2026-11-06T{h:02d}:{m:02d}:00+08:00"
+    rows = [
+        {"entry_ts": t(15, 5), "exit_ts": t(15, 20), "side": "S", "pnl_twd": -1500, "exit_kind": "SL"},  # early
+        {"entry_ts": t(15, 30), "exit_ts": t(16, 0), "side": "B", "pnl_twd": -1500, "exit_kind": "SL"},  # reversal
+        {"entry_ts": t(17, 30), "exit_ts": t(18, 0), "side": "B", "pnl_twd": -1500, "exit_kind": "SL"},  # consec
+        {"entry_ts": t(19, 0), "exit_ts": t(20, 0), "side": "B", "pnl_twd": 5000, "exit_kind": "TP"},
+    ]
+    r = lessons.review(rows, "sigma-vwap")
+    self.assertEqual(r["losses"], 3)
+    self.assertEqual(r["tags"], {"consec_sl": 1, "reversal": 1, "early_open": 1, "other": 0})
+
+  def test_recurring_needs_two_weeks(self):
+    from futures_ai import lessons
+    wk = lambda n: {"tags": {"consec_sl": n, "reversal": 0, "early_open": 0, "other": 0}}
+    self.assertEqual(lessons.recurring([wk(5), wk(0), wk(0), wk(0)]), [])
+    self.assertEqual(lessons.recurring([wk(3), wk(1), wk(0), wk(0)]), ["consec_sl"])
+
+  def test_rule_text(self):
+    from futures_ai import lessons
+    self.assertEqual(lessons.rule_zh({"max_sl": 1}), "一盤停損 1 次就休息")

@@ -383,6 +383,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
     chase_k = None
     pend = None  # limit entry: (side, limit_px, sl_pts, tp_pts, trail, expires_end)
     gb_peak = 0.0  # best favorable excursion of the open position (give-back exit)
+    sl_count = 0  # Lesson rules (learned from losing-trade reviews): stop-losses so far this session,
+    last_sl = None  # and (side, time) of the most recent stop-loss.
+    s_start = b[0].end - timedelta(minutes=1) if b else None
     for i in range(len(b)):
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
@@ -443,6 +446,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
             chase_k = max([kk for ii, kk in s.k_at.items() if ii <= i] or [0])
           if kind == "SL":
             chase_side = None
+            if net < 0:
+              sl_count += 1
+              last_sl = (side, x.end)
           if kind == "SL" and ai in ("sigma-pullback", "sigma-fixed"):
             block_side, block_i = side, i
           continue
@@ -474,7 +480,14 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         hm = x.end.strftime("%H:%M")
         if not ((ew[0] <= hm < ew[1]) if ew[0] < ew[1] else (hm >= ew[0] or hm < ew[1])):
           continue
+      if p.get("max_sl") and sl_count >= p["max_sl"]:
+        continue  # Lesson: stop for the session after N losing stop-outs.
+      if p.get("open_delay") and x.end < s_start + timedelta(minutes=p["open_delay"]):
+        continue  # Lesson: no entries in the first N minutes of the session.
       sig = signal5(ai, p, s, s.k_at[i], i)
+      if sig and p.get("rev_cool") and last_sl and sig[0] != last_sl[0] and \
+          x.end < last_sl[1] + timedelta(minutes=p["rev_cool"]):
+        continue  # Lesson: no reversal entry within N minutes after a stop-loss.
       if not sig and chase_side and p.get("chase"):
         k = s.k_at[i]
         n = p["chase"]["lookback"]

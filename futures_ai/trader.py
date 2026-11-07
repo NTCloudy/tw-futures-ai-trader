@@ -328,6 +328,26 @@ class AiTrader:
       if not touched:
         return f"上一筆{'多' if sig.side == 'B' else '空'}單停損，價格尚未回到均價 {vw:.0f}，暫不同向進場"
       self.ledger.set_state(f"block:{self.ai}", None)
+    return self._lesson_filter(sig, bars)
+
+  def _lesson_filter(self, sig, bars: list[Bar]) -> str | None:
+    """Rules adopted from the weekly losing-trade review (data/strategy_params.json "lessons"; see lessons.py)."""
+    rules = getattr(self.s, "rules", None) or {}
+    if not rules or not bars:
+      return None
+    from datetime import timedelta
+    start = bars[0].end - timedelta(minutes=5)
+    now = bars[-1].end
+    if rules.get("open_delay") and now < start + timedelta(minutes=rules["open_delay"]):
+      return f"📚 經驗規則：開盤 {rules['open_delay']} 分鐘內不進場"
+    sls = self.ledger.rows("SELECT side, exit_ts FROM trades WHERE ai=? AND exit_ts>=? AND exit_kind='SL' "
+                           "AND pnl_twd<0 ORDER BY exit_ts", (self.ai, start.isoformat()))
+    if rules.get("max_sl") and len(sls) >= rules["max_sl"]:
+      return f"📚 經驗規則：這一盤已停損 {len(sls)} 次，今天這盤休息"
+    if rules.get("rev_cool") and sls:
+      last = sls[-1]
+      if last["side"] != sig.side and now < datetime.fromisoformat(last["exit_ts"]) + timedelta(minutes=rules["rev_cool"]):
+        return f"📚 經驗規則：剛停損，{rules['rev_cool']} 分鐘內不反手"
     return None
 
   def on_bar(self, ts: datetime, td: str, code: str, session_key: str, bars: list[Bar], quote: dict,

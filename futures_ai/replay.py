@@ -32,7 +32,9 @@ def sim_specs() -> dict:
   g = lp.get("sigma-vwap", {"pull_atr": 0.5, "sl_atr": 2.0, "tp_mult": 4.0, "trail_atr": None})
   nova = dict(anchor="night", range_min=30, window=600, sl_frac=1.0, tp_mult=3.0, regimes=("trend", "chop"),
               flip=(), limit_atr=0.0, limit_min=5, fill_through=1)
-  return {
+  nova.update(lp.get("nova-nightorb", {}))
+  les = lp.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
+  specs = {
       "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
                                       hours=("us_open",), fill_through=1)),
       # Sigma: time-limited until 2026-10-28 noon, any time since then (user's choice).
@@ -42,6 +44,7 @@ def sim_specs() -> dict:
       "nova-nightorb": ("anchor-orb", nova),
       "nova-us": ("anchor-orb", dict(nova, hours=("us_open",))),
   }
+  return {ai: (sa, {**p, **les.get(ai, {})}) for ai, (sa, p) in specs.items()}
 
 
 def _match(live: list[dict], sim: list[dict]) -> tuple[list, list, list]:

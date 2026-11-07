@@ -431,6 +431,9 @@ def build_strategies(params: dict | None = None) -> list:
   sigma.hours = None  # 2026-10-28 (user's choice): Sigma trades at any time; the time-limited version is a shadow.
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
+  lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
+  for st in (alpha, sigma, nova):
+    st.rules = dict(lessons.get(st.id, {}))
   return [alpha, sigma, nova, omega]
 
 

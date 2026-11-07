@@ -3,8 +3,9 @@
 1. Walk-forward training on all archived TAIFEX data (practice 10 days -> exam 5 days, rolling).
 2. Compare the latest recommended parameters with the CURRENT live parameters on the same exam
    windows. In learning mode, switch an AI only if the recommendation scored better on unseen data.
-3. Rank the background shadow variants by their real-time (forward) results of the last 7 days.
-4. Send the summary to LINE, save data/weekly_report.json, and restart the engine to load changes.
+3. Review the week's losing trades and validate recurring lessons as rules (lessons.py).
+4. Rank the background shadow variants by their real-time (forward) results of the last 7 days.
+5. Send the summary to LINE, save data/weekly_report.json, and restart the engine to load changes.
 """
 
 from __future__ import annotations
@@ -181,6 +182,15 @@ def run_weekly(cfg: dict, train_days: int = 10, test_days: int = 5, restart: boo
       lines.append(f"{head} → 目前參數考得比較好，維持")
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
+  # Losing-trade review -> recurring lessons -> backtested + forward-validated rules (lessons.py).
+  try:
+    from . import lessons
+    lr = lessons.run(cfg, ledger, sessions, adopt=bool(cfg.get("learning_mode")))
+    lines += lr["lines"]
+    if lr["changed"]:
+      changes["lessons"] = True
+  except Exception as exc:
+    lines.append(f"\n📚 虧損檢討失敗：{exc}")
 
   lines += shadow_summary(ledger=ledger)
 
