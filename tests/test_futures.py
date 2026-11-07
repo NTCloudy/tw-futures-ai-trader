@@ -286,6 +286,21 @@ class GuardsTest(unittest.TestCase):
     later = bars + bars_from([(47000, 47003, 46997, 47001)], start=bars[-1].end + timedelta(minutes=1))
     self.assertIsNone(self.tr._filter(Entry("S", 30, 45, "x"), later))
 
+  def test_stop_bar_itself_does_not_release_block(self):
+    # The bar in which the stop happened (it ends after the stop) must not count as "back at VWAP".
+    flat = [(47000, 47004, 46996, 47000 + (i % 3) - 1) for i in range(40)]
+    bars = bars_from(flat)
+    stop_ts = bars[-1].end - timedelta(seconds=30)
+    self.ledger.set_state("block:sigma-vwap", {"side": "S", "ts": stop_ts.isoformat()})
+    self.assertIn("尚未回到均價", self.tr._filter(Entry("S", 30, 45, "x"), bars))
+
+  def test_block_from_previous_session_is_reset(self):
+    flat = [(47000, 47004, 46996, 47000 + (i % 3) - 1) for i in range(40)]
+    bars = bars_from(flat)
+    old = bars[0].end - timedelta(hours=3)
+    self.ledger.set_state("block:sigma-vwap", {"side": "S", "ts": old.isoformat()})
+    self.assertIsNone(self.tr._filter(Entry("S", 30, 45, "x"), bars))
+
 
 class ControlTest(unittest.TestCase):
 

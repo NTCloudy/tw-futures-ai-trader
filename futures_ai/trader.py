@@ -325,11 +325,13 @@ class AiTrader:
     if block and block["side"] == sig.side:
       # Same as the simulator: a bar after the stop touched the session VWAP as it was AT that bar.
       touched, pv, vol = False, 0.0, 0.0
+      span = (bars[-1].end - bars[-2].end) if len(bars) >= 2 else timedelta(minutes=5)  # Bar length (5 min live).
       for b in bars:
         pv += (b.h + b.l + b.c) / 3 * b.v
         vol += b.v
         vw_b = pv / vol if vol else b.c
-        if b.end.isoformat() > block["ts"] and b.l <= vw_b <= b.h:
+        # Only bars that START at/after the stop (the stop's own bar also contains pre-stop prices).
+        if (b.end - span).isoformat() >= block["ts"] and b.l <= vw_b <= b.h:
           touched = True
           break
       if not touched:
