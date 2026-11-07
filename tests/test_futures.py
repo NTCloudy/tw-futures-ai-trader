@@ -53,13 +53,21 @@ def bars_from(prices, start=at(2026, 10, 16, 8, 46)):
 class StrategyTest(unittest.TestCase):
 
   def test_orb_long_breakout(self):
-    rng = [(100, 110, 95, 105)] * 15 + [(105, 109, 104, 108)]
-    bars = bars_from([(p[0] + 47000, p[1] + 47000, p[2] + 47000, p[3] + 47000) for p in rng + [(108, 120, 107, 118)]])
-    e = OrbBreakout().decide(bars, 0, None)
+    start = at(2026, 10, 16, 8, 50)
+    rng = [(47000, 47060, 47000, 47030)] * 3  # 08:50..09:00 opening range width = 60 (within 40..260)
+    after = [(47030, 47055, 47020, 47045), (47045, 47080, 47040, 47075)]
+    bars = [Bar(start + timedelta(minutes=5 * i), o, h, l, c, 100) for i, (o, h, l, c) in enumerate(rng + after)]
+    orb = OrbBreakout(range_bars=3, sl_frac=0.75, tp_mult=3.0)
+    e = orb.decide(bars, 0, None)
     self.assertIsNotNone(e)
     self.assertEqual(e.side, "B")
-    self.assertEqual(e.tp_pts, e.sl_pts * 2)
-    self.assertIsNone(OrbBreakout().decide(bars, 2, None))  # max entries per session
+    self.assertEqual(e.tp_pts, e.sl_pts * 3)
+    self.assertIsNone(orb.decide(bars, 2, None))  # max entries per session
+    narrow = [Bar(start + timedelta(minutes=5 * i), 47000, 47020, 47000, 47010, 100) for i in range(3)] + [
+        Bar(start + timedelta(minutes=15), 47010, 47018, 47008, 47015, 100),
+        Bar(start + timedelta(minutes=20), 47015, 47040, 47014, 47035, 100),
+    ]
+    self.assertIsNone(orb.decide(narrow, 0, None))  # width 20 < min_width 40 filtered out
 
   def test_vwap_reversion_short(self):
     flat = [(47000, 47005, 46995, 47000)] * 25
@@ -144,12 +152,17 @@ class OcoBracketTest(unittest.TestCase):
     self.assertNotEqual(self.tr.locked_day(), self.td)
 
   def test_risk_lock_flattens_when_daily_loss_hit(self):
-    self.tr.s.entry = Entry("B", 400, 800, "very wide")
+    self.cfg["max_daily_loss_twd"] = 2000
+    self.tr.s.entry = Entry("B", 220, 440, "wide")
     self.enter()
-    self.tr.on_price(at(2026, 10, 16, 9, 20), self.td, "TMFJ6", {"last": 46790, "bid": 46789, "ask": 46791}, 200, False)
-    self.assertEqual(self.tr.locked_day(), self.td)
+    # Unrealized loss alone does not force-flatten an open position before its stop:
+    self.tr.on_price(at(2026, 10, 16, 9, 15), self.td, "TMFJ6", {"last": 46795, "bid": 46794, "ask": 46796}, 200, False)
+    self.assertIsNotNone(self.tr.pos)
+    # Once stop-loss is hit and realized loss exceeds max_daily_loss_twd (2,000), the AI is locked for the day:
+    self.tr.on_price(at(2026, 10, 16, 9, 20), self.td, "TMFJ6", {"last": 46770, "bid": 46769, "ask": 46771}, 200, False)
     self.assertIsNone(self.tr.pos)
-    self.assertEqual(self.ledger.rows("SELECT exit_kind FROM trades")[0]["exit_kind"], "RISK")
+    self.assertEqual(self.ledger.rows("SELECT exit_kind FROM trades")[0]["exit_kind"], "SL")
+    self.assertEqual(self.tr.locked_day(), self.td)
     self.tr.s.entry = Entry("B", 40, 80, "again")
     self.tr.on_bar(at(2026, 10, 16, 10, 0), self.td, "TMFJ6", "2026-10-16-day", self.bars,
                    {"last": 46800, "bid": 46799, "ask": 46800}, 200, True, False)
@@ -204,10 +217,6 @@ class EngineRollTest(unittest.TestCase):
     self.assertEqual(ledger.get_state("market")["contract"], "TMFK6")
 
 
-if __name__ == "__main__":
-  unittest.main()
-
-
 class LearningTest(unittest.TestCase):
 
   def setUp(self):
@@ -228,27 +237,22 @@ class LearningTest(unittest.TestCase):
       self.brain.review(now, self.pos(), 46982, "SL", -240)
     mode, why = self.brain.choose_mode("chop")
     self.assertEqual(mode, "flip")  # native kept losing in chop -> try the flipped strategy
-    self.assertIsNotNone(self.brain.state["pause_until"])  # 3 losses in a row -> cool-down
-    self.assertTrue(self.brain.paused(now + timedelta(minutes=5)))
-    self.assertFalse(self.brain.paused(now + timedelta(minutes=20)))
+    self.assertFalse(self.brain.paused(now + timedelta(minutes=5)))
 
   def test_giveback_shrinks_take_profit(self):
     lesson = self.brain.review(at(2026, 10, 16, 10, 10), self.pos(mfe=15), 46984, "SL", -220)
     self.assertIn("停利設太遠", lesson["diagnosis"])
     self.assertAlmostEqual(self.brain.state["tp_mult"], 0.9)
 
-  def test_flip_mode_inverts_side_and_blocks_when_both_lose(self):
+  def test_flip_mode_inverts_side_and_chooses_better_mode(self):
     st = self.brain.state["stats"]["chop"]
     st["native"].update(n=3, ew=-200)
     st["flip"].update(n=1, ew=-50)
     bars = bars_from([(47000, 47003, 46997, 47000 + (i % 2) * 2) for i in range(25)])
     sig, ctx = self.brain.adjust(Entry("B", 15, 20, "x"), bars)
     self.assertEqual((ctx["regime"], ctx["mode"], sig.side), ("chop", "flip", "S"))
-    st["flip"].update(n=3, ew=-150)
-    sig, ctx = self.brain.adjust(Entry("B", 15, 20, "x"), bars)
-    self.assertIsNone(sig)
     self.brain.daily_decay("2026-10-16")
-    self.brain.daily_decay("2026-10-19")  # next day halves evidence -> allowed to retry
+    self.brain.daily_decay("2026-10-19")
     self.assertIsNotNone(self.brain.adjust(Entry("B", 15, 20, "x"), bars)[0])
 
 
@@ -347,16 +351,18 @@ class TrailingStopTest(unittest.TestCase):
 
 class LearningModeTest(unittest.TestCase):
 
-  def test_learning_mode_removes_caps_and_live_refuses_it(self):
+  def test_max_entries_and_live_refuses_learning_mode(self):
     from futures_ai.brokers import make_broker
-    c = cfg(learning_mode=True, max_entries_per_session=1)
+    c = cfg(learning_mode=False, max_entries_per_session=3)
     ledger = Ledger(":memory:")
-    tr = AiTrader(c, FakeStrategy(Entry("B", 40, 80, "x")), LocalPaperBroker(c), ledger)
+    st = FakeStrategy(Entry("B", 40, 80, "x"))
+    st.max_entries = 2
+    tr = AiTrader(c, st, LocalPaperBroker(c), ledger)
     tr.s.decide = lambda bars, n, since: Entry("B", 40, 80, "x")
-    ledger.set_state("cnt:alpha-orb:k", 50)
+    ledger.set_state("cnt:alpha-orb:k", 2)
     bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
     tr.on_bar(at(2026, 10, 16, 9, 10), "2026-10-16", "TMFJ6", "k", bars, {"last": 47000, "bid": 46999, "ask": 47000}, 200, True, False)
-    self.assertIsNotNone(tr.pos)  # cap of 1 ignored in learning mode
+    self.assertIsNone(tr.pos)  # strategy max_entries=2 respected
     with self.assertRaises(SystemExit):
       make_broker(cfg(mode="sinopac_live", i_understand_real_money=True, learning_mode=True), "nova-nightorb")
 
@@ -399,18 +405,18 @@ class ShadowBuildTest(unittest.TestCase):
     sh = build_shadows(cfg(), Ledger(":memory:"))
     ids = [t.ai for t in sh]
     self.assertEqual(len([i for i in ids if i.startswith("tp1-")]), 0)  # Take-profit twins retired.
-    self.assertIn("sh1-nova-nightorb", ids)  # 2-hour Nova control.
+    self.assertNotIn("sh1-nova-nightorb", ids)  # Retired legacy shadow.
+    self.assertNotIn("dual-nova-nightorb", ids)  # Retired legacy shadow.
     self.assertIn("nova-us", ids)  # US-open-only Nova runs as a shadow.
     allday = [t for t in sh if t.ai.startswith("allday-")]
-    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-sigma-vwap"])
-    self.assertTrue(all(not t.s.hours for t in allday))  # Any-time twins (Sigma is time-limited again).
-    dual = [t for t in sh if t.ai == "dual-nova-nightorb"][0]
-    self.assertEqual(dual.s.skip_window, ("17:30", "20:30"))
+    self.assertEqual(sorted(t.ai for t in allday), ["allday-alpha-orb", "allday-nova-nightorb", "allday-sigma-vwap"])
+    self.assertTrue(all(not t.s.hours for t in allday))
 
   def test_live_sigma_is_time_limited(self):
     from futures_ai.strategies import build_strategies
     sig = [s for s in build_strategies({}) if s.id == "sigma-vwap"][0]
     self.assertEqual(sig.hours, ("us_open", "night_open"))
+    self.assertEqual(sig.max_entries, 2)
 
 
 class InverseOfTest(unittest.TestCase):
@@ -565,21 +571,18 @@ class NewsRiskTest(unittest.TestCase):
     self.assertLess(score_headline("川普突簽行政命令 豁免多項關稅")[0], 0)
     self.assertGreater(score_headline("China launches missile drills near Taiwan Strait")[0], score_headline("Trump tariff threat")[0])
     self.assertEqual(score_headline("台積電法說會今日登場")[0], 0)
+    self.assertEqual(score_headline("【觀察】赫格塞斯出任戰爭部長，談判陷入僵局")[0], 0)
 
   def test_news_tilt_needs_price_confirmation(self):
     from futures_ai import trader as tm
     c = cfg()
     tr = AiTrader(c, FakeStrategy(None), LocalPaperBroker(c), Ledger(":memory:"))
     flat = bars_from([(47000, 47030, 46970, 47000 + (i % 3) - 1) for i in range(60)])
-    rally = bars_from([(47000 + i * 6, 47010 + i * 6, 46998 + i * 6, 47008 + i * 6) for i in range(60)])
     try:
       tm.RISK_STATE.update(mode="elevated", fomc_window=False)
-      self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), flat))  # Elevated news: just keep an eye on it.
+      self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), flat))
       tm.RISK_STATE.update(mode="high", fomc_window=False)
-      dip = bars_from([(47000, 47030, 46970, 47000)] * 59 + [(47000, 47000, 46940, 46950)])
-      self.assertIn("先不進", tr._filter(Entry("B", 40, 80, "x"), dip))  # Below VWAP during a spike.
-      self.assertIsNone(tr._filter(Entry("S", 40, 80, "x"), flat))
-      self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), rally))
+      self.assertIsNone(tr._filter(Entry("B", 40, 80, "x"), flat))  # Intraday AIs already check VWAP in decide().
       tm.RISK_STATE.update(mode="normal", fomc_window=True)
       self.assertIn("聯準會", tr._filter(Entry("S", 40, 80, "x"), flat))
     finally:
@@ -724,7 +727,7 @@ class HolidayLatchTest(unittest.TestCase):
       def snapshot(self, code, name, start, now):
         return self.snap
     f = Feed()
-    clock = {"t": at(2026, 10, 26, 15, 20)}
+    clock = {"t": at(2026, 10, 27, 15, 20)}
     bars = bars_from([(46300, 46310, 46290, 46300)] * 30)
     e = Engine(cfg(), Ledger(":memory:"), [], feed=f, clock=lambda: clock["t"])
     f.snap = Snapshot("TMFK6", 45671.0, None, None, bars, clock["t"], None, "20261022")
@@ -817,7 +820,7 @@ class SessionCloseReportTest(unittest.TestCase):
     finally:
       N.LineNotifier._send, _t.sleep = orig_send, orig_sleep
     self.assertEqual(l.get_state("monthly_sent"), "2026-10")
-    self.assertTrue(any("10 月月報" in x for x in sent))
+    self.assertTrue(any("10 月月報" in x for x in (l.get_state("monthly_queue") or [])))
     self.assertTrue(l.get_state("night_report"))
 
 
@@ -841,14 +844,14 @@ class LessonReviewTest(unittest.TestCase):
     from futures_ai import lessons
     t = lambda h, m: f"2026-11-06T{h:02d}:{m:02d}:00+08:00"
     rows = [
-        {"entry_ts": t(15, 5), "exit_ts": t(15, 20), "side": "S", "pnl_twd": -1500, "exit_kind": "SL"},  # early
-        {"entry_ts": t(15, 30), "exit_ts": t(16, 0), "side": "B", "pnl_twd": -1500, "exit_kind": "SL"},  # reversal
+        {"entry_ts": t(15, 5), "exit_ts": t(15, 20), "side": "S", "pnl_twd": -1500, "exit_kind": "SL"},  # early (Nova)
+        {"entry_ts": t(15, 30), "exit_ts": t(16, 0), "side": "B", "pnl_twd": -1500, "exit_kind": "SL"},  # reversal + consec + early
         {"entry_ts": t(17, 30), "exit_ts": t(18, 0), "side": "B", "pnl_twd": -1500, "exit_kind": "SL"},  # consec
         {"entry_ts": t(19, 0), "exit_ts": t(20, 0), "side": "B", "pnl_twd": 5000, "exit_kind": "TP"},
     ]
-    r = lessons.review(rows, "sigma-vwap")
+    r = lessons.review(rows, "nova-nightorb")
     self.assertEqual(r["losses"], 3)
-    self.assertEqual(r["tags"], {"consec_sl": 1, "reversal": 1, "early_open": 1, "other": 0})
+    self.assertEqual(r["tags"], {"consec_sl": 2, "reversal": 1, "early_open": 2, "other": 0})
 
   def test_recurring_needs_two_weeks(self):
     from futures_ai import lessons
@@ -859,3 +862,7 @@ class LessonReviewTest(unittest.TestCase):
   def test_rule_text(self):
     from futures_ai import lessons
     self.assertEqual(lessons.rule_zh({"max_sl": 1}), "一盤停損 1 次就休息")
+
+
+if __name__ == "__main__":
+  unittest.main()

@@ -105,10 +105,16 @@ def cluster_stories(items: list[dict]) -> list[dict]:
 
 
 def score_headline(title: str) -> tuple[float, list[str]]:
-  t = title.lower()
+  t = re.sub(r"[【\[].*?[】\]]", " ", title.lower())
+  for role in ("戰爭部長", "department of war", "secretary of war"):
+    t = t.replace(role, " ")
+  stalled = any(w in t for w in ("相距甚遠", "破局", "卡關", "破裂", "無果", "難產", "far from", "stalled", "deadlock", "collapses", "fails"))
   hits, s = [], 0.0
   for w in NEGATED:
     if w.lower() in t:
+      if stalled and w in ("結束戰爭", "戰爭結束", "終戰", "停戰", "end the war", "end of the war"):
+        t = t.replace(w.lower(), " ")
+        continue
       s -= 2
       hits.append(f"-{w}")
       t = t.replace(w.lower(), " ")
@@ -254,6 +260,7 @@ class NewsRadar:
       zh = {"high": "🔴 高風險", "elevated": "🟡 風險升高", "positive": "🟢 偏多消息", "normal": "⚪ 正常"}[mode]
       self.ledger.log(f"新聞風險模式：{zh}（分數 {total}，比基準 {delta:+}）" if delta is not None else f"新聞風險模式：{zh}（建立基準中）", level="WARN")
       if self.notifier and mode == "high" and prev:  # Only real spikes are pushed; the rest is on the dashboard.
-        lines = "\n".join(f"・{h['title'][:60]}（{h['score']:+.1f}）" for h in heads[:3])
-        self.notifier.urgent(f"新聞風險：{zh}（比平常高 {delta:+}）\n{lines}\n→ AI 照常依策略交易，只是做多會多看一下價格是否確認")
+        pos_heads = [h for h in heads if h["score"] > 0][:3]
+        lines = "\n".join(f"・{h['title'][:60]}（{h['score']:+.1f}）" for h in pos_heads)
+        self.notifier.urgent(f"新聞風險：{zh}（比平常高 {delta:+}）\n{lines}\n→ AI 照常依策略交易（新聞僅供風險提醒，不擋單）")
     return state

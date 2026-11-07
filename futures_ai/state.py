@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .calendar import TPE, now_tpe, rollover_info, session_of, trading_day
+from .calendar import TPE, now_tpe, prev_weekdays, rollover_info, session_of, trading_day
 from .strategies import build_strategies
 from .learning import REGIME_ZH, Brain
 from .notify import load_cred
@@ -66,6 +66,11 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   while cs_start is None and probe > now - timedelta(days=4):
     probe -= timedelta(minutes=30)
     cs_name, cs_start, cs_end = session_of(probe)
+  if sess is None and cs_start is not None:
+    td = trading_day(cs_start).isoformat()
+  td_date = datetime.fromisoformat(td).date()
+  prev_bd = prev_weekdays(td_date, 1)
+  start_of_day = datetime.combine(prev_bd, datetime.min.time(), TPE).replace(hour=15)
   ais = []
   combined = {"today_pnl": 0.0, "total_pnl": 0.0, "pnl_1h": 0.0, "pnl_3h": 0.0, "pnl_6h": 0.0, "session_pnl": 0.0,
               "session_trades": 0, "session_wins": 0}
@@ -88,7 +93,6 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
     sess_rows = ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND exit_ts>=? AND exit_ts<=?",
                             (ai_id, cs_start.isoformat(), cs_end.isoformat())) if cs_start else []
     hourly = []
-    start_of_day = datetime.combine(datetime.fromisoformat(td).date(), datetime.min.time(), TPE) - timedelta(hours=9)
     pts = [(t, v) for t, v in series_now if t >= start_of_day]
     if pts:
       hour = pts[0][0].replace(minute=0, second=0, microsecond=0)
@@ -99,21 +103,23 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                          "pnl": round(_value_at(series_now, min(nxt, now)) - _value_at(series_now, hour - timedelta(seconds=1)))})
         hour = nxt
 
+    today_eq_change = round(current - _value_at(series_now, start_of_day - timedelta(seconds=1))) if series else round(realized_today + unreal)
+    used_pct = 0.0 if getattr(s, "hold_overnight", False) else max(0.0, -realized_today) / cfg["max_daily_loss_twd"] * 100
     item = {
         "id": ai_id, "name": s.name, "style": s.style, "color": s.color,
         "broker": cfg["mode"] if (cfg["mode"] != "local_paper" and ai_id == cfg["broker_ai"]) else "local_paper",
         "position": {**pos, "unrealized": round(unreal)} if pos else None,
-        "today_pnl": round(realized_today + unreal), "today_realized": round(realized_today),
+        "today_pnl": today_eq_change, "today_realized": round(realized_today),
         "total_pnl": round(current), "equity": round(cap + current), "roi_pct": current / cap * 100,
-        "daily_loss_used_pct": max(0.0, -(realized_today + unreal)) / cfg["max_daily_loss_twd"] * 100,
+        "daily_loss_used_pct": used_pct,
         "locked_today": cfg.get("enforce_daily_loss", True) and ledger.get_state(f"lock:{ai_id}") == td,
         "trades_today": len(trades_today), "wins_today": wins,
         "pnl_1h": round(current - _value_at(series, now - timedelta(hours=1))),
         "pnl_3h": round(current - _value_at(series, now - timedelta(hours=3))),
         "pnl_6h": round(current - _value_at(series, now - timedelta(hours=6))),
         "hourly": hourly,
-        "brain": Brain(ledger, s).summary(),
-        "health": health(ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id",
+        "brain": Brain(ledger, s, learn_per_trade=cfg.get("learn_per_trade")).summary(),
+        "health": health(ledger.rows("SELECT * FROM trades WHERE ai=? AND exit_ts>=? ORDER BY id",
                                      (ai_id, ledger.get_state(f"strategy_since:{ai_id}", "2000")))),
         "health_since": ledger.get_state(f"strategy_since:{ai_id}"),
         "last_skip": ledger.get_state(f"skip:{ai_id}"),
@@ -146,11 +152,11 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   events = ledger.rows("SELECT * FROM events ORDER BY id DESC LIMIT 40")
   # Per trading day x session history (日盤 / 夜盤) for every AI.
   hist: dict[tuple, dict] = {}
-  for t in ledger.rows("SELECT ai, trading_day, entry_ts, pnl_twd FROM trades ORDER BY id"):
+  for t in ledger.rows("SELECT ai, trading_day, entry_ts, exit_ts, pnl_twd FROM trades ORDER BY id"):
     if t["ai"] not in names:
       continue
-    hh = t["entry_ts"][11:16]
-    sess_name = "day" if "08:45" <= hh < "13:45" else "night"
+    hh = (t["exit_ts"] or t["entry_ts"])[11:16]
+    sess_name = "day" if "08:45" <= hh < "15:00" else "night"
     row = hist.setdefault((t["trading_day"], sess_name), {"trading_day": t["trading_day"], "session": sess_name,
                                                           "pnl": {}, "trades": {}, "total": 0.0})
     row["pnl"][t["ai"]] = row["pnl"].get(t["ai"], 0.0) + t["pnl_twd"]
@@ -164,46 +170,37 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
                       "regime_zh": REGIME_ZH.get(j["regime"], j["regime"])})
   journal.sort(key=lambda j: j["ts"], reverse=True)
 
-  # 停利縮小對照組: live AI vs its twin (same rules, take-profit = 1x stop), counted from the same start time.
   tp_compare = []
   from .config import ROOT
   shadow_path = ROOT / "data" / "shadow.db"
-  if shadow_path.exists() and cfg["db_path"] != ":memory:":
-    from .ledger import Ledger as _Ledger
-    sl = _Ledger(str(shadow_path))
-    since = sl.get_state("twin_since")
-    if since:
-      for ai_id, strat in names.items():
-        live_h = health(ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, since)))
-        twin_h = health(sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (f"tp1-{ai_id}", since)))
-        live_pnl = sum(t["pnl_twd"] for t in ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (ai_id, since)))
-        twin_pnl = sum(t["pnl_twd"] for t in sl.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (f"tp1-{ai_id}", since)))
-        tp_compare.append({"id": ai_id, "name": strat.name, "color": strat.color,
-                           "current_tp": getattr(strat, "tp_mult", None), "live": {**live_h, "pnl": live_pnl},
-                           "twin": {**twin_h, "pnl": twin_pnl}})
-
   # 時段對照組: each live AI vs the same rules with a different time window, both simulated live.
   hours_compare = []
   if shadow_path.exists() and cfg["db_path"] != ":memory:":
-    since2 = sl.get_state("allday_since")
-    if since2:
-      pairs = [("alpha-orb", "allday-alpha-orb", "不限時段版"),
-               ("sigma-vwap", "allday-sigma-vwap", "不限時段版"),
-               ("nova-nightorb", "nova-us", "只在美股開盤 1h 版")]
-      t0s = {"allday-alpha-orb": since2, "allday-sigma-vwap": "2026-11-07T12:30:00+08:00",  # Sigma swapped back then.
-             "nova-us": "2026-10-22T10:33:00+08:00"}  # Nova US became a shadow then.
-      for ai_id, sh_id, sh_label in pairs:
-        if ai_id not in names:
-          continue
-        strat = names[ai_id]
-        t0 = t0s[sh_id]
-        lr = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (ai_id, t0))
-        sr = sl.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (sh_id, t0))
-        hours_compare.append({"id": ai_id, "name": strat.name, "color": strat.color, "shadow_label": sh_label,
-                              "hours": list(getattr(strat, "hours", None) or
-                                            (["night_all"] if ai_id == "nova-nightorb" else ["all_day"])),
-                              "live": {**health(lr), "pnl": sum(t["pnl_twd"] for t in lr)},
-                              "allday": {**health(sr), "pnl": sum(t["pnl_twd"] for t in sr)}})
+    from .ledger import Ledger as _Ledger
+    sl = _Ledger(str(shadow_path))
+    try:
+      since2 = sl.get_state("allday_since")
+      if since2:
+        pairs = [("alpha-orb", "allday-alpha-orb", "不限時段版"),
+                 ("sigma-vwap", "allday-sigma-vwap", "不限時段版"),
+                 ("nova-nightorb", "allday-nova-nightorb", "不限時段版"),
+                 ("nova-nightorb", "nova-us", "只在美股開盤 1h 版")]
+        t0s = {"allday-alpha-orb": since2, "allday-sigma-vwap": since2,
+               "allday-nova-nightorb": since2, "nova-us": since2}
+        for ai_id, sh_id, sh_label in pairs:
+          if ai_id not in names:
+            continue
+          strat = names[ai_id]
+          t0 = t0s[sh_id]
+          lr = ledger.rows("SELECT * FROM trades WHERE ai=? AND exit_ts>=? ORDER BY id", (ai_id, t0))
+          sr = sl.rows("SELECT * FROM trades WHERE ai=? AND exit_ts>=? ORDER BY id", (sh_id, t0))
+          hours_compare.append({"id": ai_id, "name": strat.name, "color": strat.color, "shadow_label": sh_label,
+                                "hours": list(getattr(strat, "hours", None) or
+                                              (["night_all"] if ai_id == "nova-nightorb" else ["all_day"])),
+                                "live": {**health(lr), "pnl": sum(t["pnl_twd"] for t in lr)},
+                                "allday": {**health(sr), "pnl": sum(t["pnl_twd"] for t in sr)}})
+    finally:
+      sl.conn.close()
 
   replay_file = ROOT / "data" / "replay_report.json"
   replay = None

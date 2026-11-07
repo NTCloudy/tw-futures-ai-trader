@@ -42,9 +42,12 @@ class Ledger:
   def __init__(self, path: str):
     if path != ":memory:":
       Path(path).parent.mkdir(parents=True, exist_ok=True)
-    self.conn = sqlite3.connect(path, check_same_thread=False)
+    self.conn = sqlite3.connect(path, timeout=15.0, check_same_thread=False)
     self.conn.row_factory = sqlite3.Row
     self.lock = threading.RLock()
+    if path != ":memory:":
+      self.conn.execute("PRAGMA journal_mode=WAL;")
+    self.conn.execute("PRAGMA busy_timeout=15000;")
     self.conn.executescript(SCHEMA)
     self.conn.commit()
 

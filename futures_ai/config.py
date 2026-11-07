@@ -25,11 +25,9 @@ DEFAULTS: dict = {
     "capital_multiple": 1.5,  # Capital per AI = 1.5 x initial margin.
     "qty": 1,
     "max_entries_per_session": 12,
-    "max_daily_loss_twd": 2000,
-    "enforce_daily_loss": True,  # False = trial run: keep trading regardless of the daily loss.
-    # learning_mode (simulation only): removes daily-loss lock, per-session entry caps, re-entry
-    # cool-downs, loss-streak pauses and regime blocking so the AIs collect as much experience as
-    # possible. sinopac_live refuses to start while it is on, so every limit is back for real money.
+    "max_daily_loss_twd": 10000,
+    "enforce_daily_loss": True,  # Daily realized-loss circuit breaker for intraday AIs (blocks new entries).
+    "auto_adopt_lessons": True,  # Weekly job adopts validated rules automatically when not frozen.
     "learning_mode": False,
     "commission_per_side_twd": 12,  # 永豐微台電子單優惠價估計；拿到第一張對帳單後請更新。
     "tax_rate": 0.00002,  # 期交稅 十萬分之二 per side

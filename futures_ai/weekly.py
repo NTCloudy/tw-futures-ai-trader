@@ -51,7 +51,7 @@ def health_lines(cfg: dict, sessions: list) -> list[str]:
   from .swing import simulate_swing
   params = json.loads((ROOT / "data" / "strategy_params.json").read_text(encoding="utf-8")) \
       if (ROOT / "data" / "strategy_params.json").exists() else {}
-  c = dict(cfg, max_entries_per_session=999)
+  c = dict(cfg)
   out = ["", "🩺 策略健康度（一年回測，目前設定）"]
   rows = []
   for ai, (sim_ai, p) in lessons._specs(params.get("lessons", {})).items():
@@ -77,8 +77,7 @@ def current_params() -> dict:
 
 
 SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "allday-sigma-vwap": "Sigma（不限時段版）",
-                "nova-us": "Nova（只在美股開盤 1h 版）", "sh1-nova-nightorb": "Nova（舊版，只到 17:30）",
-                "dual-nova-nightorb": "Nova（雙峰時段版，17:30–20:30 不進場）"}
+                "allday-nova-nightorb": "Nova（不限時段版）", "nova-us": "Nova（只在美股開盤 1h 版）"}
 
 
 def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> list[str]:
@@ -96,7 +95,7 @@ def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> 
     for r in rs:
       t = datetime.fromisoformat(r["entry_ts"])
       o = us_open_at(t)
-      if o <= t < o + timedelta(hours=hours):
+      if o <= t <= o + timedelta(hours=hours, minutes=10):
         sel.append(r)
     return sel
 
@@ -106,7 +105,7 @@ def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> 
   for s in build_strategies():
     if getattr(s, "hidden", False):
       continue
-    rows = ledger.rows("SELECT * FROM trades WHERE ai=? AND entry_ts>=? ORDER BY id", (s.id, since))
+    rows = ledger.rows("SELECT * FROM trades WHERE ai=? AND exit_ts>=? ORDER BY id", (s.id, since))
     name = s.name.split(" ")[0]
     out.append(f"{name}｜{tot(rows):+,.0f}｜{tot(us(rows, 1)):+,.0f}｜{tot(us(rows, 2)):+,.0f}")
     totals.append((tot(rows), name))
@@ -123,30 +122,34 @@ def shadow_summary(now: datetime | None = None, days: int = 7, ledger: Ledger | 
   if not shadow_db.exists():
     return []
   sl = Ledger(str(shadow_db))
-  since = ((now or datetime.now(TPE)) - timedelta(days=days)).isoformat()
-  out = ["", "👥 影子版本（背景模擬，近 7 天）"]
-  for ai, label in SHADOW_NAMES.items():
-    rs = sl.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (ai, since))
-    if ai == "nova-us" and ledger is not None:  # Front-stage until 10/22, then a shadow: count both.
-      rs += ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (ai, since))
-    if not rs:
-      out.append(f"{label}：本週沒有交易")
-      continue
-    wins = sum(1 for r in rs if r["pnl_twd"] > 0)
-    out.append(f"{label}：勝率 {wins / len(rs) * 100:.0f}%｜合計 {sum(r['pnl_twd'] for r in rs):+,.0f}")
-  return out
+  try:
+    since = ((now or datetime.now(TPE)) - timedelta(days=days)).isoformat()
+    out = ["", "👥 影子版本（背景模擬，近 7 天）"]
+    for ai, label in SHADOW_NAMES.items():
+      rs = sl.rows("SELECT pnl_twd FROM trades WHERE ai=? AND exit_ts>=?", (ai, since))
+      if ai == "nova-us" and ledger is not None:  # Front-stage until 10/22, then a shadow: count both.
+        rs += ledger.rows("SELECT pnl_twd FROM trades WHERE ai=? AND exit_ts>=?", (ai, since))
+      if not rs:
+        out.append(f"{label}：本週沒有交易")
+        continue
+      wins = sum(1 for r in rs if r["pnl_twd"] > 0)
+      out.append(f"{label}：勝率 {wins / len(rs) * 100:.0f}%｜合計 {sum(r['pnl_twd'] for r in rs):+,.0f}")
+    return out
+  finally:
+    sl.conn.close()
 
 
 def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bool = True) -> dict:
   ledger = Ledger(cfg["db_path"])
-  cfg = dict(cfg, max_entries_per_session=999 if cfg.get("learning_mode") else cfg["max_entries_per_session"])
+  cfg = dict(cfg)
   sessions = wfo.load_sessions(cfg)
   exec_base = live_exec()
+  cur = current_params()
   rep = wfo.walk_forward(cfg, train_days, test_days, sessions, ais=tuple(SIM_ID.values()), log=lambda *_: None,
-                         base={SIM_ID[k]: v for k, v in exec_base.items()})
+                         base={SIM_ID[k]: v for k, v in exec_base.items()},
+                         cur_params={SIM_ID[k]: cur[k] for k in SIM_ID if k in cur})
   days = sorted({s.td for s in sessions})
   by_day = {d: [s for s in sessions if s.td == d] for d in days}
-  cur = current_params()
   params_file = ROOT / "data" / "strategy_params.json"
   live_params = json.loads(params_file.read_text(encoding="utf-8")) if params_file.exists() else {}
   try:
@@ -165,6 +168,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
            "— 訓練（技術細節）—",
            f"資料 {rep['days'][0]} ～ {rep['days'][1]}（{len(days)} 個交易日）"]
   changes = {}
+  auto_adopt = bool(cfg.get("auto_adopt_lessons", True))
   for live_id, sim_id in SIM_ID.items():
     r = rep["ais"][sim_id]
     cur_sim = {**exec_base[live_id], **cur[live_id], "regimes": DEFAULT_REGIMES[live_id], "flip": ()}
@@ -180,7 +184,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       lines.append(f"\n{NAMES[live_id]}：評選期間參數凍結（至 {cfg['params_frozen_until']}），"
                    f"建議改為 {kw}（考試期 {r['oos_pnl']:+,} vs 目前 {cur_oos:+,.0f}），評選後統一決定")
       continue
-    if not frozen and cfg.get("learning_mode") and not new.get("off") and r["windows"] and r["oos_pnl"] > cur_oos:
+    if not frozen and auto_adopt and not new.get("off") and r["windows"] and r["oos_pnl"] > cur_oos:
       kw = {k: new[k] for k in LIVE_KEYS[live_id] if k in new}
       if kw != {k: cur[live_id].get(k) for k in kw}:
         live_params[live_id] = kw
@@ -190,7 +194,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     if switched:
       verdict = "✅ 已換成新參數"
     elif new.get("off"):
-      verdict = "訓練建議暫停（最近練習期沒有任何組合賺錢）；學習模式下照常交易累積經驗"
+      verdict = "訓練建議暫停（最近練習期沒有任何組合賺錢）；維持目前參數繼續觀察"
     elif r["oos_pnl"] <= cur_oos:
       verdict = "目前參數考得比較好，維持"
     else:
@@ -208,7 +212,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       continue
     head = (f"\n{slowtrain.NAMES[ai]}：考試期 訓練挑選 {r['oos_pnl']:+,} vs 目前參數 {r['cur_oos']:+,}"
             f"（{r['trades']} 筆，勝 {r['wins']}）")
-    if r["switch"] and cfg.get("learning_mode") and not frozen:
+    if r["switch"] and auto_adopt and not frozen:
       live_params[ai] = r["latest"]
       changes[ai] = r["latest"]
       ledger.set_state(f"strategy_since:{ai}", datetime.now(TPE).isoformat(timespec="seconds"))
@@ -219,25 +223,26 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       lines.append(f"{head} → 目前參數考得比較好，維持")
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
-  try:
-    lines += health_lines(cfg, sessions)
-  except Exception as exc:
-    lines.append(f"\n🩺 策略健康度計算失敗：{exc}")
   # Losing-trade review -> recurring lessons -> backtested + forward-validated rules (lessons.py).
   try:
     from . import lessons
-    lr = lessons.run(cfg, ledger, sessions, adopt=bool(cfg.get("learning_mode")))
+    lr = lessons.run(cfg, ledger, sessions, adopt=auto_adopt and not frozen)
     lines += lr["lines"]
     if lr["changed"]:
       changes["lessons"] = True
   except Exception as exc:
     lines.append(f"\n📚 虧損檢討失敗：{exc}")
+  try:
+    lines += health_lines(cfg, sessions)
+  except Exception as exc:
+    lines.append(f"\n🩺 策略健康度計算失敗：{exc}")
 
   lines += shadow_summary(ledger=ledger)
 
   report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes, "text": "\n".join(lines)}
   (ROOT / "data" / "weekly_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
   ledger.log("每週訓練完成" + (f"，更新參數：{', '.join(changes)}" if changes else "，參數維持不變"), level="WARN")
+  ledger.conn.close()
   cred = load_cred()
   if cred:
     try:
@@ -245,7 +250,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     except Exception as exc:
       print(f"LINE push failed: {exc}")
   if restart and changes:
-    subprocess.run(["pkill", "-f", "^python3 -m futures_ai run$"], check=False)
+    subprocess.run(["pkill", "-f", r"^python3 -m futures_ai( .*)? run(\s|$)"], check=False)
     time.sleep(5)
     subprocess.run([str(ROOT / "scripts" / "start.sh")], check=False)
   print(report["text"])

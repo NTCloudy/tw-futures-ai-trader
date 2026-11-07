@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import signal
+import threading
 import time
 import traceback
 from datetime import datetime, timedelta
 
-from .calendar import now_tpe, rollover_info, session_of
+from .calendar import is_business_day, now_tpe, rollover_info, session_of
 from .feed import TaifexFeed
 from .learning import to_5min
 
@@ -30,13 +32,30 @@ class Engine:
     self.clock = clock
     self.publisher = publisher
     self.last_bar_end: datetime | None = None
+    self.last_shadow_bar_end: datetime | None = None
     self.last_equity_minute: str | None = None
     self.last_publish = 0.0
     self.prev_live: tuple | None = None  # (bar_end, high, low) seen at the previous poll
+    self._last_open_session: tuple | None = None
     self.barstore = None
-    if any(hasattr(t.s, "h60") for t in self.traders + self.shadows):
+    if cfg.get("db_path") != ":memory:" and any(hasattr(t.s, "h60") for t in self.traders + self.shadows):
       from .barstore import BarStore
       self.barstore = BarStore()
+
+  def _flush_closing_bars(self) -> None:
+    last_sess = getattr(self, "_last_open_session", None)
+    if not last_sess:
+      return
+    self._last_open_session = None
+    if self.barstore is None:
+      return
+    try:
+      code, name, start, end = last_sess
+      snap = self.feed.snapshot(code, name, start, end)
+      if snap and snap.bars:
+        self.barstore.add(snap.bars)
+    except Exception:
+      pass
 
   def _record_equity(self, now: datetime, last: float, force: bool = False) -> None:
     minute = now.strftime("%Y-%m-%dT%H:%M")
@@ -63,13 +82,27 @@ class Engine:
         for b in snap.bars:  # Bars completed during a gap (e.g. Wi-Fi outage): their whole range counts,
           if prev[0] < b.end < lv.end:  # so a stop / target touched while offline fires as soon as we are back.
             hi, lo = max(hi, b.h), min(lo, b.l)
-    self.prev_live = (lv.end, lv.h, lv.l) if lv else None
+    elif not lv and prev and snap.bars:
+      done = next((b for b in snap.bars if b.end == prev[0]), None)
+      if done:
+        hi = max(hi, done.h) if done.h > prev[1] else hi
+        lo = min(lo, done.l) if done.l < prev[2] else lo
+      for b in snap.bars:
+        if b.end > prev[0]:
+          hi, lo = max(hi, b.h), min(lo, b.l)
+    if lv:
+      self.prev_live = (lv.end, lv.h, lv.l)
+    elif snap.bars:
+      self.prev_live = (snap.bars[-1].end, snap.bars[-1].h, snap.bars[-1].l)
+    else:
+      self.prev_live = None
     return hi, lo
 
   def step(self) -> str:
     now = self.clock()
     name, start, end = session_of(now)
     if name is None or (name == "night" and not self.cfg["trade_night_session"]):
+      self._flush_closing_bars()
       return "closed"
     info = rollover_info(now, self.cfg["product"], self.cfg["roll_days_before"])
     code, td = info["contract"], info["trading_day"]
@@ -88,8 +121,10 @@ class Engine:
       return "holiday"
     if snap.quote_time is None or not snap.last:
       return "no-data"
+    self._last_open_session = (code, name, start, end)
     hi, lo = self._touched_range(snap)
-    quote = {"last": snap.last, "bid": snap.bid, "ask": snap.ask, "hi": hi, "lo": lo}
+    trig_open = snap.live_bar.o if snap.live_bar else (snap.bars[-1].o if snap.bars else snap.last)
+    quote = {"last": snap.last, "bid": snap.bid, "ask": snap.ask, "hi": hi, "lo": lo, "open": trig_open}
     age = (now - snap.quote_time).total_seconds()
     fresh = age < self.cfg["stale_seconds"]
     session_key = f"{td}-{name}"
@@ -102,16 +137,29 @@ class Engine:
 
     for tr in self.traders + self.shadows:  # Positions left from another session or an expiring contract.
       p = tr.pos
-      if p and p["contract"] == code and p["session_key"] != session_key and getattr(tr.s, "hold_overnight", False):
-        p["session_key"] = session_key  # Swing positions are held across sessions.
-        tr.pos = p
-        continue
-      if p and not tr.pending and (p["contract"] != code or p["session_key"] != session_key):
-        q = quote
-        if p["contract"] != code:
+      if p and p["contract"] != code:
+        tr._expire_limits(now, "換月刪除舊合約限價單")
+        if not tr.pending:
           old = self.feed.snapshot(p["contract"], name, start, now)
-          q = {"last": old.last, "bid": old.bid, "ask": old.ask}
-        tr.flatten(now, p["contract"], q, "ROLL" if p["contract"] != code else "SESSION_END")
+          if old.last:
+            q = {"last": old.last, "bid": old.bid, "ask": old.ask}
+            tr.flatten(now, p["contract"], q, "ROLL")
+        continue
+      if p and p["session_key"] != session_key:
+        if getattr(tr.s, "hold_overnight", False):
+          p["session_key"] = session_key  # Swing positions are held across sessions.
+          tr.pos = p
+        elif not tr.pending:
+          tr._cancel_working("清除上一盤殘留保護單")
+          tr.pos = None
+          tr.ledger.log(f"⚠️ 清除上一盤殘留當沖部位紀錄（{p['session_key']}），請確認券商帳戶部位", tr.ai, "ERROR")
+
+    if self.barstore is not None and snap.bars:  # Multi-day 60-minute bars for the swing AI (updated before on_price).
+      self.barstore.add(snap.bars)
+      h60 = self.barstore.sixty_min(now)
+      for tr in self.traders + self.shadows:
+        if hasattr(tr.s, "h60"):
+          tr.s.h60 = h60
 
     for tr in self.traders:
       tr.on_price(now, td, code, quote, minutes_to_close, kill)
@@ -121,22 +169,23 @@ class Engine:
       except Exception as exc:
         print(f"shadow {tr.ai} error: {exc}")
 
-    if self.barstore is not None and snap.bars:  # Multi-day 60-minute bars for the swing AI.
-      self.barstore.add(snap.bars)
-      h60 = self.barstore.sixty_min(now)
-      for tr in self.traders + self.shadows:
-        if hasattr(tr.s, "h60"):
-          tr.s.h60 = h60
     bars5 = completed_5min(snap.bars)  # The AIs decide on completed 5-minute K bars.
-    if bars5 and bars5[-1].end != self.last_bar_end:
-      self.last_bar_end = bars5[-1].end
-      for tr in self.traders:
-        tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, kill)
-      for tr in self.shadows:
-        try:
-          tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, False)
-        except Exception as exc:
-          print(f"shadow {tr.ai} error: {exc}")
+    if bars5:
+      bars1_done = [b for b in snap.bars if b.end <= bars5[-1].end]
+      for tr in self.traders + self.shadows:
+        if hasattr(tr.s, "bars1"):
+          tr.s.bars1 = bars1_done
+      if bars5[-1].end != self.last_bar_end and fresh and not kill:
+        self.last_bar_end = bars5[-1].end
+        for tr in self.traders:
+          tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, kill)
+      if bars5[-1].end != self.last_shadow_bar_end and fresh:
+        self.last_shadow_bar_end = bars5[-1].end
+        for tr in self.shadows:
+          try:
+            tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, False)
+          except Exception as exc:
+            print(f"shadow {tr.ai} error: {exc}")
 
     self._record_equity(now, snap.last)
     return "trading" if fresh else "stale"
@@ -149,6 +198,10 @@ class Engine:
         m["updated"] = self.clock().isoformat(timespec="seconds")
         old = self.ledger.get_state("margin") or {}
         self.ledger.set_state("margin", m)
+        cap = round(m["initial"] * self.cfg["capital_multiple"])
+        self.cfg.update(initial_margin_twd=m["initial"], maintenance_margin_twd=m["maintenance"], capital_per_ai_twd=cap)
+        for tr in self.traders + self.shadows:
+          tr.cfg.update(initial_margin_twd=m["initial"], maintenance_margin_twd=m["maintenance"], capital_per_ai_twd=cap)
         if old.get("initial") and old["initial"] != m["initial"]:
           self.ledger.log(f"期交所保證金調整：原始保證金 {old['initial']:,} → {m['initial']:,}", level="WARN")
     except Exception as exc:
@@ -158,11 +211,12 @@ class Engine:
     """TAIFEX only keeps ~30 trading days of tick files online; archive them daily so history grows."""
     from datetime import timedelta as td_
     from .pretrain import download
-    d = self.clock().date()
+    now = self.clock()
+    d = now.date() + td_(days=1 if now.hour >= 15 else 0)
     got = 0
     for _ in range(45):
       d -= td_(days=1)
-      if d.weekday() < 5 and download(d):
+      if is_business_day(d) and download(d):
         got += 1
     self.ledger.log(f"歷史資料庫存：已保存 {got} 個交易日的期交所逐筆檔")
 
@@ -186,33 +240,49 @@ class Engine:
     _, _, prev_end = session_of(self.clock())
     prev_session = session_of(self.clock())[0]
     try:
+      signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
+    except Exception:
+      pass
+    try:
       self._loop(notifier, control, radar, trader_mod, names, status, margin_day, prev_end, prev_session, shown)
     except KeyboardInterrupt:
-      print("\n收到 Ctrl+C：先平倉並刪除所有委託，再結束…")
+      print("\n收到結束訊號：先清理委託與處理部位，再結束…")
       self.shutdown("STOP_TIME")
       raise SystemExit(0)
 
   def shutdown(self, kind: str) -> None:
-    """Flattens every open position (market), cancels working orders and waits briefly for the fills."""
+    """Cancels working limit orders; flattens intraday positions only during open sessions; preserves swing positions."""
     now = self.clock()
+    sess_name, _, _ = session_of(now)
     q = self.ledger.get_state("market", {}) or {}
     quote = {"last": q.get("last"), "bid": q.get("bid"), "ask": q.get("ask")}
-    for tr in self.traders:
+    for tr in self.traders + self.shadows:
       try:
         tr._expire_limits(now, "結束運作，刪除未成交限價單")
-        p = tr.pos
-        if p and quote["last"]:
-          tr.flatten(now, p["contract"], quote, kind)
-      except Exception as exc:
-        print(f"平倉失敗 {tr.ai}: {exc}")
-    for _ in range(20):  # Up to ~20 s for the broker's fill reports.
+      except Exception:
+        pass
+    if sess_name is not None and quote["last"]:
       for tr in self.traders:
-        tr.process_fills(self.clock())
-      if not any(tr.pending for tr in self.traders):
-        break
-      time.sleep(1)
-    left = [tr.ai for tr in self.traders if tr.pos]
-    msg = f"⚠️ 仍有未平倉：{left}，請手動確認" if left else "✅ 已全部平倉、刪除委託"
+        try:
+          p = tr.pos
+          if p and not getattr(tr.s, "hold_overnight", False):
+            tr.flatten(now, p["contract"], quote, kind)
+        except Exception as exc:
+          print(f"平倉失敗 {tr.ai}: {exc}")
+      for _ in range(20):  # Up to ~20 s for the broker's fill reports.
+        for tr in self.traders:
+          tr.process_fills(self.clock())
+        if not any(tr.pending for tr in self.traders if not getattr(tr.s, "hold_overnight", False)):
+          break
+        time.sleep(1)
+    for tr in self.traders:
+      try:
+        tr.broker.close()
+      except Exception:
+        pass
+    left = [tr.ai for tr in self.traders if tr.pos and not getattr(tr.s, "hold_overnight", False)]
+    kept = [tr.ai for tr in self.traders if tr.pos and getattr(tr.s, "hold_overnight", False)]
+    msg = (f"⚠️ 仍有當沖未平倉：{left}，請手動確認" if left else "✅ 已完成結束清理") + (f"（保留波段留倉：{kept}）" if kept else "")
     self.ledger.log(msg, level="WARN")
     print(msg)
 
@@ -242,11 +312,11 @@ class Engine:
           if e["level"] in ("TRADE", "SIGNAL", "WARN", "ERROR", "KILL"):
             print(f"{e['ts'][11:19]} {names.get(e['ai'], e['ai'] or '')} {e['message'].replace('｜', ' ｜ ')}")
       td = now.strftime("%Y-%m-%d")
-      if margin_day != td:
+      if margin_day != td and (margin_day is None or now.hour >= 6):
         margin_day = td
         self.refresh_margin()
         if self.cfg.get("archive_history", True):
-          self.archive_history()
+          threading.Thread(target=self.archive_history, daemon=True).start()
       if control:
         control.poll()
       try:
@@ -263,6 +333,7 @@ class Engine:
           self.ledger.log(msg, level="WARN")
           print(f"{self.clock():%H:%M} {msg}", flush=True)
           self._outage = None
+          notifier.errors = 0
         if new_status != status:
           self.ledger.log(f"狀態：{new_status}")
           status = new_status
@@ -287,34 +358,41 @@ class Engine:
       try:
         notifier.collect(names)
         if prev_session and sess != prev_session:  # A session just closed.
-          # Evaluate the state as of the last second of the closed session (correct trading day).
-          st = build_state(self.cfg, self.ledger, now=prev_end - timedelta(seconds=1))
-          if prev_session == "day":
-            notifier.session_summary(summary_text(st, "日盤"))  # 13:45 report
-          else:
-            notifier.defer_night(summary_text(st, "夜盤"))  # Sent at notify.night_report_time (08:30)
-          # Monthly report right after the last session that starts in the calendar month.
-          from .monthly import month_closes_after, monthly_text
-          start = prev_end - (timedelta(hours=5) if prev_session == "day" else timedelta(hours=14))
-          key = start.strftime("%Y-%m")
-          if month_closes_after(start) and self.ledger.get_state("monthly_sent") != key:
-            self.ledger.set_state("monthly_sent", key)
-            text = monthly_text(self.ledger, names, start.date())
-            if self.cfg.get("stock_reports", True):  # Slow parts (bar parsing, git pull + prices): background.
-              import threading
-              from .monthly import regime_lines, stock_month_text
-              def _rest(d=start.date(), text=text):
-                try:
-                  text += "\n\n" + "\n".join(regime_lines(d))  # Market context (trend vs. range days).
-                except Exception as exc:
-                  print(f"regime lines failed: {exc}", flush=True)
-                notifier._send(text)
-                txt = stock_month_text(d)
-                if txt:
-                  notifier._send(txt)
-              threading.Thread(target=_rest, daemon=True).start()
+          self._flush_closing_bars()
+          for tr in self.traders + self.shadows:
+            try:
+              tr._expire_limits(prev_end, "本盤收盤，刪除未成交限價單")
+            except Exception:
+              pass
+          if status != "holiday":
+            # Evaluate the state as of the last second of the closed session (correct trading day).
+            st = build_state(self.cfg, self.ledger, now=prev_end - timedelta(seconds=1))
+            if prev_session == "day":
+              notifier.session_summary(summary_text(st, "日盤"))  # 13:45 report
             else:
-              notifier._send(text)
+              notifier.defer_night(summary_text(st, "夜盤"))  # Sent at notify.night_report_time (08:30)
+            # Monthly report right after the last session that starts in the calendar month.
+            from .monthly import month_closes_after, monthly_text
+            start = prev_end - (timedelta(hours=5) if prev_session == "day" else timedelta(hours=14))
+            key = start.strftime("%Y-%m")
+            if month_closes_after(start) and self.ledger.get_state("monthly_sent") != key:
+              self.ledger.set_state("monthly_sent", key)
+              text = monthly_text(self.ledger, names, start.date())
+              defer_m = prev_session == "night"
+              if self.cfg.get("stock_reports", True):  # Slow parts (bar parsing, git pull + prices): background.
+                from .monthly import regime_lines, stock_month_text
+                def _rest(d=start.date(), text=text, defer=defer_m):
+                  try:
+                    text += "\n\n" + "\n".join(regime_lines(d))  # Market context (trend vs. range days).
+                  except Exception as exc:
+                    print(f"regime lines failed: {exc}", flush=True)
+                  notifier.queue_monthly(text, flush_now=not defer)
+                  txt = stock_month_text(d)
+                  if txt:
+                    notifier.queue_monthly(txt, flush_now=not defer)
+                threading.Thread(target=_rest, daemon=True).start()
+              else:
+                notifier.queue_monthly(text, flush_now=not defer_m)
         elif sess:
           notifier.maybe_digest(f"{'日盤' if sess == 'day' else '夜盤'} {now.strftime('%H:%M')}")
         notifier.maybe_send_night(self.clock())

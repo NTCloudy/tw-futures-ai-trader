@@ -9,8 +9,10 @@
   "archive_history": false,
   "console_events": true,
   "stop_at": null,
-  "learning_mode": true,
-  "enforce_daily_loss": false,
+  "max_daily_loss_twd": 10000,
+  "enforce_daily_loss": true,
+  "auto_adopt_lessons": true,
+  "learning_mode": false,
   "db_path": "data/mac_sim.db",
   "publish": {
     "enabled": false

@@ -11,7 +11,7 @@ import sqlite3
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
-from .calendar import TPE, next_weekday
+from .calendar import TPE, is_business_day, next_weekday
 
 BTC_DB = Path(__file__).resolve().parents[2] / "btc-ai-trader" / "data" / "btc.db"
 BTC_NAMES = {"momo": "🚀 Momo", "trendy": "📈 Trendy", "bounce": "🎯 Bounce"}
@@ -31,36 +31,65 @@ def _ts(s: str) -> datetime:
   return t if t.tzinfo else t.replace(tzinfo=TPE)  # Futures equity rows are naive Taipei time.
 
 
-def _equity_change(rows: list[tuple[str, float]], start: datetime) -> float:
-  before = [v for ts, v in rows if _ts(ts) < start]
+def _last_session_end_of_month(year: int, month: int) -> datetime:
+  """End timestamp of the last futures night session that starts in (year, month): next day 05:00 TPE."""
+  if month == 12:
+    nxt = date(year + 1, 1, 1)
+  else:
+    nxt = date(year, month + 1, 1)
+  d = nxt - timedelta(days=1)
+  while not is_business_day(d):
+    d -= timedelta(days=1)
+  return datetime.combine(d + timedelta(days=1), time(5, 0), TPE)
+
+
+def _month_bounds(month: date) -> tuple[datetime, datetime]:
+  """Returns (prev_month_close, this_month_close) aligned with futures night-session closes (05:00)."""
+  prev_last = month.replace(day=1) - timedelta(days=1)
+  start = _last_session_end_of_month(prev_last.year, prev_last.month)
+  end = _last_session_end_of_month(month.year, month.month)
+  return start, end
+
+
+def _equity_change(rows: list[tuple[str, float]], start: datetime, end: datetime | None = None) -> float:
+  scoped = [(ts, v) for ts, v in rows if end is None or _ts(ts) <= end]
+  if not scoped:
+    return 0.0
+  if start.hour == 0 and start.minute == 0:
+    before = [v for ts, v in scoped if _ts(ts) < start]
+  else:
+    before = [v for ts, v in scoped if _ts(ts) <= start]
   base = before[-1] if before else 0.0
-  return (rows[-1][1] - base) if rows else 0.0
+  return scoped[-1][1] - base
 
 
-def futures_month(ledger, names: dict, start: datetime) -> list[tuple[str, float]]:
+def futures_month(ledger, names: dict, start: datetime, end: datetime | None = None) -> list[tuple[str, float]]:
   out = []
   for ai_id, name in names.items():
     rows = [(r["ts"], r["realized_total"] + r["unrealized"])
             for r in ledger.rows("SELECT ts, realized_total, unrealized FROM equity WHERE ai=? ORDER BY ts", (ai_id,))]
-    out.append((name, _equity_change(rows, start)))
+    out.append((name, _equity_change(rows, start, end)))
   return out
 
 
-def crypto_month(start: datetime) -> list[tuple[str, float]]:
+def crypto_month(start: datetime, end: datetime | None = None) -> list[tuple[str, float]]:
   if not BTC_DB.exists():
     return []
   c = sqlite3.connect(BTC_DB)
-  out = []
-  for ai_id, name in BTC_NAMES.items():
-    rows = list(c.execute("SELECT ts, value FROM equity WHERE ai=? ORDER BY ts", (ai_id,)))
-    out.append((name, _equity_change(rows, start)))
-  return out
+  try:
+    out = []
+    for ai_id, name in BTC_NAMES.items():
+      rows = list(c.execute("SELECT ts, value FROM equity WHERE ai=? ORDER BY ts", (ai_id,)))
+      out.append((name, _equity_change(rows, start, end)))
+    return out
+  finally:
+    c.close()
 
 
 def monthly_text(ledger, names: dict, month: date) -> str:
-  start = datetime.combine(month.replace(day=1), time(0, 0), TPE)
-  fut = futures_month(ledger, names, start)
-  cry = crypto_month(start)
+  start, end = _month_bounds(month)
+  fut = futures_month(ledger, names, start, end)
+  cry = crypto_month(start, end)
   lines = [f"【{month.month} 月月報】", "📊 期貨（NT$）"]
   lines += [f"{n.replace(' AI', '')}：{v:+,.0f}" for n, v in fut]
   lines.append(f"合計：{sum(v for _, v in fut):+,.0f}")
@@ -86,15 +115,9 @@ def regime_lines(month: date, sessions: list | None = None) -> list[str]:
   trend days vs. range days, the month's net move and the average daily range vs. the rest of the data.
   A trading day (night + day session) is a trend day if |close - open| >= half of its high-low range."""
   if sessions is None:
-    from .replay import KBARS, LIVE_1M
-    from .wfo import sessions_from_kbars
-    sessions, seen = [], set()
-    for f in (LIVE_1M, KBARS):  # Live bars take precedence over the historical export.
-      if f.exists():
-        for s in sessions_from_kbars(f):
-          if (s.td, s.name) not in seen:
-            seen.add((s.td, s.name))
-            sessions.append(s)
+    from .config import load_config
+    from .wfo import load_sessions
+    sessions = load_sessions(load_config())
   days = {}
   for s in sorted(sessions, key=lambda s: s.bars[0].end):
     if s.bars:

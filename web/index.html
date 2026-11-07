@@ -94,7 +94,7 @@
 <nav id="side">
   <div class="grp">總覽</div>
   <a href="#secSummary">📊 本盤總覽</a>
-  <a href="#aiCards">🤖 三位 AI 狀態</a>
+  <a href="#aiCards">🤖 四位 AI 狀態</a>
   <a href="#secCurve">📈 當盤損益走勢</a>
   <div class="grp">紀錄（最新在最上面）</div>
   <a href="#secNews">📰 新聞風險雷達</a>
@@ -147,7 +147,7 @@ const cls = n => n > 0 ? 'up' : (n < 0 ? 'down' : '');  // Taiwan convention: re
 const sideZh = s => s === 'B' ? '多' : '空';
 const t = s => (s || '').replace('T', ' ').slice(5, 19);
 const statusZh = { WORKING: '等待觸價', SUBMITTED: '已送出', FILLED: '已成交', TRIGGERED: '已觸發', CANCELLED: '已刪除', REJECTED: '失敗' };
-const typeZh = { MKT: '市價', STOP: '停損觸價單', TAKE: '停利觸價單' };
+const typeZh = { MKT: '市價', LMT: '限價', STOP: '停損觸價單', TAKE: '停利觸價單' };
 
 function healthHtml(a) {
   const h = a.health;
@@ -196,7 +196,7 @@ function render(s) {
   document.getElementById('recent').innerHTML = [['近 1 小時', c.pnl_1h], ['近 3 小時', c.pnl_3h], ['近 6 小時', c.pnl_6h]]
     .map(([k, v]) => `<div><div class="mute">${k}</div><div class="${cls(v)}" style="font-size:18px;font-weight:700">${nt(v)}</div></div>`).join('');
   const r = s.rollover;
-  document.getElementById('roll').innerHTML = `交易合約 <b>${r.contract}</b>（${r.delivery_month}）<br>結算日 ${r.settlement_date}<br>下次換倉 ${r.next_roll_day}<div class="mute">結算日前 1 個營業日自動改做次月；每盤收盤前全數平倉，不留倉換月</div>`;
+  document.getElementById('roll').innerHTML = `交易合約 <b>${r.contract}</b>（${r.delivery_month}）<br>結算日 ${r.settlement_date}<br>下次換倉 ${r.next_roll_day}<div class="mute">結算日前 1 個營業日自動改做次月；當沖 AI 每盤收盤前平倉，Omega 波段 AI 可留倉跨日（換月時平舊倉轉新月）</div>`;
 
   const PAIR = { 'alpha-orb': [0, 0], 'sigma-vwap': [1, 0], 'nova-nightorb': [2, 0],
                  'omega-swing': [0, 1] };
@@ -288,8 +288,8 @@ function render(s) {
     (s.orders_today.map(o => `<tr><td>${t(o.ts).slice(6)}</td><td>${o.ai_name}</td><td>${o.kind_zh}</td><td>${typeZh[o.order_type] || o.order_type}</td><td class="${o.side === 'B' ? 'up' : 'down'}">${o.side === 'B' ? '買' : '賣'}</td><td>${o.qty}</td><td>${o.trigger_price ?? ''}</td><td>${o.fill_price ?? ''}</td><td>${statusZh[o.status] || o.status}</td><td class="mute">${o.note || ''}</td></tr>`).join('') || '<tr><td colspan="10" class="mute">今日尚無委託</td></tr>');
 
   const nw = s.news;
-  const MODE = { high: ['🔴 高風險', 'AI 照策略交易；做多需價格站上 VWAP；Omega 多單移動停損減半'], elevated: ['🟡 風險升高', '留意消息，AI 照常依策略交易'],
-                 positive: ['🟢 偏多消息', 'AI 照策略交易；放空需價格在 VWAP 之下；Omega 空單移動停損減半'], normal: ['⚪ 正常', '不影響交易'] };
+  const MODE = { high: ['🔴 高風險', 'AI 照策略交易；Omega 多單移動停損減半'], elevated: ['🟡 風險升高', '留意消息，AI 照常依策略交易'],
+                 positive: ['🟢 偏多消息', 'AI 照策略交易；Omega 空單移動停損減半'], normal: ['⚪ 正常', '不影響交易'] };
   document.getElementById('newsBox').innerHTML = !nw ? '<div class="mute">下一次更新後顯示（每 10 分鐘）</div>' :
     `<div style="font-size:16px"><b>${MODE[nw.mode][0]}</b>　風險分數 <b>${nw.total}</b>${nw.warming_up ? '<span class="mute">（建立基準中，約 2 小時後開始判斷）</span>' : `（平常 ${nw.baseline}，目前 ${nw.delta > 0 ? '+' : ''}${nw.delta}）`}　<span class="mute">→ ${MODE[nw.mode][1]}${nw.fomc_window ? '｜🏦 聯準會決議前後，暫停當沖進場' : ''}　｜更新 ${t(nw.updated).slice(6)}</span></div>
      <div class="mute">下次聯準會利率決議：${(nw.upcoming_fomc || []).join('、') || '–'}（決議當晚前後 1 小時暫停當沖進場）</div>
@@ -298,7 +298,7 @@ function render(s) {
      <div class="mute">分數 &gt; 0 代表利空風險（綠色），&lt; 0 代表利多（紅色）。關鍵字規則判斷，可能誤判；新聞約延遲數分鐘，僅作風險控管，無法回測驗證。</div>`;
   const fmtH = h => !h || !h.n ? '<span class="mute">尚無平倉</span>'
     : `${h.n} 筆｜勝率 <b>${h.win_rate.toFixed(0)}%</b>｜<span class="${cls(h.pnl)}"><b>${nt(h.pnl)}</b></span>｜獲利因子 ${h.profit_factor === null ? '∞' : h.profit_factor.toFixed(2)}`;
-  const HZ = { us_open: '美股開盤 1h', night_open: '夜盤開盤 1h', night_all: '夜盤 15:30–01:30', all_day: '不限時段' };
+  const HZ = { us_open: '美股開盤 1h', night_open: '夜盤開盤 1h', night_all: '夜盤 15:30–01:00', all_day: '不限時段' };
   document.getElementById('hrCmp').innerHTML = '<tr><th>AI</th><th>現行（前台）</th><th>影子版</th><th>目前誰比較好</th></tr>' +
     ((s.hours_compare || []).map(r => {
       const lab = r.shadow_label || '不限時段版';
@@ -307,12 +307,15 @@ function render(s) {
     }).join('') || '<tr><td class="mute">對照組剛建立，下一筆交易後開始累積</td></tr>');
   const rp = s.replay;
   const rpSide = x => x === 'B' ? '多' : '空';
-  const tl = arr => arr.map(t => `${t.entry} ${rpSide(t.side)} ${nt(t.pnl)}`).join('<br>') || '–';
+  const tl = arr => arr.map(t => `${t.entry} ${rpSide(t.side)} ${nt(t.pnl)}${t.note === 'engine_offline' ? '（引擎離線）' : ''}`).join('<br>') || '–';
   document.getElementById('replayTbl').innerHTML = !rp ? '<tr><td class="mute">每盤收盤後自動產生</td></tr>' :
     '<tr><th>AI</th><th>即時 筆數／損益</th><th>回測 筆數／損益</th><th>同一筆</th><th>只有即時有</th><th>只有回測有</th></tr>' +
-    rp.ais.map(a => `<tr><td>${a.name}</td><td>${a.live_n}｜<span class="${cls(a.live_pnl)}">${nt(a.live_pnl)}</span></td>` +
-      `<td>${a.sim_n}｜<span class="${cls(a.sim_pnl)}">${nt(a.sim_pnl)}</span></td><td><b>${a.matched}</b></td>` +
-      `<td class="mute">${tl(a.live_only)}</td><td class="mute">${tl(a.sim_only)}</td></tr>`).join('');
+    rp.ais.map(a => {
+      const openInfo = a.open_live ? `<div class="mute">在倉：${rpSide(a.open_live.side)} @ ${a.open_live.entry_price}（${a.open_live.entry_ts}）</div>` : '';
+      return `<tr><td>${a.name}${openInfo}</td><td>${a.live_n}｜<span class="${cls(a.live_pnl)}">${nt(a.live_pnl)}</span></td>` +
+        `<td>${a.sim_n}｜<span class="${cls(a.sim_pnl)}">${nt(a.sim_pnl)}</span></td><td><b>${a.matched}</b></td>` +
+        `<td class="mute">${tl(a.live_only)}</td><td class="mute">${tl(a.sim_only)}</td></tr>`;
+    }).join('');
   document.getElementById('replayNote').textContent = rp ? `${rp.since} 起共 ${rp.sessions} 盤｜更新 ${rp.generated_at.slice(5, 16).replace('T', ' ')}｜兩邊一致代表一年回測的結果可信度高；不一致的筆數會列在右邊兩欄。` : '';
   const sessZh = { day: '日盤', night: '夜盤' };
   document.getElementById('dailyHist').innerHTML = `<tr><th>交易日</th><th>盤別</th>${s.ais.map(a => `<th>${a.name}</th>`).join('')}<th>合計</th></tr>` +
@@ -442,9 +445,10 @@ function applyLimits() {
     btn.textContent = open ? '收合（只顯示最新 ' + limit + ' 筆）' : `顯示全部（共 ${rows.length} 筆）`;
   });
 }
+const cardKey = sec => 'collapsed:' + (sec.id || sec.querySelector('h2')?.textContent.slice(0, 20));
 function setupCollapsible(root) {
   root.querySelectorAll('section.card').forEach(sec => {
-    const key = 'collapsed:' + (sec.id || sec.querySelector('h2')?.textContent.slice(0, 20));
+    const key = cardKey(sec);
     if (localStorage.getItem(key) === '1') sec.classList.add('collapsed');
     const h = sec.querySelector(':scope > h2');
     if (h && !h.dataset.bound) {
@@ -453,8 +457,8 @@ function setupCollapsible(root) {
     }
   });
 }
-document.getElementById('expandAll').onclick = () => document.querySelectorAll('section.card').forEach(sec => { sec.classList.remove('collapsed'); localStorage.setItem('collapsed:' + (sec.id || sec.querySelector('h2')?.textContent.slice(0, 20)), '0'); });
-document.getElementById('collapseAll').onclick = () => document.querySelectorAll('main > section.card').forEach(sec => { sec.classList.add('collapsed'); localStorage.setItem('collapsed:' + sec.id, '1'); });
+document.getElementById('expandAll').onclick = () => document.querySelectorAll('section.card').forEach(sec => { sec.classList.remove('collapsed'); localStorage.setItem(cardKey(sec), '0'); });
+document.getElementById('collapseAll').onclick = () => document.querySelectorAll('section.card').forEach(sec => { sec.classList.add('collapsed'); localStorage.setItem(cardKey(sec), '1'); });
 const side = document.getElementById('side');
 document.getElementById('navToggle').onclick = () => side.classList.toggle('open');
 side.querySelectorAll('a').forEach(a => a.addEventListener('click', (e) => {

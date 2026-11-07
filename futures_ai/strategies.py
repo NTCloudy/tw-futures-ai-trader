@@ -31,7 +31,7 @@ def atr(bars: list[Bar], n: int = 14) -> float:
   recent = bars[-n:]
   trs = []
   for i, b in enumerate(recent):
-    prev_c = recent[i - 1].c if i else b.o
+    prev_c = recent[i - 1].c if i else (bars[-n - 1].c if len(bars) > n else b.o)
     trs.append(max(b.h - b.l, abs(b.h - prev_c), abs(b.l - prev_c)))
   return sum(trs) / len(trs) if trs else 0.0
 
@@ -41,29 +41,42 @@ class OrbBreakout:
 
   id = "alpha-orb"
   name = "Alpha 開盤突破 AI"
-  style = "5 分K：開盤前 15 分鐘（3 根）區間突破 + VWAP 確認，順勢追價"
+  style = "5 分K：開盤前 15 分鐘（3 根）區間突破 + VWAP 確認（區間 40–260 點），浮盈 2 倍停損移至保本+6，每盤最多 2 次"
   color = "#38bdf8"
   modes = {"native": "順勢突破", "flip": "假突破反向"}
 
   def __init__(self, range_bars: int = 3, max_entries: int = 2, buffer_pts: float = 3,
-               sl_frac: float = 0.5, tp_mult: float = 2.0):
+               sl_frac: float = 0.5, tp_mult: float = 2.0, min_width: float = 40, max_width: float = 260,
+               be_r: float | None = 2.0):
     self.range_bars = range_bars
     self.max_entries = max_entries
     self.buffer = buffer_pts
     self.sl_frac, self.tp_mult = sl_frac, tp_mult
+    self.min_width, self.max_width = min_width, max_width
+    self.be_r = be_r
 
-  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
-    if len(bars) <= self.range_bars + 1 or entries_this_session >= self.max_entries:
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
+             bars1: list[Bar] | None = None) -> Entry | None:
+    from datetime import timedelta as _td
+    from .calendar import session_of
+    if len(bars) <= self.range_bars or (self.max_entries and entries_this_session >= self.max_entries):
       return None
-    if bars_since_exit is not None and bars_since_exit < 1:
-      return None
-    rng = bars[: self.range_bars]
+    _, s_start, _ = session_of(bars[-1].end - _td(seconds=1))
+    if s_start is not None and len(bars) >= 2 and (bars[-1].end - bars[-2].end) >= _td(minutes=5):
+      r_end = s_start + _td(minutes=5 * self.range_bars)
+      if bars[-1].end <= r_end:
+        return None
+      rng = [b for b in bars if s_start < b.end <= r_end]
+      if len(rng) < self.range_bars:
+        return None
+    else:
+      rng = bars[: self.range_bars]
     hi, lo = max(b.h for b in rng), min(b.l for b in rng)
     width = hi - lo
-    if width > 450:  # Opening range too wide: stop distance would exceed the risk budget.
+    if width < self.min_width or width > self.max_width:
       return None
     last, prev = bars[-1], bars[-2]
-    vw = vwap(bars)
+    vw = vwap(bars1 if bars1 else bars)
     sl = clamp(width * self.sl_frac, 30, 120)
     tp = sl * self.tp_mult
     if last.c > hi + self.buffer and prev.c <= hi + self.buffer and last.c > vw:
@@ -154,30 +167,39 @@ class TrendPullback:
 
   id = "sigma-vwap"  # Same slot/id as before so the account history continues.
   name = "Sigma 趨勢回測 AI"
-  style = "5 分K 明確趨勢中，價格回測 VWAP 後收回趨勢方向就順勢進場；可用移動停損抱住趨勢"
+  style = "5 分K 明確趨勢中，價格回測 VWAP 後收回趨勢方向且逆勢影線 ≤ 25% 順勢進場；每盤最多 2 次"
   color = "#a855f7"
   modes = {"native": "順勢回測", "flip": "順勢回測"}
   allow_flip = False
   block_after_stop = True
 
-  def __init__(self, pull_atr: float = 0.5, sl_atr: float = 1.5, tp_mult: float = 3.0, trail_atr: float | None = None):
+  def __init__(self, pull_atr: float = 0.5, sl_atr: float = 1.5, tp_mult: float = 4.0,
+               trail_atr: float | None = None, max_entries: int = 2, max_wick: float | None = 0.25):
     self.pull, self.sl_atr, self.tp_mult, self.trail_atr = pull_atr, sl_atr, tp_mult, trail_atr
+    self.max_entries, self.max_wick = max_entries, max_wick
 
-  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
-    if len(bars) < 6:
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
+             bars1: list[Bar] | None = None) -> Entry | None:
+    if len(bars) < 6 or (self.max_entries and entries_this_session >= self.max_entries):
       return None
-    regime, er, d = _trend(bars)
+    regime, er, d = _trend(bars1 if bars1 else bars)
     if regime != "trend" or d == 0:
       return None
     a = max(atr(bars), 5.0)
-    vw = vwap(bars)
+    vw = vwap(bars1 if bars1 else bars)
     x = bars[-1]
+    rng_b = x.h - x.l
+    mw = self.max_wick
     sl = clamp(a * self.sl_atr, 20, 150)
     tp = sl * self.tp_mult
     trail = a * self.trail_atr if self.trail_atr else None
     if d > 0 and x.l <= vw + self.pull * a and x.c > vw and x.c > x.o:
+      if mw is not None and (rng_b <= 0 or (x.h - x.c) / rng_b > mw):
+        return None
       return Entry("B", sl, tp, f"5 分K 多頭趨勢（ER {er:.2f}），回測 VWAP {vw:.0f} 後收紅，順勢做多", trail)
     if d < 0 and x.h >= vw - self.pull * a and x.c < vw and x.c < x.o:
+      if mw is not None and (rng_b <= 0 or (x.c - x.l) / rng_b > mw):
+        return None
       return Entry("S", sl, tp, f"5 分K 空頭趨勢（ER {er:.2f}），反彈 VWAP {vw:.0f} 後收黑，順勢放空", trail)
     return None
 
@@ -299,23 +321,29 @@ class NightOpenBreakout:
   """Nova (replaces Gamma): night-session opening-range breakout. Range = 15:00-15:30 (six 5-min bars);
   trades a VWAP-confirmed breakout during the next 600 minutes (until 01:30; extended from 120 after the
   one-year check: 10 of 12 20-day blocks profitable vs 7 of 12); stop = range width (30-150 pts),
-  take-profit = 3x stop; limit entry at the signal close. Found on one year of data and validated by
-  rolling 40-day practice -> 20-day exams: 9 of 10 exam windows profitable."""
+  take-profit = 3x stop; limit entry at the signal close."""
 
   id = "nova-nightorb"
   name = "Nova 夜盤開盤突破 AI"
-  style = "夜盤 15:00–15:30 開盤區間突破（VWAP 確認），之後到 01:30 前有效；停損＝區間寬度，停利 3 倍，限價進場"
+  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、避開美股盤前冷清段），停損＝區間寬度，停利 3 倍，限價進場"
   color = "#facc15"  # Yellow: distinct from Alpha (sky blue)
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
   learn_scale = False  # Keep the validated stop / take-profit geometry.
 
-  def __init__(self, range_min: int = 30, window: int = 600, sl_frac: float = 1.0, tp_mult: float = 3.0):
+  def __init__(self, range_min: int = 30, window: int = 600, sl_frac: float = 1.0, tp_mult: float = 3.0,
+               min_width: float = 30, reach_r: float | None = 2.5, min_body_atr: float | None = 0.25,
+               dst_skip: tuple[int, int] | None = (150, 150), be_r: float | None = None):
     self.range_min, self.window, self.sl_frac, self.tp_mult = range_min, window, sl_frac, tp_mult
+    self.min_width, self.reach_r, self.min_body_atr, self.dst_skip, self.be_r = (
+        min_width, reach_r, min_body_atr, dst_skip, be_r)
+    self.max_entries = None
     self.limit_atr, self.limit_min = 0.0, 5
 
-  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
+             bars1: list[Bar] | None = None) -> Entry | None:
     from datetime import datetime as _dt, time as _t, timedelta as _td
+    from .calendar import us_open_at
     if len(bars) < 2:
       return None
     x, prev = bars[-1], bars[-2]
@@ -327,19 +355,34 @@ class NightOpenBreakout:
     r_end = anchor + _td(minutes=self.range_min)
     if not (r_end < t <= r_end + _td(minutes=self.window)):
       return None
-    sw = getattr(self, "skip_window", None)  # ("HH:MM", "HH:MM"): no new entries in this window (shadow test).
-    if sw and sw[0] <= t.strftime("%H:%M") < sw[1]:
+    sw = getattr(self, "skip_window", None)  # ("HH:MM", "HH:MM"): left-open, right-closed skip window.
+    if sw and sw[0] < t.strftime("%H:%M") <= sw[1]:
       return None
+    ds = getattr(self, "dst_skip", None)
+    if ds and not getattr(self, "hours", None):
+      if anchor + _td(minutes=ds[0]) < t <= us_open_at(t) - _td(minutes=ds[1]):
+        return None
     rng = [b for b in bars if anchor < b.end <= r_end]
     if len(rng) < self.range_min // 5 - 1:
       return None
     hi, lo = max(b.h for b in rng), min(b.l for b in rng)
-    vw = vwap(bars)
-    sl = clamp((hi - lo) * self.sl_frac, 30, 150)
-    if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
-      return Entry("B", sl, sl * self.tp_mult, f"突破夜盤開盤區間高點 {hi:.0f}（區間 {hi - lo:.0f} 點），站上 VWAP {vw:.0f}")
-    if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw:
-      return Entry("S", sl, sl * self.tp_mult, f"跌破夜盤開盤區間低點 {lo:.0f}（區間 {hi - lo:.0f} 點），位於 VWAP {vw:.0f} 之下")
+    width = hi - lo
+    if width > 450 or width < getattr(self, "min_width", 0):
+      return None
+    sl = clamp(width * self.sl_frac, 30, 150)
+    a = max(atr(bars), 5.0)
+    rr = getattr(self, "reach_r", None)
+    if rr:
+      s_close = _dt.combine(d0 + _td(days=1), _t(5, 0), t.tzinfo)
+      remaining = max(1.0, (s_close - t).total_seconds() / 300)
+      if round(a * remaining ** 0.5) < rr * sl:
+        return None
+    vw = vwap(bars1 if bars1 else bars)
+    mb = getattr(self, "min_body_atr", None)
+    if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw and (not mb or x.c - x.o >= mb * a):
+      return Entry("B", sl, sl * self.tp_mult, f"突破夜盤開盤區間高點 {hi:.0f}（區間 {width:.0f} 點），站上 VWAP {vw:.0f}")
+    if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw and (not mb or x.o - x.c >= mb * a):
+      return Entry("S", sl, sl * self.tp_mult, f"跌破夜盤開盤區間低點 {lo:.0f}（區間 {width:.0f} 點），位於 VWAP {vw:.0f} 之下")
     return None
 
 
@@ -362,29 +405,37 @@ class SwingTrend:
   limit_min = 60
 
   def __init__(self, lookback: int = 10, atr_k: float = 4.0, direction: str = "both", limit_atr: float = 0.3,
-               tp_atr: float = 10.0):
+               tp_atr: float = 10.0, min_er: float | None = 0.20, be_r: float | None = 0.7):
     self.lookback, self.atr_k, self.direction, self.limit_atr_60 = lookback, atr_k, direction, limit_atr
-    self.tp_atr = tp_atr
-    self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60 做多（{'多空都做' if direction == 'both' else '只做多'}），"
-                  f"可留倉過夜，{atr_k:g} 倍 ATR 移動停損、{tp_atr:g} 倍 ATR 停利，限價進場")
+    self.tp_atr, self.min_er, self.be_r = tp_atr, min_er, be_r
+    self.max_entries = None
+    self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60、ER10≥0.20 做多（{'多空都做' if direction == 'both' else '只做多'}），"
+                  f"可留倉過夜，浮盈 0.7 倍停損移至保本+6、{atr_k:g} 倍 ATR 移動停損、{tp_atr:g} 倍 ATR 停利，限價進場")
     self.h60: list[Bar] = []  # completed 60-minute bars across sessions (set by the engine)
     self._last_decided = None
     self.reentry_side: str | None = None
 
-  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None) -> Entry | None:
+  def current_atr(self) -> float | None:
     h = self.h60
-    if len(h) < max(60, self.lookback + 1) or h[-1].end == self._last_decided:
+    if len(h) < 15:
       return None
-    self._last_decided = h[-1].end
-    if bars and (bars[-1].end - h[-1].end).total_seconds() > 65 * 60:
-      return None  # Only act on a freshly completed 60-minute bar (not a stale one after a restart).
-    closes = [b.c for b in h[-200:]]
-    ef, es = ema_series(closes, 20)[-1], ema_series(closes, 60)[-1]
     trs = []
     for i in range(len(h) - 14, len(h)):
       pc = h[i - 1].c
       trs.append(max(h[i].h - h[i].l, abs(h[i].h - pc), abs(h[i].l - pc)))
-    a = sum(trs) / len(trs)
+    return sum(trs) / len(trs)
+
+  def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
+             bars1: list[Bar] | None = None) -> Entry | None:
+    h = self.h60
+    if len(h) < max(60, self.lookback + 1) or h[-1].end == self._last_decided:
+      return None
+    if bars and bars[-1].end != h[-1].end:
+      return None  # Act strictly on the exact 5-minute bar that completes the 60-minute bar.
+    self._last_decided = h[-1].end
+    closes = [b.c for b in h[-200:]]
+    ef, es = ema_series(closes, 20)[-1], ema_series(closes, 60)[-1]
+    a = self.current_atr() or 0.0
     hi = max(b.h for b in h[-self.lookback - 1:-1])
     lo = min(b.l for b in h[-self.lookback - 1:-1])
     c = h[-1].c
@@ -394,11 +445,18 @@ class SwingTrend:
         side, why = "B", "換倉後趨勢仍向上，重新做多"
       elif self.reentry_side == "S" and ef < es and self.direction == "both":
         side, why = "S", "換倉後趨勢仍向下，重新放空"
-      self.reentry_side = None
-    if side is None and c > hi and ef > es:
-      side, why = "B", f"60 分K 收盤 {c:.0f} 突破前 {self.lookback} 根高點 {hi:.0f}，EMA20 {ef:.0f} > EMA60 {es:.0f}"
-    elif side is None and c < lo and ef < es and self.direction == "both":
-      side, why = "S", f"60 分K 收盤 {c:.0f} 跌破前 {self.lookback} 根低點 {lo:.0f}，EMA20 {ef:.0f} < EMA60 {es:.0f}"
+      else:
+        self.reentry_side = None
+    if side is None:
+      if getattr(self, "min_er", None):
+        cl10 = closes[-11:]
+        path = sum(abs(cl10[k] - cl10[k - 1]) for k in range(1, len(cl10)))
+        if (abs(cl10[-1] - cl10[0]) / path if path else 0.0) < self.min_er:
+          return None
+      if c > hi and ef > es:
+        side, why = "B", f"60 分K 收盤 {c:.0f} 突破前 {self.lookback} 根高點 {hi:.0f}，EMA20 {ef:.0f} > EMA60 {es:.0f}"
+      elif c < lo and ef < es and self.direction == "both":
+        side, why = "S", f"60 分K 收盤 {c:.0f} 跌破前 {self.lookback} 根低點 {lo:.0f}，EMA20 {ef:.0f} < EMA60 {es:.0f}"
     if side is None:
       return None
     d = 1 if side == "B" else -1
@@ -443,10 +501,17 @@ def build_strategies(params: dict | None = None) -> list:
 
 
 def build_nova_us(params: dict | None = None) -> "NightOpenBreakout":
-  """Nova US: same rules as Nova, but entries only in the first hour after the US cash open (DST-aware).
-  One year (trade-through fills): 126 trades, 42% wins, +62,758; both half-years profitable."""
-  nova_us = NightOpenBreakout(**(params or {}).get("nova-us", {}))
+  """Nova US: inherits live Nova's rules/params/lessons, entries only in the first hour after US cash open,
+  with breakeven stop at 1.75R (+6 pts)."""
+  import copy
+  base = [s for s in build_strategies(params) if s.id == "nova-nightorb"][0]
+  nova_us = copy.deepcopy(base)
+  for k, v in (params or {}).get("nova-us", {}).items():
+    setattr(nova_us, k, v)
   nova_us.id, nova_us.name, nova_us.color = "nova-us", "Nova 美股開盤（影子）", "#818cf8"
-  nova_us.style = "Nova 同一套夜盤開盤區間突破，但只在美股開盤後 1 小時內進場；停損＝區間寬度，停利 3 倍，限價進場"
+  nova_us.style = "Nova 同一套夜盤開盤區間突破，但只在美股開盤後 1 小時內進場；浮盈 1.75 倍停損移至保本+6，停利 3 倍，限價進場"
   nova_us.hours = ("us_open",)
+  nova_us.skip_window = None
+  nova_us.dst_skip = None
+  nova_us.be_r = 1.75
   return nova_us

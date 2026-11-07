@@ -48,11 +48,13 @@ class GitPublisher:
 
   def _ensure_repo(self) -> None:
     if (self.dir / ".git").exists():
+      self._git("config", "core.logAllRefUpdates", "false")
       return
     self.dir.mkdir(parents=True, exist_ok=True)
     self._git("init", "-q", "-b", self.branch)
     self._git("config", "user.name", "tw-futures-ai-bot")
     self._git("config", "user.email", "bot@users.noreply.github.com")
+    self._git("config", "core.logAllRefUpdates", "false")
     self._git("remote", "add", "origin", f"https://github.com/{self.cfg['publish']['repo']}.git")
 
   def publish(self) -> None:
@@ -72,17 +74,27 @@ class GitPublisher:
       if f.stem.isdigit() and int(f.stem) < slot - 8:
         f.unlink()
     (self.dir / "state.json").write_text(body, encoding="utf-8")
+    did_backup = False
     if time.time() - self._last_backup >= 600:  # Every 10 min: DB snapshot so another computer can restore.
       self._last_backup = time.time()
+      did_backup = True
       (self.dir / "backup").mkdir(exist_ok=True)
       dst = sqlite3.connect(self.dir / "backup" / "futures.db")
       with self.ledger.lock:
         self.ledger.conn.backup(dst)
+      dst.execute("PRAGMA journal_mode=DELETE;")
+      dst.commit()
       dst.close()
     self._git("add", "-A")
     has_head = subprocess.run(["git", "rev-parse", "--verify", "HEAD"], cwd=self.dir, capture_output=True).returncode == 0
     # Amend a single commit so the branch never accumulates history.
     self._git("commit", "-q", "--allow-empty", "-m", f"state {state['generated_at']}", *(["--amend"] if has_head else []))
+    if did_backup:
+      try:
+        self._git("reflog", "expire", "--expire=now", "--all")
+        self._git("gc", "--prune=now", "-q")
+      except Exception:
+        pass
     self._git("push", "-q", "-f", "origin", f"HEAD:{self.branch}")
 
 

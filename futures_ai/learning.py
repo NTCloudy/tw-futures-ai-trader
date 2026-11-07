@@ -83,11 +83,13 @@ def clamp(x, lo, hi):
 
 class Brain:
 
-  def __init__(self, ledger, strategy, learning: bool = False):
+  def __init__(self, ledger, strategy, learning: bool = False, learn_per_trade: bool = True):
     self.ledger = ledger
     self.learning = learning
-    self.allow_flip = getattr(strategy, "allow_flip", True)
-    self.fixed = getattr(strategy, "fixed_bracket", False) or not getattr(strategy, "learn_scale", True)
+    self.allow_flip = getattr(strategy, "allow_flip", True) and bool(learn_per_trade)
+    self.fixed = (getattr(strategy, "fixed_bracket", False)
+                  or not getattr(strategy, "learn_scale", True) or not bool(learn_per_trade))
+    self.frozen = not bool(learn_per_trade)
     self.ai = strategy.id
     self.modes = getattr(strategy, "modes", {"native": "原策略", "flip": "反向策略"})
     self.key = f"brain:{self.ai}"
@@ -122,15 +124,12 @@ class Brain:
       return "native", f"{rz}樣本不足（{nat['n']} 筆），先用{self.modes['native']}"
     if nat["ew"] < 0 and alt["n"] < 2:
       return "flip", f"{self.modes['native']}在{rz}近期虧損（加權 {nat['ew']:+.0f}），改試{self.modes['flip']}"
-    if nat["ew"] <= BLOCK_EW and alt["ew"] <= BLOCK_EW and alt["n"] >= 2 and not self.learning:
-      return None, f"{rz}兩種策略都在虧（{nat['ew']:+.0f} / {alt['ew']:+.0f}），暫停在{rz}進場"
     if alt["ew"] > nat["ew"]:
       return "flip", f"{rz}中{self.modes['flip']}表現較好（{alt['ew']:+.0f} vs {nat['ew']:+.0f}）"
     return "native", f"{rz}中{self.modes['native']}表現較好（{nat['ew']:+.0f} vs {alt['ew']:+.0f}）"
 
   def paused(self, now: datetime) -> bool:
-    pu = self.state.get("pause_until")
-    return bool(pu) and now < datetime.fromisoformat(pu)
+    return False
 
   def adjust(self, sig: Entry, bars: list[Bar]) -> tuple[Entry | None, dict]:
     regime, er = self.regime(bars)
@@ -150,7 +149,7 @@ class Brain:
   # ---------- review ----------
   def review(self, now: datetime, pos: dict, exit_price: float, exit_kind: str, pnl: float) -> dict:
     regime, mode = pos.get("regime", "chop"), pos.get("mode", "native")
-    sl_dist = abs(pos["entry_price"] - pos["sl"])
+    sl_dist = float(pos.get("init_sl_pts") or abs(pos["entry_price"] - pos["sl"]))
     tp_dist = abs(pos["tp"] - pos["entry_price"])
     mfe, mae = pos.get("mfe", 0.0), pos.get("mae", 0.0)
     try:
@@ -192,10 +191,6 @@ class Brain:
         diag = "收盤前仍未達停利，強制平倉小賠"
       else:
         diag = f"{exit_kind} 出場虧損"
-      if st["loss_streak"] >= 3 and not self.learning:
-        st["pause_until"] = (now + timedelta(minutes=15)).isoformat()
-        adjust.append(f"連虧 {st['loss_streak']} 筆，冷靜 15 分鐘")
-        st["loss_streak"] = 0
     if slip >= 3:
       diag += f"；觸發後滑價 {slip:.0f} 點"
     if getattr(self, "frozen", False):  # Weekly-only changes: keep the multipliers, list the ideas as suggestions.

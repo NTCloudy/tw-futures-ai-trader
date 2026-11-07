@@ -61,23 +61,23 @@ def sessions_from_kbars(path: Path) -> list[Session]:
     return []
   # Shioaji may label a bar by its start or its end minute; detect from the day-session open.
   start_labeled = any(ts.hour == 8 and ts.minute == 45 for ts, *_ in rows[:5000])
-  groups: dict[tuple, list[Bar]] = {}
+  groups: dict[tuple, dict[datetime, Bar]] = {}
   for ts, o, h, l, c, v in rows:
     end = ts + timedelta(minutes=1) if start_labeled else ts
     t = end.time()
     if time(8, 46) <= t <= time(13, 45):
-      key = (end.date(), "day")
+      key = (end.date(), "day", end.date())
     elif t >= time(15, 1) or t <= time(5, 0):
       start_date = end.date() if t >= time(15, 1) else end.date() - timedelta(days=1)
       key = (next_weekday(start_date), "night", start_date)
     else:
       continue
-    groups.setdefault(key, []).append(Bar(end, o, h, l, c, v))
+    groups.setdefault(key, {})[end] = Bar(end, o, h, l, c, v)
   out = []
-  for key, bars in groups.items():
-    if len(bars) < 30:
+  for key, bar_map in groups.items():
+    if len(bar_map) < 30:
       continue
-    bars.sort(key=lambda b: b.end)
+    bars = sorted(bar_map.values(), key=lambda b: b.end)
     if key[1] == "day":
       close = datetime.combine(key[0], time(13, 45), TPE)
     else:
@@ -89,24 +89,37 @@ def sessions_from_kbars(path: Path) -> list[Session]:
 
 
 def load_sessions(cfg: dict) -> list[Session]:
-  from .pretrain import sessions_from_file
-  out = []
+  from .barstore import sessions_from_zip_cached
+  live_1m = ROOT / "data" / "live_1m.csv"
+  by_sess: dict[tuple, Session] = {}
+  # Priority: Daily_*.zip (highest) > KBAR_FILES > live_1m.csv (lowest, fills recent live sessions).
   for f in sorted(HIST.glob("Daily_*.zip")):
     td = datetime.strptime(f.stem[6:], "%Y_%m_%d").date()
-    for name, code, bars in sessions_from_file(f.read_bytes(), td, cfg["product"], cfg["roll_days_before"]):
+    for name, code, bars in sessions_from_zip_cached(f, cfg["product"], cfg["roll_days_before"]):
       start = bars[0].end - timedelta(minutes=1)
+      skey = (start.date(), name)
       close = datetime.combine(start.date(), time(13, 45), TPE) if name == "day" else \
           datetime.combine(start.date() + (timedelta(days=1) if start.hour >= 15 else timedelta()), time(5, 0), TPE)
-      s = Session(td, name, code, bars, close)
-      precompute(s)
-      out.append(s)
-  have = {(s.td, s.name) for s in out}  # Official tick files take precedence over K-bar exports.
-  for f in KBAR_FILES:
+      bmap = {b.end: b for b in bars}
+      s = Session(td, name, code, sorted(bmap.values(), key=lambda b: b.end), close)
+      by_sess[skey] = s
+  for f in [*KBAR_FILES, live_1m]:
     if f.exists():
       for sess in sessions_from_kbars(f):
-        if (sess.td, sess.name) not in have:
-          have.add((sess.td, sess.name))
-          out.append(sess)
+        start_d = (sess.bars[0].end - timedelta(minutes=1)).date()
+        skey = (start_d, sess.name)
+        if skey not in by_sess:
+          by_sess[skey] = sess
+        else:
+          cur = by_sess[skey]
+          bmap = {b.end: b for b in sess.bars}
+          bmap.update({b.end: b for b in cur.bars})  # Higher-priority bars win on overlap.
+          if len(bmap) > len(cur.bars):
+            cur.bars = sorted(bmap.values(), key=lambda b: b.end)
+  out = list(by_sess.values())
+  for s in out:
+    if s.vwap is None or len(s.vwap) != len(s.bars):
+      precompute(s)
   out.sort(key=lambda s: s.bars[0].end)
   return out
 
@@ -186,83 +199,6 @@ def clamp(x, lo, hi):
   return max(lo, min(hi, x))
 
 
-def signal(ai: str, p: dict, s: Session, i: int, since_exit: int | None):
-  b = s.bars
-  x, prev = b[i], b[i - 1] if i else b[i]
-  if ai == "alpha-orb":
-    rm = p["range_minutes"]
-    if i + 1 <= rm + 1 or (since_exit is not None and since_exit < 3):
-      return None
-    hi = max(y.h for y in b[:rm])
-    lo = min(y.l for y in b[:rm])
-    width = hi - lo
-    if width > 450:
-      return None
-    sl = clamp(width * p["sl_frac"], 30, 80)
-    tp = sl * p["tp_mult"]
-    buf = 3
-    if x.c > hi + buf and prev.c <= hi + buf and x.c > s.vwap[i]:
-      return "B", sl, tp, None
-    if x.c < lo - buf and prev.c >= lo - buf and x.c < s.vwap[i]:
-      return "S", sl, tp, None
-    return None
-  if ai == "sigma-vwap":
-    if i + 1 < 20 or (since_exit is not None and since_exit < 5):
-      return None
-    a = max(s.atr[i], 5.0)
-    dev = x.c - s.vwap[i]
-    sl = clamp(a * p["sl_atr"], 25, 70)
-    tp = clamp(abs(dev) * p["tp_frac"], sl, sl * 2)
-    if dev >= p["stretch"] * a and x.c < x.o and x.c < prev.c:
-      return "S", sl, tp, None
-    if dev <= -p["stretch"] * a and x.c > x.o and x.c > prev.c:
-      return "B", sl, tp, None
-    return None
-  if ai == "gamma-scalp":
-    if i + 1 < 14 or (since_exit is not None and since_exit < 1):
-      return None
-    closes = [y.c for y in b[max(0, i - 29): i + 1]]
-    fast, slow = ema_tail(closes, 5), ema_tail(closes, 13)
-    sl = max(p["sl_min"], round(1.2 * s.atr[i]))
-    tp = max(30, round(sl * p["tp_ratio"]))
-    if fast > slow and x.c > prev.h and x.c > x.o:
-      return "B", sl, tp, None
-    if fast < slow and x.c < prev.l and x.c < x.o:
-      return "S", sl, tp, None
-    return None
-  if ai == "sigma-pullback":
-    # Trend pullback: 5-min trend, price dips back to VWAP (+k*ATR) and closes back in trend direction.
-    if i + 1 < 20 or s.regime[i] != "trend" or s.direction[i] == 0:
-      return None
-    a = max(s.atr[i], 5.0)
-    vw = s.vwap[i]
-    sl = clamp(a * p["sl_atr"], 20, 80)
-    tp = sl * p["tp_mult"]
-    trail = a * p["trail_atr"] if p.get("trail_atr") else None
-    if s.direction[i] > 0 and x.l <= vw + p["pull_atr"] * a and x.c > vw and x.c > x.o:
-      return "B", sl, tp, trail
-    if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
-      return "S", sl, tp, trail
-    return None
-  if ai == "gamma-trend":
-    # Trend breakout: 5-min trend + close beyond the prior N-bar high/low; trailing stop rides the move.
-    n = p["lookback"]
-    if i < n + 1 or s.regime[i] != "trend":
-      return None
-    a = max(s.atr[i], 5.0)
-    hi = max(y.h for y in b[i - n: i])
-    lo = min(y.l for y in b[i - n: i])
-    sl = clamp(a * p["sl_atr"], 20, 100)
-    tp = sl * 4
-    trail = a * p["trail_atr"]
-    if s.direction[i] > 0 and x.c > hi and prev.c <= hi:
-      return "B", sl, tp, trail
-    if s.direction[i] < 0 and x.c < lo and prev.c >= lo:
-      return "S", sl, tp, trail
-    return None
-  raise ValueError(ai)
-
-
 def signal5(ai: str, p: dict, s: Session, k: int, i: int):
   """Signals on completed 5-minute bars (k = 5-min index, i = 1-min index completing it)."""
   b = s.b5
@@ -273,10 +209,18 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     rb = p["range_bars"]
     if k + 1 <= rb + 1:
       return None
-    hi = max(y.h for y in b[:rb])
-    lo = min(y.l for y in b[:rb])
+    s_start = (s.bars[0].end - timedelta(minutes=1)).replace(second=0, microsecond=0)
+    s_open = s_start.replace(hour=8, minute=45) if 8 <= s_start.hour < 15 else s_start.replace(hour=15, minute=0)
+    r_end = s_open + timedelta(minutes=rb * 5)
+    if x.end <= r_end:
+      return None
+    rng = [y for y in b[:k] if s_open < y.end <= r_end]
+    if len(rng) < max(1, rb - 1):
+      return None
+    hi = max(y.h for y in rng)
+    lo = min(y.l for y in rng)
     width = hi - lo
-    if width > 450:
+    if width < p.get("min_width", 40) or width > p.get("max_width", 260):
       return None
     sl = clamp(width * p["sl_frac"], 30, 120)
     tp = sl * p["tp_mult"]
@@ -291,9 +235,14 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     sl = clamp(a * p["sl_atr"], 20, 150)
     tp = sl * p["tp_mult"]
     trail = a * p["trail_atr"] if p.get("trail_atr") else None
+    mw = p.get("max_wick", 0.25)
     if s.direction[i] > 0 and x.l <= vw + p["pull_atr"] * a and x.c > vw and x.c > x.o:
+      if mw is not None and (x.h - x.c) > mw * a:
+        return None
       return "B", sl, tp, trail
     if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
+      if mw is not None and (x.c - x.l) > mw * a:
+        return None
       return "S", sl, tp, trail
     return None
   if ai == "anchor-orb":
@@ -308,6 +257,11 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
       if time(5, 1) <= ts.time() < time(15, 0):
         return None
       anchor = datetime.combine(d0, time(15, 0), TPE)
+    dst_skip = p.get("dst_skip", (150, 150))
+    if dst_skip and us_dst(ts):
+      uo = us_open_at(ts)
+      if uo - timedelta(minutes=dst_skip[0]) < ts <= uo + timedelta(minutes=dst_skip[1]):
+        return None
     r_end = anchor + timedelta(minutes=p["range_min"])
     if not (r_end < ts <= r_end + timedelta(minutes=p["window"])):
       return None
@@ -316,11 +270,22 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
       return None
     hi, lo = max(y.h for y in rng), min(y.l for y in rng)
     width = hi - lo
+    if width < p.get("min_width", 30):
+      return None
+    min_body = p.get("min_body_atr", 0.25)
+    if min_body and abs(x.c - x.o) < min_body * a:
+      return None
+    reach_r = p.get("reach_r", 2.5)
+    after_rng = [y for y in b[:k] if y.end > r_end] if reach_r else []
     sl = clamp(width * p["sl_frac"], 30, 150)
     tp = sl * p["tp_mult"]
     if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
+      if reach_r and after_rng and max(y.h for y in after_rng) >= hi + reach_r * width:
+        return None
       return "B", sl, tp, None
     if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw:
+      if reach_r and after_rng and min(y.l for y in after_rng) <= lo - reach_r * width:
+        return None
       return "S", sl, tp, None
     return None
   if ai == "sigma-fixed":  # Sigma entries with a fixed bracket (take-profit / stop in points).
@@ -372,6 +337,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
   pnl = peak = maxdd = 0.0
   trades = wins = 0
   tlog = []
+  day_pnl: dict[date, float] = {}
+  locked_days: set[date] = set()
   for s in sessions:
     b = s.bars
     pos = None
@@ -383,7 +350,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
     chase_k = None
     pend = None  # limit entry: (side, limit_px, sl_pts, tp_pts, trail, expires_end)
     gb_peak = 0.0  # best favorable excursion of the open position (give-back exit)
-    sl_count = 0  # Lesson rules (learned from losing-trade reviews): stop-losses so far this session,
+    sl_count = 0  # Lesson rules (learned from losing-trade reviews): consecutive stop-losses in this session,
     last_sl = None  # and (side, time) of the most recent stop-loss.
     s_start = b[0].end - timedelta(minutes=1) if b else None
     for i in range(len(b)):
@@ -438,23 +405,28 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           wins += net > 0
           peak = max(peak, pnl)
           maxdd = max(maxdd, peak - pnl)
+          day_pnl[s.td] = day_pnl.get(s.td, 0.0) + net
+          if cfg.get("enforce_daily_loss") and day_pnl[s.td] <= -cfg["max_daily_loss_twd"]:
+            locked_days.add(s.td)
+            pend = None
           pos = None
           last_exit_i = i
           if kind == "TP" and p.get("chase"):
-            chase_side, chase_k = side, s.k_at.get(i, len(s.b5) - 1) if s.b5 else 0
-            # k of the most recent completed 5-min bar at/ before this minute
             chase_k = max([kk for ii, kk in s.k_at.items() if ii <= i] or [0])
+            chase_side = side
+          if net > 0:
+            sl_count = 0
+            last_sl = None
           if kind == "SL":
             chase_side = None
             if net < 0:
               sl_count += 1
               last_sl = (side, x.end)
-          if kind == "SL" and ai in ("sigma-pullback", "sigma-fixed"):
-            block_side, block_i = side, i
-          continue
+              if ai in ("sigma-pullback", "sigma-fixed"):
+                block_side, block_i = side, i
       if pend and not pos:  # Working limit entry from an earlier signal.
         p_side, p_px, p_sl, p_tp, p_tr, p_exp = pend
-        if x.end > p_exp or mtc <= cfg["no_entry_minutes_before_close"]:
+        if x.end > p_exp or mtc <= cfg["no_entry_minutes_before_close"] or s.td in locked_days:
           pend = None
         elif (p_side == "B" and x.l <= p_px - p.get("fill_through", 0)) or (p_side == "S" and x.h >= p_px + p.get("fill_through", 0)):
           d = 1 if p_side == "B" else -1
@@ -463,7 +435,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           gb_peak = 0.0
           pend = None
           continue
-      if pos or pend or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"]:
+        elif x.end >= p_exp:
+          pend = None
+      if pos or pend or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"] or s.td in locked_days:
         continue
       if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
         continue
@@ -537,13 +511,11 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
 # ---------------------------------------------------------------- grids & walk-forward
 def grid(ai: str) -> list[dict]:
   if ai == "alpha-orb":
-    g = [dict(range_bars=r, sl_frac=f, tp_mult=t, regimes=reg, flip=fl)
-         for r, f, t, reg, fl in itertools.product([3, 6], [0.35, 0.5, 0.75], [1.5, 2.0, 3.0],
-                                                   [("trend", "chop"), ("trend",)], [(), ("chop",)])
-         if not (fl and "chop" not in reg)]
+    g = [dict(range_bars=r, sl_frac=f, tp_mult=t, regimes=("trend", "chop"), flip=())
+         for r, f, t in itertools.product([3, 6], [0.5, 0.75], [2.0, 3.0])]
   elif ai == "sigma-pullback":
-    g = [dict(pull_atr=pa, sl_atr=sa, tp_mult=tm, trail_atr=ta, regimes=("trend",), flip=())
-         for pa, sa, tm, ta in itertools.product([0.2, 0.5], [1.0, 1.5, 2.0], [2.0, 3.0, 4.0], [None, 2.0, 3.0])]
+    g = [dict(pull_atr=pa, sl_atr=sa, tp_mult=4.0, trail_atr=None, regimes=("trend",), flip=())
+         for pa, sa in itertools.product([0.2, 0.5], [1.5, 2.0])]
   elif ai == "gamma-trend":
     g = [dict(lookback=lb, sl_atr=sa, trail_atr=ta, regimes=("trend",), flip=())
          for lb, sa, ta in itertools.product([6, 12, 24], [1.5, 2.0, 3.0], [2.0, 3.0, 4.0])]
@@ -556,9 +528,25 @@ def grid(ai: str) -> list[dict]:
 
 
 def score(r: dict) -> float:
-  if r["trades"] < 3 and not r.get("off"):
+  if r.get("off"):
+    return 0.0
+  if r["trades"] < 3:
     return -1e9  # Too few trades to trust.
   return r["pnl"] - 0.5 * r["maxdd"]
+
+
+def _pick_best(cfg: dict, ai: str, candidates: list[dict], train_sessions: list[Session]) -> tuple[float, dict, dict]:
+  scored = []
+  for p in candidates:
+    if p.get("off"):
+      continue
+    r = simulate(cfg, ai, p, train_sessions)
+    scored.append((score(r), p, r))
+  best_score, best_p, best_r = max(scored, key=lambda t: t[0])
+  if best_r["trades"] < 3 or best_r["pnl"] <= 0:
+    off_p = {"off": True}
+    return 0.0, off_p, simulate(cfg, ai, off_p, train_sessions)
+  return best_score, best_p, best_r
 
 
 def describe(ai: str, p: dict) -> str:
@@ -574,11 +562,13 @@ LIVE_TO_SIM = {"alpha-orb": "alpha-orb", "sigma-vwap": "sigma-pullback", "gamma-
 
 
 def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Session] | None = None, log=print,
-                 ais: tuple = ("alpha-orb", "sigma-pullback", "gamma-trend"), base: dict | None = None) -> dict:
+                 ais: tuple = ("alpha-orb", "sigma-pullback", "gamma-trend"), base: dict | None = None,
+                 cur_params: dict | None = None) -> dict:
   """base: optional {sim_ai: dict} of live execution settings (limit entry, hours, ...) merged under every grid
   point, so training simulates the same execution as the live AI (only the grid keys are searched)."""
   sessions = sessions or load_sessions(cfg)
   base = base or {}
+  cur_params = cur_params or {}
   def grid_(ai):
     return [p if p.get("off") else {**base.get(ai, {}), **p} for p in grid(ai)]
   days = sorted({s.td for s in sessions})
@@ -587,13 +577,16 @@ def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Sess
             "test_days": test_days, "ais": {}}
   for ai in ais:
     windows, oos_pnl, oos_trades, oos_wins = [], 0.0, 0, 0
+    last_active = ({**base.get(ai, {}), **cur_params[ai]} if ai in cur_params else None)
     start = train_days
     while start + test_days <= len(days):
       train = [s for d in days[start - train_days: start] for s in by_day[d]]
       test = [s for d in days[start: start + test_days] for s in by_day[d]]
-      results = [(score(r := {**simulate(cfg, ai, p, train), "off": p.get("off", False)}), p, r) for p in grid_(ai)]
-      best_score, best_p, best_r = max(results, key=lambda t: t[0])
-      t = simulate(cfg, ai, best_p, test)
+      best_score, best_p, best_r = _pick_best(cfg, ai, grid_(ai), train)
+      if not best_p.get("off"):
+        last_active = best_p
+      sim_p = (last_active if (best_p.get("off") and last_active is not None) else best_p)
+      t = simulate(cfg, ai, sim_p, test)
       oos_pnl += t["pnl"]
       oos_trades += t["trades"]
       oos_wins += t["wins"]
@@ -604,8 +597,7 @@ def walk_forward(cfg: dict, train_days: int, test_days: int, sessions: list[Sess
                       "test_trades": t["trades"], "test_wins": t["wins"]})
       start += test_days
     latest_train = [s for d in days[-train_days:] for s in by_day[d]]
-    latest = max(((score({**simulate(cfg, ai, p, latest_train), "off": p.get("off", False)}), p) for p in grid_(ai)),
-                 key=lambda t: t[0])[1]
+    latest = _pick_best(cfg, ai, grid_(ai), latest_train)[1]
     report["ais"][ai] = {"oos_pnl": round(oos_pnl), "oos_trades": oos_trades, "oos_wins": oos_wins,
                          "windows": windows, "latest_params": latest, "latest_desc": describe(ai, latest)}
     log(f"{ai}: 考試期總損益 NT$ {oos_pnl:+,.0f}（{oos_trades} 筆，勝 {oos_wins}）｜最新建議：{describe(ai, latest)}")

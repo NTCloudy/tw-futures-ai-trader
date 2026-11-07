@@ -45,6 +45,17 @@ def _post(url: str, body: dict, timeout: int = 5) -> dict:
     return json.load(resp)
 
 
+def _parse_bar_end(hhmmss: str, session_start: datetime) -> datetime:
+  hh, mm, ss = int(hhmmss[:2]), int(hhmmss[2:4]), int(hhmmss[4:6])
+  if mm == 60:  # TAIFEX labels the 60th minute of an hour as HH6000 (e.g. 096000 = 10:00:00).
+    t = datetime.combine(session_start.date(), time(hh, 0, ss), TPE) + timedelta(hours=1)
+  else:
+    t = datetime.combine(session_start.date(), time(hh, mm, ss), TPE)
+  if t < session_start:  # Night session crosses midnight.
+    t += timedelta(days=1)
+  return t
+
+
 def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime) -> Snapshot:
   data = payload["RtData"]
   q = data.get("Quote") or {}
@@ -54,12 +65,10 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
   for row in data.get("Ticks") or []:
     try:  # Skip malformed rows instead of failing the whole snapshot.
       hhmmss = str(row[idx["T"]]).strip().zfill(6)[:6]
-      t = datetime.combine(session_start.date(), time(int(hhmmss[:2]), int(hhmmss[2:4]), int(hhmmss[4:6])), TPE)
+      t = _parse_bar_end(hhmmss, session_start)
       float(row[idx["C"]])
     except (ValueError, IndexError, TypeError):
       continue
-    if t < session_start:  # Night session crosses midnight.
-      t += timedelta(days=1)
     bars.append(Bar(t, float(row[idx["O"]]), float(row[idx["H"]]), float(row[idx["L"]]),
                     float(row[idx["C"]]), float(row[idx["V"]])))
   newest = bars[-1].end if bars else None
@@ -71,7 +80,7 @@ def parse_chart(payload: dict, code: str, session_start: datetime, now: datetime
 
   last = num("CLastPrice") or (bars[-1].c if bars else 0.0)
   live = bars[-1] if bars and bars[-1].end > now else None
-  qt = newest - timedelta(minutes=1) if newest else None  # start of the newest bar, conservative
+  qt = (newest - timedelta(minutes=1) if newest > now else newest) if newest else None
   ctime = q.get("CTime")
   if ctime and len(ctime) >= 6 and ctime[:6].isdigit():
     t = datetime.combine(now.date(), time(int(ctime[:2]), int(ctime[2:4]), int(ctime[4:6])), TPE)
@@ -87,7 +96,7 @@ class TaifexFeed:
   still fails, the quote-list endpoint supplies a fresh last/bid/ask on top of the cached bars."""
 
   def __init__(self):
-    self.cache: dict[str, Snapshot] = {}
+    self.cache: dict[tuple[str, datetime], Snapshot] = {}
     self.night_suffix: str | None = None
 
   def _chart(self, code: str, session: str, session_start: datetime, now: datetime) -> Snapshot:
@@ -102,7 +111,7 @@ class TaifexFeed:
           payload = _post(MIS_CHART_URL, {"SymbolID": f"{code}{sfx}"}, timeout=4)
           if payload.get("RtCode") == "0" and payload.get("RtData"):
             snap = parse_chart(payload, code, session_start, now)
-            if snap.bars:
+            if snap.bars or snap.live_bar:
               if session == "night":
                 self.night_suffix = sfx
               return snap
@@ -111,7 +120,7 @@ class TaifexFeed:
           last_err = exc
     raise RuntimeError(f"chart endpoint failed: {last_err}")
 
-  def _quote_fallback(self, code: str, session: str, now: datetime) -> Snapshot:
+  def _quote_fallback(self, code: str, session: str, session_start: datetime, now: datetime) -> Snapshot:
     payload = _post(MIS_QUOTE_URL, {"MarketType": "0" if session == "day" else "1", "SymbolType": "F",
                                     "KindID": "1", "CID": code[:3], "ExpireMonth": "", "RowSize": "全部",
                                     "PageNo": "", "SortColumn": "", "AscDesc": "A"}, timeout=4)
@@ -120,10 +129,10 @@ class TaifexFeed:
       raise RuntimeError("quote fallback: symbol not found")
     q = rows[0]
     ct = q.get("CTime") or ""
-    qt = datetime.combine(now.date(), time(int(ct[:2]), int(ct[2:4]), int(ct[4:6])), TPE) if len(ct) >= 6 else now
+    qt = datetime.combine(now.date(), time(int(ct[:2]), int(ct[2:4]), int(ct[4:6])), TPE) if len(ct) >= 6 and ct[:6].isdigit() else now
     if qt > now + timedelta(minutes=5):
       qt -= timedelta(days=1)
-    cached = self.cache.get(code)
+    cached = self.cache.get((code, session_start))
     num = lambda k: float(q[k]) if q.get(k) not in (None, "") else None
     return Snapshot(code, float(q["CLastPrice"]), num("CBidPrice1"), num("CAskPrice1"),
                     cached.bars if cached else [], qt, None, q.get("CDate") or None)
@@ -131,10 +140,10 @@ class TaifexFeed:
   def snapshot(self, code: str, session: str, session_start: datetime, now: datetime) -> Snapshot:
     try:
       snap = self._chart(code, session, session_start, now)
-      self.cache[code] = snap
+      self.cache[(code, session_start)] = snap
       return snap
     except Exception as chart_err:
       try:
-        return self._quote_fallback(code, session, now)
+        return self._quote_fallback(code, session, session_start, now)
       except Exception as exc:
         raise RuntimeError(f"TAIFEX 行情取得失敗：{chart_err}；備援也失敗：{exc}")

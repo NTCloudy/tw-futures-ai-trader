@@ -52,8 +52,8 @@ class LocalPaperBroker:
       # because real orders queue behind earlier ones at that price. The market must trade through it
       # by at least one tick.
       if (o["side"] == "B" and lo <= o["price"] - self.tick) or (o["side"] == "S" and hi >= o["price"] + self.tick):
-        # A gap through the limit fills at the better market price, otherwise at the limit.
-        px = min(o["price"], quote["last"]) if o["side"] == "B" else max(o["price"], quote["last"])
+        # Resting limit order on the book fills at its limit price (never better than the limit).
+        px = float(o["price"])
         self._fills.put({"broker_order_id": oid, "price": px, "qty": o["qty"], "ts": datetime.now()})
         del self._limits[oid]
 
@@ -117,8 +117,14 @@ class ShioajiBroker:
 
   def _on_order(self, stat, msg) -> None:
     if stat == self.sj.constant.OrderState.FuturesDeal:
-      self._fills.put({"broker_order_id": str(msg.get("trade_id")), "price": float(msg["price"]),
-                       "qty": int(msg["quantity"]), "ts": datetime.now()})
+      oid = str(msg.get("trade_id"))
+      px, qty = float(msg["price"]), int(msg["quantity"])
+      seen = getattr(self, "_seen_deals", set())
+      self._seen_deals = seen
+      did = (oid, msg.get("seqno") or msg.get("ts"), px, qty)
+      if did not in seen:
+        seen.add(did)
+        self._fills.put({"broker_order_id": oid, "price": px, "qty": qty, "ts": datetime.now()})
 
   def _retry(self, fn, *args, again: bool = True):
     """Broker call with an automatic re-login after a connection error (e.g. Wi-Fi dropped).
@@ -179,10 +185,47 @@ class ShioajiBroker:
     pass  # Exchange-side matching; fills arrive via the order callback.
 
   def _cancel(self, order_id: str) -> None:
-    trade = getattr(self, "_trades", {}).pop(order_id, None)
-    if trade is not None:
+    self.api.update_status(self.account)
+    live = {"PendingSubmit", "PreSubmitted", "Submitted", "PartFilled"}
+    trades = getattr(self, "_trades", {})
+    seen = getattr(self, "_seen_deals", set())
+    self._seen_deals = seen
+    target = trades.get(order_id)
+    for t in self.api.list_trades():
+      if str(getattr(t.order, "id", "")) == str(order_id):
+        target = t
+        break
+    if target is not None:
+      for d in (getattr(target.status, "deals", None) or []):
+        did = (str(order_id), getattr(d, "seq", None) or getattr(d, "ts", None), float(d.price), int(d.quantity))
+        if did not in seen:
+          seen.add(did)
+          self._fills.put({"broker_order_id": str(order_id), "price": float(d.price),
+                           "qty": int(d.quantity), "ts": datetime.now()})
+      st = str(getattr(target.status, "status", "")).split(".")[-1]
+      if not st or st in live:
+        self.api.cancel_order(target)
+      trades.pop(order_id, None)
+
+  def reconcile_order(self, order_id: str) -> bool:
+    """Actively polls Shioaji for deals on `order_id` when a market order callback was missed."""
+    try:
       self.api.update_status(self.account)
-      self.api.cancel_order(trade)
+      seen = getattr(self, "_seen_deals", set())
+      self._seen_deals = seen
+      found = False
+      for t in self.api.list_trades():
+        if str(getattr(t.order, "id", "")) == str(order_id):
+          for d in (getattr(t.status, "deals", None) or []):
+            did = (str(order_id), getattr(d, "seq", None) or getattr(d, "ts", None), float(d.price), int(d.quantity))
+            if did not in seen:
+              seen.add(did)
+              self._fills.put({"broker_order_id": str(order_id), "price": float(d.price),
+                               "qty": int(d.quantity), "ts": datetime.now()})
+            found = True
+      return found
+    except Exception:
+      return False
 
   def _cancel_all(self, code: str) -> int:
     self.api.update_status(self.account)

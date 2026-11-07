@@ -12,11 +12,7 @@ from .ledger import Ledger
 from .strategies import NightOpenBreakout
 from .trader import AiTrader
 
-VARIANTS = [
-    # 2026-10-21: the old Alpha / Sigma / Gamma parameter variants and the take-profit twins were
-    # retired (conclusions reached). Kept: the original 2-hour Nova as a control.
-    (NightOpenBreakout, {"window": 120}),
-]
+VARIANTS: list = []
 
 
 def shadow_ledger() -> Ledger:
@@ -39,11 +35,11 @@ def build_tp_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
   return out
 
 
-ALLDAY_IDS = ("alpha-orb", "sigma-vwap")  # Live AIs with a time-of-day filter (all-day twin runs in the background).
+ALLDAY_IDS = ("alpha-orb", "sigma-vwap", "nova-nightorb")  # All-day / full-night control twins.
 
 
 def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
-  """不限時段對照組: Alpha / Sigma with identical rules and parameters, but no time-of-day filter."""
+  """不限時段對照組: Alpha / Sigma / Nova with identical rules and parameters, but no time-of-day skip."""
   from datetime import datetime
   from .calendar import TPE
   from .strategies import build_strategies
@@ -55,18 +51,10 @@ def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
       continue
     s.base_id, s.id, s.name = s.id, f"allday-{s.id}", f"{s.name}（不限時段）"
     s.hours = None
+    s.skip_window = None
+    s.dst_skip = None
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
   return out
-
-
-def build_nova_dual_shadow(cfg: dict, ledger: Ledger) -> list[AiTrader]:
-  """Nova "dual peak": same rules, but no NEW entries 17:30-20:30 (one-year test: +139,701 vs +140,263,
-  max DD 16,899 vs 17,474, last 60 days +23,122 vs +13,352; 2 of 4 quarters better)."""
-  from .strategies import build_strategies
-  s = [x for x in build_strategies() if x.id == "nova-nightorb"][0]
-  s.base_id, s.id, s.name = "nova-nightorb", "dual-nova-nightorb", "Nova（雙峰時段版）"
-  s.skip_window = ("17:30", "20:30")
-  return [AiTrader(cfg, s, LocalPaperBroker(cfg), ledger)]
 
 
 def build_nova_us_shadow(cfg: dict, ledger: Ledger) -> list[AiTrader]:
@@ -81,12 +69,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   ledger = ledger or shadow_ledger()
   cfg = copy.deepcopy(cfg)
   cfg["mode"] = "local_paper"
-  out = []
-  for i, (cls, params) in enumerate(VARIANTS, 1):
-    s = cls(**params)
-    s.base_id = cls.id
-    s.id = f"sh{i}-{cls.id}"
-    s.name = f"影子{i} {cls.name}"
-    s.params = params
-    out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
-  return out + build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger) + build_nova_dual_shadow(cfg, ledger)
+  return build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger)

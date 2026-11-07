@@ -15,7 +15,7 @@ import json
 import os
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 CRED = Path.home() / ".config" / "tw-futures-ai" / "line.json"
@@ -56,15 +56,19 @@ class LineNotifier:
       self.last_event_id = rows[0]["m"]
     self.pending: list[str] = ledger.get_state("notify_pending", []) or []  # Survives restarts.
     self.errors = 0
+    self._retry_after = 0.0
 
-  def _send(self, text: str) -> None:
+  def _send(self, text: str) -> bool:
     if not self.enabled:
-      return
+      return True
     try:
       push(self.cred, text)
       self.ledger.log("LINE 通知已送出", level="INFO")
+      return True
     except Exception as exc:
       print(f"LINE push failed: {exc}")
+      self._retry_after = time.monotonic() + 60.0
+      return False
 
   def urgent(self, text: str) -> None:
     self._send(f"【微台 AI】{text}")
@@ -73,18 +77,29 @@ class LineNotifier:
     rows = self.ledger.rows("SELECT * FROM events WHERE id>? ORDER BY id", (self.last_event_id,))
     for e in rows:
       self.last_event_id = e["id"]
+      msg = e["message"] or ""
+      ai_prefix = f"{names.get(e['ai'], e['ai'])}：" if e.get("ai") else ""
       alert = e["ai"] in self.cfg.get("alert_ais", []) and e["level"] == "SIGNAL"
       win = self.cfg.get("alert_windows", {}).get(e["ai"])
       if alert and win:  # Only signals inside the given time-of-day buckets (e.g. Nova: US-open hour).
         from .calendar import tod_bucket
-        alert = tod_bucket(datetime.fromisoformat(e["ts"])) in win
+        dt = datetime.fromisoformat(e["ts"])
+        bar_end = dt.replace(second=0, microsecond=0) - timedelta(minutes=dt.minute % 5)
+        alert = tod_bucket(bar_end) in win
       if alert:  # Real-time alert for AIs the user follows by hand: the entry signal only (user's choice).
-        self.urgent(f"{e['ts'][11:16]} {names.get(e['ai'], e['ai'])}\n" + e["message"][:400].replace("｜", "\n"))
+        self.urgent(f"{e['ts'][11:16]} {names.get(e['ai'], e['ai'])}\n" + msg[:400].replace("｜", "\n"))
       if e["level"] == "TRADE":
         t = e["ts"][11:16]
-        self.pending.append(f"{t} {names.get(e['ai'], e['ai'])}：{' '.join(e['message'].split('｜')[:2])}")
+        self.pending.append(f"{t} {names.get(e['ai'], e['ai'])}：{' '.join(msg.split('｜')[:2])}")
+      elif e["level"] == "KILL":
+        self.urgent(f"{ai_prefix}{msg}")
+      elif e["level"] == "WARN" and any(k in msg for k in ("強制平倉", "不再進新單", "緊急停止", "解除", "保證金調整")):
+        self.urgent(f"{ai_prefix}{msg}")
       elif e["level"] == "ERROR":
-        self.errors += 1
+        if any(k in msg for k in ("委託失敗", "刪單失敗", "削除限價單失敗", "未知委託成交", "啟動清理", "殘留當沖部位")):
+          self.urgent(f"{ai_prefix}{msg}")
+        else:
+          self.errors += 1
     if rows:
       self.ledger.set_state("notify_last_event", self.last_event_id)
       self.ledger.set_state("notify_pending", self.pending)
@@ -96,10 +111,10 @@ class LineNotifier:
     if self.cfg.get("digest_minutes", 0) <= 0:  # Digests disabled: trades go into the session report.
       return
     if self.pending and time.monotonic() - self.last_digest >= self.cfg["digest_minutes"] * 60:
-      self._send(f"【微台 AI 交易摘要】{header}\n" + "\n".join(self.pending[-25:]))
-      self.pending.clear()
-      self.ledger.set_state("notify_pending", [])
-      self.last_digest = time.monotonic()
+      if self._send(f"【微台 AI 交易摘要】{header}\n" + "\n".join(self.pending[-25:])) is not False:
+        self.pending.clear()
+        self.ledger.set_state("notify_pending", [])
+        self.last_digest = time.monotonic()
 
   def defer_night(self, text: str) -> None:
     """Stores the night-session report (with its trades) to be sent the next morning."""
@@ -107,12 +122,32 @@ class LineNotifier:
     self.ledger.set_state("notify_pending", [])
     self.ledger.set_state("night_report", text)
 
+  def queue_monthly(self, text: str, flush_now: bool = False) -> None:
+    q = list(self.ledger.get_state("monthly_queue", []) or [])
+    q.append(text)
+    self.ledger.set_state("monthly_queue", q)
+    if flush_now:
+      self.flush_monthly()
+
+  def flush_monthly(self) -> None:
+    q = list(self.ledger.get_state("monthly_queue", []) or [])
+    while q:
+      if self._send(q[0]) is False:
+        break
+      q.pop(0)
+      self.ledger.set_state("monthly_queue", q)
+
   def maybe_send_night(self, now: datetime) -> None:
+    if time.monotonic() < getattr(self, "_retry_after", 0.0):
+      return
     text = self.ledger.get_state("night_report")
     hh, mm = (int(x) for x in self.cfg.get("night_report_time", "08:30").split(":"))
-    if text and (now.hour, now.minute) >= (hh, mm) and now.hour < 15:
-      self._send(text)
-      self.ledger.set_state("night_report", None)
+    if (now.hour, now.minute) >= (hh, mm) and now.hour < 15:
+      if text:
+        if self._send(text) is False:
+          return
+        self.ledger.set_state("night_report", None)
+      self.flush_monthly()
 
   def session_summary(self, text: str) -> None:
     self.pending.clear()
@@ -144,7 +179,7 @@ def summary_text(state: dict, session_label: str) -> str:
     lines.append("目前無留倉")
   news = state.get("news") or {}
   if news.get("mode") in ("elevated", "high", "positive") or news.get("fomc_window"):
-    zh = {"high": "🔴 高風險", "elevated": "🟡 風險升高", "positive": "🟢 偏多消息"}.get(news.get("mode"), "")
+    zh = {"high": "🔴 高風險", "elevated": "🟡 風險升高", "positive": "🟢 偏多消息"}.get(news.get("mode"), "⚪ 一般")
     lines.append("")
     lines.append(f"新聞：{zh}" + ("（聯準會決議時段）" if news.get("fomc_window") else ""))
     for h in (news.get("headlines") or [])[:3]:

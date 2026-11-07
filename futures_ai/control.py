@@ -58,8 +58,6 @@ class GitHubControl:
     self.ledger.set_state("kill_switch", kill)
     msg = ("⛔ 緊急停止：全部平倉並停止新單" if kill else "▶️ 已解除緊急停止，恢復自動交易") + f"（來源：{source}）"
     self.ledger.log(msg, level="KILL" if kill else "WARN")
-    if self.notifier:
-      self.notifier.urgent(msg)
 
   def poll(self) -> None:
     if time.monotonic() - self.last_poll < self.interval:

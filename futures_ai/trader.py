@@ -21,6 +21,7 @@ RISK_STATE: dict = {"mode": "normal", "fomc_window": False}
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉",
            "RETIRE": "AI 下架平倉", "STOP_TIME": "試跑結束時間平倉"}
+BE_OFFSET_PTS = 6  # Breakeven offset (+6 pts) to cover round-trip commission, tax and slippage.
 
 
 def tp_cap(sl_pts: float, tp_pts: float, bars: list, minutes_to_close: float, reason: str) -> tuple[float, str]:
@@ -55,6 +56,28 @@ class AiTrader:
       # Parameters change at most once a week (weekly job), never after a single trade: no stop /
       # take-profit rescaling and no switching to the reversed strategy. Reviews are still written.
       self.brain.fixed, self.brain.allow_flip, self.brain.frozen = True, False, True
+    if hasattr(self.s, "reentry_side"):
+      saved_re = self.ledger.get_state(f"reentry:{self.ai}")
+      if saved_re:
+        self.s.reentry_side = saved_re
+    self._reconcile_startup_orders()
+
+  def _reconcile_startup_orders(self) -> None:
+    """Cancels orphaned WORKING/SUBMITTED entry orders left in the ledger before a restart."""
+    from .calendar import now_tpe
+    p = self.pos
+    keep_ids = {p.get("sl_oid"), p.get("tp_oid")} if p else set()
+    now_iso = now_tpe().isoformat(timespec="seconds")
+    for o in self.ledger.working_orders(self.ai):
+      if o["id"] in keep_ids:
+        continue
+      boid = o.get("broker_order_id")
+      if boid:
+        try:
+          self.broker.cancel(str(boid))
+        except Exception as exc:
+          self.ledger.log(f"啟動清理殘留委託 {boid} 失敗：{exc}", self.ai, "ERROR")
+      self.ledger.update_order(o["id"], now_iso, status="CANCELLED", note="程式啟動清理未完成掛單")
 
   # ---------- persisted state ----------
   @property
@@ -116,10 +139,14 @@ class AiTrader:
       boid = self.broker.limit(code, side, self.qty, price)
     except Exception as exc:
       self.ledger.update_order(oid, t, status="REJECTED", note=f"{note}｜{exc}")
+      self.ledger.log(f"限價進場委託失敗：{exc}", self.ai, "ERROR", ts)
       return
     self.ledger.update_order(oid, t, broker_order_id=boid)
+    anchor_ts = datetime.fromisoformat(entry["bar_end"]) if entry.get("bar_end") else ts
     self.pending[boid] = {"oid": oid, "kind": "ENTRY", "entry": entry, "td": td, "code": code,
-                          "expires": (ts + timedelta(minutes=minutes)).isoformat(), "limit": True}
+                          "expires": (anchor_ts + timedelta(minutes=minutes)).isoformat(), "limit": True}
+    if hasattr(self.s, "reentry_side") and self.ledger.get_state(f"reentry:{self.ai}"):
+      self.ledger.set_state(f"reentry:{self.ai}", None)
     d = 1 if side == "B" else -1
     self.ledger.log(f"📣 訊號：{'做多' if side == 'B' else '放空'}｜進場（限價）：{price:.0f}（{minutes:.0f} 分鐘內有效）"
                     f"｜停損：{price - d * entry['sl_pts']:.0f}（{entry['sl_pts']:.0f} 點）"
@@ -127,11 +154,12 @@ class AiTrader:
 
   def _expire_limits(self, ts: datetime, force: str | None = None) -> None:
     for boid, info in list(self.pending.items()):
-      if info.get("limit") and (force or ts.isoformat() > info["expires"]):
+      if info.get("limit") and (force or ts.isoformat() >= info["expires"]):
         try:
           self.broker.cancel(boid)
         except Exception as exc:
           self.ledger.log(f"刪除限價單失敗：{exc}", self.ai, "ERROR", ts)
+          continue
         self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
                                  note=force or "限價單逾時未成交，已刪除")
         e = info.get("entry") or {}
@@ -140,11 +168,22 @@ class AiTrader:
         del self.pending[boid]
 
   def _expire_markets(self, ts: datetime) -> None:
-    """A market (IOC) order with no fill report after `market_timeout_seconds` is treated as unfilled
-    (e.g. cancelled by the exchange), so the stop / take-profit monitor resumes and re-fires next poll."""
+    """Reconciles a market (IOC) order with no fill report after `market_timeout_seconds`."""
     limit = timedelta(seconds=self.cfg.get("market_timeout_seconds", 20))
     for boid, info in list(self.pending.items()):
       if not info.get("limit") and info.get("sent") and ts - datetime.fromisoformat(info["sent"]) > limit:
+        if hasattr(self.broker, "reconcile_order") and self.broker.reconcile_order(boid):
+          self.process_fills(ts)
+          continue
+        if self.broker.name != "local_paper":
+          self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="REJECTED",
+                                   note="市價單逾時且對帳無成交回報，啟動緊急停止")
+          self.ledger.set_state("kill_switch", {"ts": ts.isoformat(timespec="seconds"),
+                                                "reason": f"{self.ai} 市價單 {boid} 逾時未收到成交回報"})
+          self.ledger.log(f"⛔ {KIND_ZH.get(info['kind'], info['kind'])} 市價單逾時未收到永豐回報，啟動緊急停止（禁止自動重送）",
+                          self.ai, "KILL", ts)
+          del self.pending[boid]
+          continue
         self.ledger.update_order(info["oid"], ts.isoformat(timespec="seconds"), status="CANCELLED",
                                  note="市價單逾時未收到成交回報，視為未成交，重新監控")
         self.ledger.log(f"{KIND_ZH.get(info['kind'], info['kind'])} 市價單逾時未成交，將重新送出", self.ai, "WARN", ts)
@@ -153,7 +192,7 @@ class AiTrader:
   def _cancel_working(self, ts: datetime, code: str, reason: str) -> None:
     """Cancels every unfilled order of this AI (ledger triggers + broker-side resting orders)."""
     for o in self.ledger.working_orders(self.ai):
-      if o["order_type"] in ("STOP", "TAKE"):
+      if o["order_type"] in ("STOP", "TAKE", "LMT"):
         self.ledger.update_order(o["id"], ts.isoformat(timespec="seconds"), status="CANCELLED", note=reason)
     try:
       self.broker.cancel_all(code)
@@ -164,7 +203,10 @@ class AiTrader:
     for f in self.broker.poll_fills():
       info = self.pending.pop(f["broker_order_id"], None)
       if info is None:
-        self.ledger.log(f"收到未知委託成交 {f}", self.ai, "WARN", ts)
+        self.ledger.log(f"⛔ 收到未知委託成交 {f}，啟動緊急保護", self.ai, "ERROR", ts)
+        if self.broker.name != "local_paper":
+          self.ledger.set_state("kill_switch", {"ts": ts.isoformat(timespec="seconds"),
+                                                "reason": f"未知委託成交 {f}"})
         continue
       t = ts.isoformat(timespec="seconds")
       self.ledger.update_order(info["oid"], t, status="FILLED", fill_price=f["price"])
@@ -181,15 +223,17 @@ class AiTrader:
     sl = round((price - d * e["sl_pts"]) / tick) * tick  # Trigger prices must sit on the tick grid.
     tp = round((price + d * e["tp_pts"]) / tick) * tick
     t = ts.isoformat(timespec="seconds")
+    sk = e["session_key"]
+    self.ledger.set_state(f"cnt:{self.ai}:{sk}", self.entries(sk) + 1)
     common = dict(ai=self.ai, ts=t, trading_day=info["td"], contract=info["code"], side=opposite(side),
                   qty=self.qty, status="WORKING", broker=self.broker.name)
     tp_oid = self.ledger.add_order(kind="TP", order_type="TAKE", trigger_price=tp, note=f"停利觸價 {tp:.0f}", **common)
     sl_oid = self.ledger.add_order(kind="SL", order_type="STOP", trigger_price=sl, note=f"停損觸價 {sl:.0f}", **common)
     self.pos = {"side": side, "qty": self.qty, "entry_price": price, "entry_ts": t, "contract": info["code"],
-                "trading_day": info["td"], "session_key": e["session_key"], "sl": sl, "tp": tp,
+                "trading_day": info["td"], "session_key": sk, "sl": sl, "tp": tp,
                 "sl_oid": sl_oid, "tp_oid": tp_oid, "entry_cost": self.side_cost(price, self.qty),
                 "reason": e["reason"], "regime": e.get("regime", "chop"), "mode": e.get("mode", "native"),
-                "mfe": 0.0, "mae": 0.0, "trail": e.get("trail_pts")}
+                "mfe": 0.0, "mae": 0.0, "trail": e.get("trail_pts"), "init_sl_pts": float(e["sl_pts"])}
     ENTRY_BUS[self.ai] = {"bar_end": e.get("bar_end"), "side": side, "sl_pts": e["sl_pts"], "tp_pts": e["tp_pts"],
                           "price": price, "reason": e["reason"]}
     self.ledger.log(f"✅ {'做多' if side == 'B' else '放空'}成交｜進場：{price:.0f}"
@@ -197,6 +241,7 @@ class AiTrader:
                     f"｜{e['reason']}", self.ai, "TRADE", ts)
 
   def _close(self, ts: datetime, info: dict, price: float) -> None:
+    from .calendar import trading_day as td_fn
     p = self.pos
     if not p:
       return
@@ -204,21 +249,24 @@ class AiTrader:
     points = (price - p["entry_price"]) * d
     gross = points * self.pv * p["qty"]
     cost = p["entry_cost"] + self.side_cost(price, p["qty"])
-    self.ledger.add_trade(ai=self.ai, trading_day=p["trading_day"], contract=p["contract"], side=p["side"],
+    net = gross - cost
+    trade_td = td_fn(ts).isoformat() if getattr(self.s, "hold_overnight", False) else p["trading_day"]
+    self.ledger.add_trade(ai=self.ai, trading_day=trade_td, contract=p["contract"], side=p["side"],
                           qty=p["qty"], entry_ts=p["entry_ts"], entry_price=p["entry_price"],
                           exit_ts=ts.isoformat(timespec="seconds"), exit_price=price, points=points,
-                          gross_twd=gross, cost_twd=cost, pnl_twd=gross - cost, exit_kind=info["kind"],
+                          gross_twd=gross, cost_twd=cost, pnl_twd=net, exit_kind=info["kind"],
                           entry_reason=p["reason"])
     self.pos = None
     self.ledger.set_state(f"last_exit:{self.ai}", ts.isoformat())
     self._cancel_working(ts, info["code"], "部位已平倉，刪除剩餘委託")
     self.ledger.log(f"🏁 {KIND_ZH.get(info['kind'], info['kind'])}平倉｜進場：{p['entry_price']:.0f} → 出場：{price:.0f}"
-                    f"（{points:+.0f} 點）｜淨損益 NT$ {gross - cost:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
+                    f"（{points:+.0f} 點）｜淨損益 NT$ {net:+,.0f}，等待下次進場", self.ai, "TRADE", ts)
     if info["kind"] == "ROLL" and hasattr(self.s, "reentry_side"):
       self.s.reentry_side = p["side"]  # Re-open in the new contract if the trend is intact.
-    if info["kind"] == "SL" and getattr(self.s, "block_after_stop", False):
+      self.ledger.set_state(f"reentry:{self.ai}", p["side"])
+    if info["kind"] == "SL" and net < 0 and getattr(self.s, "block_after_stop", False):
       self.ledger.set_state(f"block:{self.ai}", {"side": p["side"], "ts": ts.isoformat()})
-    lesson = self.brain.review(ts, p, price, info["kind"], gross - cost)
+    lesson = self.brain.review(ts, p, price, info["kind"], net)
     self.ledger.log(f"🧠 檢討：{lesson['diagnosis']}｜{'；'.join(lesson['adjustments'])}", self.ai, "LEARN", ts)
 
   # ---------- decisions ----------
@@ -230,102 +278,106 @@ class AiTrader:
     self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), quote, KIND_ZH[kind])
 
   def on_price(self, ts: datetime, td: str, code: str, quote: dict, minutes_to_close: float, kill: bool) -> None:
-    if hasattr(self.broker, "on_quote"):
-      self.broker.on_quote(quote)
-    self.process_fills(ts)
     if kill:
       self._expire_limits(ts, "緊急停止，刪除限價單")
-    elif minutes_to_close <= self.cfg["flatten_minutes_before_close"] + 1 and not getattr(self.s, "hold_overnight", False):
+    elif minutes_to_close <= self.cfg["no_entry_minutes_before_close"] and not getattr(self.s, "hold_overnight", False):
       self._expire_limits(ts, "接近收盤，刪除未成交限價單")
     else:
       self._expire_limits(ts)
+    had_pos = self.pos is not None
+    if hasattr(self.broker, "on_quote"):
+      self.broker.on_quote(quote)
+    self.process_fills(ts)
     self._expire_markets(ts)
     p = self.pos
     last = quote["last"]
     hi, lo = max(last, quote.get("hi") or last), min(last, quote.get("lo") or last)
     if p and not self.pending:
       d = 1 if p["side"] == "B" else -1
-      fav = (hi - p["entry_price"]) * d if d == 1 else (p["entry_price"] - lo)
-      adv = (p["entry_price"] - lo) if d == 1 else (hi - p["entry_price"])
-      if fav > p.get("mfe", 0) or adv > p.get("mae", 0):  # Track best / worst excursion for the review.
-        p["mfe"], p["mae"] = max(p.get("mfe", 0), fav), max(p.get("mae", 0), adv)
-        self.pos = p
-      sl_hit = lo <= p["sl"] if p["side"] == "B" else hi >= p["sl"]
-      tp_hit = hi >= p["tp"] if p["side"] == "B" else lo <= p["tp"]
       if kill:
         self.flatten(ts, code, quote, "KILL")
-      elif sl_hit:  # If both were touched within one poll, assume the stop came first (conservative).
-        self._fire(ts, quote, "SL", p["sl_oid"])
-      elif tp_hit:
-        self._fire(ts, quote, "TP", p["tp_oid"])
       elif minutes_to_close <= self.cfg["flatten_minutes_before_close"] and not getattr(self.s, "hold_overnight", False):
         self.flatten(ts, code, quote, "SESSION_END")
-      elif getattr(self.s, "hold_overnight", False) and self.unrealized(last) < -(
-          self.cfg["capital_per_ai_twd"] - self.cfg.get("maintenance_margin_twd", 26900)):
-        self.ledger.log("未實現虧損逼近維持保證金，強制平倉避免追繳", self.ai, "WARN", ts)
-        self.flatten(ts, code, quote, "RISK")
-      # 2026-11-07: removed "news against the position -> halve the trailing distance" (never in the backtest;
-      # its only trigger, 11/03, cut a swing short: live +15,468 vs simulated +26,129).
-      elif p.get("trail"):  # Ratchet the trailing stop (after the stop check, conservative).
-        tick = self.cfg["tick"]
-        best = p["entry_price"] + p["mfe"] if p["side"] == "B" else p["entry_price"] - p["mfe"]
-        new_sl = round((best - p["trail"] if p["side"] == "B" else best + p["trail"]) / tick) * tick
-        if (p["side"] == "B" and new_sl > p["sl"]) or (p["side"] == "S" and new_sl < p["sl"]):
-          p["sl"] = new_sl
+      elif had_pos:
+        fav = (hi - p["entry_price"]) * d if d == 1 else (p["entry_price"] - lo)
+        adv = (p["entry_price"] - lo) if d == 1 else (hi - p["entry_price"])
+        if fav > p.get("mfe", 0) or adv > p.get("mae", 0):  # Track best / worst excursion for the review.
+          p["mfe"], p["mae"] = max(p.get("mfe", 0), fav), max(p.get("mae", 0), adv)
           self.pos = p
-          self.ledger.update_order(p["sl_oid"], ts.isoformat(timespec="seconds"), trigger_price=new_sl,
-                                   note=f"移動停損上調至 {new_sl:.0f}" if p["side"] == "B" else f"移動停損下調至 {new_sl:.0f}")
-    if (self.cfg.get("enforce_daily_loss", True) and not self.learning and self.locked_day() != td
-        and self.today_pnl(td, last) <= -self.cfg["max_daily_loss_twd"]):
-      self.ledger.set_state(f"lock:{self.ai}", td)
-      self.ledger.log(f"今日損益已達 -NT$ {self.cfg['max_daily_loss_twd']:,}，停止今日交易", self.ai, "WARN", ts)
-      if self.pos:
-        self.flatten(ts, code, quote, "RISK")
+        sl_hit = lo <= p["sl"] if p["side"] == "B" else hi >= p["sl"]
+        tp_hit = hi >= p["tp"] if p["side"] == "B" else lo <= p["tp"]
+        if sl_hit:  # If both were touched within one poll, assume the stop came first (conservative).
+          self._fire(ts, quote, "SL", p["sl_oid"])
+        elif tp_hit:
+          self._fire(ts, quote, "TP", p["tp_oid"])
+        elif getattr(self.s, "hold_overnight", False) and (
+            self.cfg["capital_per_ai_twd"] + self.ledger.realized(self.ai) + self.unrealized(last)
+            < self.cfg.get("maintenance_margin_twd", 26900)
+            or self.unrealized(last) < -(self.cfg["capital_per_ai_twd"] - self.cfg.get("maintenance_margin_twd", 26900))):
+          self.ledger.log("未實現虧損逼近維持保證金，強制平倉避免追繳", self.ai, "WARN", ts)
+          self.flatten(ts, code, quote, "RISK")
+        else:
+          tick = self.cfg["tick"]
+          cand_sl = p["sl"]
+          be_r = getattr(self.s, "be_r", None)
+          init_sl = p.get("init_sl_pts") or abs(p["entry_price"] - p["sl"])
+          if be_r and init_sl and p.get("mfe", 0) >= be_r * init_sl:
+            be_sl = round((p["entry_price"] + d * BE_OFFSET_PTS) / tick) * tick
+            cand_sl = max(cand_sl, be_sl) if d == 1 else min(cand_sl, be_sl)
+          if p.get("trail"):
+            if hasattr(self.s, "current_atr"):
+              a60 = self.s.current_atr()
+              if a60 is not None:
+                p["trail"] = round(self.s.atr_k * a60)
+            best = p["entry_price"] + p["mfe"] if d == 1 else p["entry_price"] - p["mfe"]
+            tr_sl = round((best - d * p["trail"]) / tick) * tick
+            cand_sl = max(cand_sl, tr_sl) if d == 1 else min(cand_sl, tr_sl)
+          if (d == 1 and cand_sl > p["sl"]) or (d == -1 and cand_sl < p["sl"]):
+            p["sl"] = cand_sl
+            self.pos = p
+            self.ledger.update_order(p["sl_oid"], ts.isoformat(timespec="seconds"), trigger_price=cand_sl,
+                                     note=f"停損上調至 {cand_sl:.0f}" if d == 1 else f"停損下調至 {cand_sl:.0f}")
     self.process_fills(ts)
+    if (self.cfg.get("enforce_daily_loss", True) and not getattr(self.s, "hold_overnight", False)
+        and self.locked_day() != td and self.ledger.realized(self.ai, td) <= -self.cfg["max_daily_loss_twd"]):
+      self.ledger.set_state(f"lock:{self.ai}", td)
+      self.ledger.log(f"今日已實現損益達 -NT$ {self.cfg['max_daily_loss_twd']:,}，今日不再進新單", self.ai, "WARN", ts)
 
   def _fire(self, ts: datetime, quote: dict, kind: str, trigger_oid: int) -> None:
     p = self.pos
     t = ts.isoformat(timespec="seconds")
     self.ledger.update_order(trigger_oid, t, status="TRIGGERED", note=f"{KIND_ZH[kind]}（成交價 {quote['last']:.0f}）")
     self._cancel_working(ts, p["contract"], f"{KIND_ZH[kind]}，刪除其他未成交委託")
-    # The trigger fires the instant the price touches it. Between two 3-second polls the price may
-    # already have moved on, so the paper fill is anchored at the trigger: take-profit fills at the
-    # trigger (minus slippage); a stop fills at the trigger or worse if the market gapped through it.
     trig = p["tp"] if kind == "TP" else p["sl"]
+    open_p = quote.get("open") or trig
     q = dict(quote)
     if p["side"] == "B":  # Exit is a sell.
-      q["bid"] = trig if kind == "TP" else min(trig, quote.get("bid") or quote["last"])
+      q["bid"] = trig if kind == "TP" else min(trig, open_p)
     else:
-      q["ask"] = trig if kind == "TP" else max(trig, quote.get("ask") or quote["last"])
+      q["ask"] = trig if kind == "TP" else max(trig, open_p)
     self._send_market(ts, p["trading_day"], p["contract"], kind, opposite(p["side"]), q, KIND_ZH[kind])
 
   def _filter(self, sig, bars: list[Bar]) -> str | None:
     """Universal guards applied after learning. Returns a skip reason or None."""
-    mode = RISK_STATE.get("mode", "normal")
     hold = getattr(self.s, "hold_overnight", False)
     if RISK_STATE.get("fomc_window") and not hold:
       return "🏦 聯準會利率決議前後 1 小時，暫停當沖進場"
-    # News tilt (mild, "keep an eye on it"): the strategy logic decides. Elevated news only gets logged.
-    # In a high-risk spike, a trade AGAINST the news needs one light confirmation: price already on the
-    # right side of VWAP (i.e. the market itself is not following the news).
-    against_news = (mode == "high" and sig.side == "B") or (mode == "positive" and sig.side == "S")
-    if against_news and bars:
-      want = 1 if sig.side == "B" else -1
-      if (bars[-1].c - vwap(bars)) * want <= 0:
-        news_zh = "利空新聞" if sig.side == "B" else "利多新聞"
-        return f"📰 {news_zh}期間，價格也還沒站到 VWAP 有利的一側，這筆{'做多' if sig.side == 'B' else '放空'}先不進"
     regime, er, direction = market_regime(bars)
     against = (sig.side == "B" and direction < 0) or (sig.side == "S" and direction > 0)
     if regime == "trend" and against and not getattr(self.s, "skip_trend_filter", False):
       return f"5 分K 強{'多' if direction > 0 else '空'}趨勢（ER {er:.2f}），不逆勢{'做多' if sig.side == 'B' else '放空'}"
     block = self.ledger.get_state(f"block:{self.ai}")
-    if block and bars and block["ts"] < (bars[0].end - timedelta(minutes=5)).isoformat():
-      self.ledger.set_state(f"block:{self.ai}", None)  # Stop-loss in an earlier session: reset (as in wfo).
-      block = None
+    if block and bars:
+      from .calendar import session_of
+      _, s_start, _ = session_of(bars[-1].end - timedelta(seconds=1))
+      reset_before = s_start.isoformat() if s_start else (bars[0].end - timedelta(minutes=5)).isoformat()
+      if block["ts"] < reset_before:
+        self.ledger.set_state(f"block:{self.ai}", None)  # Stop-loss in an earlier session: reset (as in wfo).
+        block = None
     if block and block["side"] == sig.side:
       # Same as the simulator: a bar after the stop touched the session VWAP as it was AT that bar.
       touched, pv, vol = False, 0.0, 0.0
-      span = (bars[-1].end - bars[-2].end) if len(bars) >= 2 else timedelta(minutes=5)  # Bar length (5 min live).
+      span = (bars[-1].end - bars[-2].end) if len(bars) >= 2 else timedelta(minutes=1)
       for b in bars:
         pv += (b.h + b.l + b.c) / 3 * b.v
         vol += b.v
@@ -345,28 +397,40 @@ class AiTrader:
     rules = getattr(self.s, "rules", None) or {}
     if not rules or not bars:
       return None
-    from datetime import timedelta
-    start = bars[0].end - timedelta(minutes=5)
+    from .calendar import session_of
+    _, s_start, _ = session_of(bars[-1].end - timedelta(seconds=1))
+    start = s_start or (bars[0].end - timedelta(minutes=5))
     now = bars[-1].end
     if rules.get("open_delay") and now < start + timedelta(minutes=rules["open_delay"]):
       return f"📚 經驗規則：開盤 {rules['open_delay']} 分鐘內不進場"
-    sls = self.ledger.rows("SELECT side, exit_ts FROM trades WHERE ai=? AND exit_ts>=? AND exit_kind='SL' "
-                           "AND pnl_twd<0 ORDER BY exit_ts", (self.ai, start.isoformat()))
-    if rules.get("max_sl") and len(sls) >= rules["max_sl"]:
-      return f"📚 經驗規則：這一盤已停損 {len(sls)} 次，今天這盤休息"
-    if rules.get("rev_cool") and sls:
-      last = sls[-1]
-      if last["side"] != sig.side and now < datetime.fromisoformat(last["exit_ts"]) + timedelta(minutes=rules["rev_cool"]):
-        return f"📚 經驗規則：剛停損，{rules['rev_cool']} 分鐘內不反手"
+    trades = self.ledger.rows("SELECT side, exit_ts, exit_kind, pnl_twd FROM trades WHERE ai=? AND exit_ts>=? "
+                              "ORDER BY exit_ts, id", (self.ai, start.isoformat()))
+    consec_sl = 0
+    for r in reversed(trades):
+      if r["exit_kind"] == "SL" and r["pnl_twd"] < 0:
+        consec_sl += 1
+      elif r["pnl_twd"] > 0:
+        break
+    if rules.get("max_sl") and consec_sl >= rules["max_sl"]:
+      return f"📚 經驗規則：這一盤已連續停損 {consec_sl} 次，今天這盤休息"
+    if rules.get("rev_cool") and trades:
+      last = trades[-1]
+      if last["exit_kind"] == "SL" and last["pnl_twd"] < 0 and last["side"] != sig.side:
+        ex_dt = datetime.fromisoformat(last["exit_ts"])
+        sl_bar_end = ex_dt.replace(second=0, microsecond=0) + (timedelta(minutes=1) if ex_dt.second > 0 else timedelta())
+        if (now - sl_bar_end).total_seconds() / 60 < rules["rev_cool"]:
+          return f"📚 經驗規則：剛停損，{rules['rev_cool']} 分鐘內不反手"
     return None
 
   def on_bar(self, ts: datetime, td: str, code: str, session_key: str, bars: list[Bar], quote: dict,
-             minutes_to_close: float, fresh: bool, kill: bool) -> None:
-    if self.pos or self.pending or kill or not fresh:
+             minutes_to_close: float, fresh: bool, kill: bool, bars1: list[Bar] | None = None) -> None:
+    if not kill:
+      self._expire_limits(ts)
+    if self.pos or self.pending or kill or not fresh or minutes_to_close <= 0:
       return
-    locked = self.cfg.get("enforce_daily_loss", True) and not self.learning and self.locked_day() == td
-    no_entry = self.cfg["flatten_minutes_before_close"] + 1 if self.learning else self.cfg["no_entry_minutes_before_close"]
     hold = getattr(self.s, "hold_overnight", False)
+    locked = self.cfg.get("enforce_daily_loss", True) and not hold and self.locked_day() == td
+    no_entry = self.cfg["no_entry_minutes_before_close"]
     if locked or (minutes_to_close <= no_entry and not hold):
       return
     hours = getattr(self.s, "hours", None)
@@ -381,27 +445,36 @@ class AiTrader:
       if bars and le >= bars[0].end:
         since = sum(1 for b in bars if b.end > le)
     self.brain.daily_decay(td)
-    if not self.learning:
-      if self.brain.paused(ts) or self.entries(session_key) >= self.cfg["max_entries_per_session"]:
-        return
-    # Learning mode: no per-session caps or re-entry cool-downs inside the strategies either.
-    raw = self.s.decide(bars, 0 if self.learning else self.entries(session_key), None if self.learning else since)
+    cap_s = getattr(self.s, "max_entries", None)
+    cap = min(cap_s, self.cfg["max_entries_per_session"]) if cap_s else self.cfg["max_entries_per_session"]
+    n_ent = self.entries(session_key)
+    if n_ent >= cap:
+      return
+    try:
+      raw = self.s.decide(bars, n_ent, since, bars1)
+    except TypeError:
+      raw = self.s.decide(bars, n_ent, since)
     if raw is None:
       return
-    sig, ctx = self.brain.adjust(raw, bars)
-    why = ctx["why"] if sig is None else self._filter(sig, bars)
+    b1 = bars1 if bars1 else bars
+    sig, ctx = self.brain.adjust(raw, b1)
+    why = ctx["why"] if sig is None else self._filter(sig, b1)
     if why:
       self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": why})
       return
-    self.ledger.set_state(f"cnt:{self.ai}:{session_key}", self.entries(session_key) + 1)
+    exp_base = bars[-1].end if (bars and abs((ts - bars[-1].end).total_seconds()) <= 300) else ts
     if getattr(self.s, "fixed_bracket", False):
       tp_pts, reason = sig.tp_pts, sig.reason
     else:
-      tp_pts, reason = tp_cap(sig.sl_pts, sig.tp_pts, bars, minutes_to_close, sig.reason)
+      from .calendar import session_of
+      _, _, s_close = session_of(exp_base - timedelta(seconds=1)) if bars else (None, None, None)
+      eff_mtc = (s_close - exp_base).total_seconds() / 60 if s_close else minutes_to_close
+      rem_min = eff_mtc if abs(eff_mtc - minutes_to_close) <= 5 else minutes_to_close
+      tp_pts, reason = tp_cap(sig.sl_pts, sig.tp_pts, bars, rem_min, sig.reason)
     entry = {"side": sig.side, "sl_pts": sig.sl_pts, "tp_pts": tp_pts, "reason": reason,
              "trail_pts": getattr(sig, "trail_pts", None),
              "session_key": session_key, "regime": ctx["regime"], "mode": ctx["mode"],
-             "bar_end": bars[-1].end.isoformat() if bars else None}
+             "bar_end": exp_base.isoformat()}
     lim = getattr(sig, "limit_price", None)
     if lim is None and getattr(self.s, "limit_atr", None) is not None:
       from .strategies import atr as atr_fn  # Limit = last close pulled back by limit_atr x ATR (5-min).
@@ -409,8 +482,6 @@ class AiTrader:
       lim = round(bars[-1].c - d * self.s.limit_atr * atr_fn(bars))
     if lim is not None:
       self._send_limit(ts, td, code, sig.side, lim, getattr(self.s, "limit_min", 10), reason, entry)
-      if hasattr(self.broker, "on_quote"):
-        self.broker.on_quote(quote)  # Marketable immediately if price is already through the limit.
     else:
       self._send_market(ts, td, code, "ENTRY", sig.side, quote, reason, entry)
     self.process_fills(ts)

@@ -71,28 +71,50 @@ def sinopac_status(cfg: dict) -> bool:
     api.update_status(acct)
     fills = []
     for t in api.list_trades():
+      code = getattr(getattr(t, "contract", None), "code", "")
+      if code and not code.startswith(cfg["product"]):
+        continue
       for d in (getattr(t.status, "deals", None) or []):
         side = 1 if "Buy" in str(t.order.action) else -1
         ts = getattr(d, "ts", 0)
-        when = datetime.fromtimestamp(ts, TPE) if isinstance(ts, (int, float)) and ts else getattr(t.status, "order_datetime", None)
+        if isinstance(ts, (int, float)) and ts:
+          if ts > 1e15:
+            ts = ts / 1e9
+          elif ts > 1e11:
+            ts = ts / 1e3
+          when = datetime.fromtimestamp(ts, TPE)
+        else:
+          when = getattr(t.status, "order_datetime", None)
+          if isinstance(when, datetime) and when.tzinfo is None:
+            when = when.replace(tzinfo=TPE)
         fills.append((when, side, float(d.price), int(d.quantity)))
     fills.sort(key=lambda f: f[0])
-    pos, entry, entry_t, total, n, wins = 0, 0.0, None, 0.0, 0, 0
+    pos, entry, entry_t, entry_cost, total, n, wins = 0, 0.0, None, 0.0, 0.0, 0, 0
     pv, fee, tax = cfg["point_value"], cfg["commission_per_side_twd"], cfg["tax_rate"]
     for when, side, price, qty in fills:
-      cost = fee * qty + round(price * pv * qty * tax)
-      if pos == 0:
-        pos, entry, entry_t, entry_cost = side * qty, price, when, cost
-        continue
-      if side == -1 * (1 if pos > 0 else -1):  # Closing fill.
+      rem = qty
+      while rem > 0 and pos != 0 and side == (-1 if pos > 0 else 1):
+        close_qty = min(abs(pos), rem)
+        open_cost = entry_cost * (close_qty / abs(pos))
+        close_cost = fee * close_qty + round(price * pv * close_qty * tax)
         pts = (price - entry) * (1 if pos > 0 else -1)
-        pnl = pts * pv * abs(pos) - entry_cost - cost
+        pnl = pts * pv * close_qty - open_cost - close_cost
         total += pnl
         n += 1
         wins += pnl > 0
         print(f"{entry_t:%m/%d %H:%M} {'做多' if pos > 0 else '放空'} {entry:.0f} → {when:%H:%M} 出場 {price:.0f}"
               f"｜{pts:+.0f} 點｜{pnl:+,.0f} 元")
-        pos = 0
+        entry_cost -= open_cost
+        pos += side * close_qty
+        rem -= close_qty
+      if rem > 0:
+        add_cost = fee * rem + round(price * pv * rem * tax)
+        if pos == 0:
+          pos, entry, entry_t, entry_cost = side * rem, price, when, add_cost
+        else:
+          entry = (entry * abs(pos) + price * rem) / (abs(pos) + rem)
+          pos += side * rem
+          entry_cost += add_cost
     if pos:
       print(f"{entry_t:%m/%d %H:%M} {'多' if pos > 0 else '空'}單 {entry:.0f} 尚未平倉")
     if n:

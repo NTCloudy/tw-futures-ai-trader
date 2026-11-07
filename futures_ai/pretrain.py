@@ -18,7 +18,7 @@ from collections import defaultdict
 from datetime import date, datetime, time, timedelta
 
 from .brokers import LocalPaperBroker
-from .calendar import TPE, active_month, contract_code
+from .calendar import TPE, active_month, contract_code, is_business_day, now_tpe
 from .config import ROOT
 from .feed import Bar
 from .learning import EMPTY, clamp, SL_RANGE, TP_RANGE
@@ -68,11 +68,12 @@ def sessions_from_file(data: bytes, td: date, product: str, roll_days: int) -> l
     t = time(hh, mm, ss)
     if time(8, 45) <= t <= time(13, 45):
       name = "day"
-    elif t >= time(15, 0) or t < time(5, 0):
+      end = datetime.combine(d, time(13, 45), TPE) if t == time(13, 45, 0) else datetime.combine(d, time(hh, mm), TPE) + timedelta(minutes=1)
+    elif t >= time(15, 0) or t <= time(5, 0, 0):
       name = "night"
+      end = datetime.combine(d, time(5, 0), TPE) if t == time(5, 0, 0) else datetime.combine(d, time(hh, mm), TPE) + timedelta(minutes=1)
     else:
       continue
-    end = datetime.combine(d, time(hh, mm), TPE) + timedelta(minutes=1)
     buckets[name][end].append((price, qty))
   out = []
   for name in ("night", "day"):
@@ -91,11 +92,11 @@ def replay(cfg: dict, days: int = 20, log=print) -> dict:
   ledger = Ledger(":memory:")
   traders = [AiTrader(cfg, s, LocalPaperBroker(cfg), ledger) for s in build_strategies()]
   files: list[tuple[date, bytes]] = []
-  d = date.today() - timedelta(days=1)
+  d = now_tpe().date() - timedelta(days=1)
   tries = 0
   while len(files) < days and tries < 60:
     tries += 1
-    if d.weekday() < 5:
+    if is_business_day(d):
       data = download(d)
       if data:
         files.append((d, data))

@@ -58,8 +58,9 @@ def serve(cfg: dict, ledger: Ledger, port: int) -> None:
     def do_POST(self):
       if self.path == "/api/kill":
         body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
-        ledger.set_state("kill_switch", bool(body.get("on")))
-        ledger.log(f"緊急停止 {'啟動' if body.get('on') else '解除'}（本機儀表板）", level="WARN")
+        on = bool(body.get("on"))
+        ledger.set_state("kill_switch", on)
+        ledger.log(f"緊急停止 {'啟動' if on else '解除'}（本機儀表板）", level="KILL" if on else "WARN")
         self._send(200, b'{"ok":true}', "application/json")
       else:
         self._send(404, b"not found", "text/plain")
@@ -80,6 +81,8 @@ def restore(cfg: dict, force: bool) -> int:
     return 1
   url = f"https://raw.githubusercontent.com/{cfg['publish']['repo']}/{cfg['publish']['branch']}/backup/futures.db"
   db.parent.mkdir(parents=True, exist_ok=True)
+  Path(str(db) + "-wal").unlink(missing_ok=True)
+  Path(str(db) + "-shm").unlink(missing_ok=True)
   with urllib.request.urlopen(url, timeout=30) as r:
     db.write_bytes(r.read())
   n = Ledger(str(db)).rows("SELECT COUNT(*) n FROM trades")[0]["n"]
@@ -157,8 +160,9 @@ def main(argv=None) -> int:
   elif args.cmd == "dashboard":
     serve(cfg, ledger, args.port or cfg["dashboard_port"])
   elif args.cmd == "kill":
-    ledger.set_state("kill_switch", args.state == "on")
-    ledger.log(f"緊急停止 {'啟動' if args.state == 'on' else '解除'}（CLI）", level="WARN")
+    on = args.state == "on"
+    ledger.set_state("kill_switch", on)
+    ledger.log(f"緊急停止 {'啟動' if on else '解除'}（CLI）", level="KILL" if on else "WARN")
     print(f"kill_switch = {args.state}")
   elif args.cmd == "replay":
     from .replay import run_replay, summary_lines
@@ -171,12 +175,8 @@ def main(argv=None) -> int:
     rep = walk_forward(cfg, args.train_days, args.test_days)
     print(f"報告：{save_report(rep)}")
   elif args.cmd == "pretrain":
-    from .pretrain import merge_into_live, replay
-    res = replay(cfg, args.days)
-    for ai, info in res["ais"].items():
-      print(f"  {ai}: 歷史模擬 {info['trades']} 筆，勝 {info['wins']}，損益 NT$ {info['pnl']:+,.0f}")
-    merge_into_live(ledger, res)
-    print("已把歷史經驗合併到 AI 學習狀態（交易紀錄不會出現在儀表板）。請重新啟動引擎讓它載入。")
+    print("此舊版 1 分K 預訓練工具已停用（請使用 weekly 5 分K 滾動前進訓練與自動驗證機制）。")
+    return 0
   elif args.cmd == "sinopac-status":
     from .sinopac_setup import sinopac_status
     return 0 if sinopac_status(cfg) else 1

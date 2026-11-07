@@ -19,6 +19,7 @@ import subprocess
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from .calendar import now_tpe
 from .config import ROOT
 
 OUT_DIR = ROOT / "data" / "kbars"
@@ -93,9 +94,10 @@ def fetch_kbars(api, contract, start: date, end: date, log=print) -> list[tuple]
     log(f"  {cur} ～ {nxt}：{n} 根 1 分K")
     cur = nxt + timedelta(days=1)
   rows.sort(key=lambda r: r[0])
+  cutoff = now_tpe().replace(tzinfo=None, second=0, microsecond=0)
   dedup, seen = [], set()
   for r in rows:
-    if r[0] not in seen:
+    if r[0] not in seen and r[0] <= cutoff:
       seen.add(r[0])
       dedup.append(r)
   return dedup
@@ -127,7 +129,7 @@ def export_history(days: int = 365, production: bool = False, push: bool = True,
   import shioaji as sj
 
   key, sec = _creds()
-  end = date.today()
+  end = now_tpe().date()
   start = end - timedelta(days=days)
   log(f"登入永豐（{'正式' if production else '模擬'}環境，只使用行情資料 API，不會下單）…")
   api = _login(sj, simulation=not production, key=key, sec=sec)
