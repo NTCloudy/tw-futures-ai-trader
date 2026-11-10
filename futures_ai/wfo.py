@@ -465,6 +465,10 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         continue  # Lesson: stop for the session after N losing stop-outs.
       if p.get("open_delay") and x.end < s_start + timedelta(minutes=p["open_delay"]):
         continue  # Lesson: no entries in the first N minutes of the session.
+      if p.get("min_er") and s.er[i] < p["min_er"]:
+        continue  # Lesson: minimum 5-minute efficiency ratio filter.
+      if p.get("max_vwap_atr") and abs(x.c - s.vwap[i]) > p["max_vwap_atr"] * max(s.atr5[s.k_at[i]], 5.0):
+        continue  # Lesson: do not chase overextended distance from VWAP.
       sig = signal5(ai, p, s, s.k_at[i], i)
       if sig and p.get("rev_cool") and last_sl and sig[0] != last_sl[0] and \
           x.end < last_sl[1] + timedelta(minutes=p["rev_cool"]):

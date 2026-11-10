@@ -328,7 +328,10 @@ class AiTrader:
             if hasattr(self.s, "current_atr"):
               a60 = self.s.current_atr()
               if a60 is not None:
-                p["trail"] = round(self.s.atr_k * a60)
+                tr_d = round(self.s.atr_k * a60)
+                if getattr(self.s, "max_sl_pts", None):
+                  tr_d = min(tr_d, round(self.s.max_sl_pts))
+                p["trail"] = tr_d
             best = p["entry_price"] + p["mfe"] if d == 1 else p["entry_price"] - p["mfe"]
             tr_sl = round((best - d * p["trail"]) / tick) * tick
             cand_sl = max(cand_sl, tr_sl) if d == 1 else min(cand_sl, tr_sl)
@@ -403,6 +406,18 @@ class AiTrader:
     now = bars[-1].end
     if rules.get("open_delay") and now < start + timedelta(minutes=rules["open_delay"]):
       return f"📚 經驗規則：開盤 {rules['open_delay']} 分鐘內不進場"
+    if rules.get("min_er") and not getattr(self.s, "hold_overnight", False):
+      _, er, _ = market_regime(bars)
+      if er < rules["min_er"]:
+        return f"📚 經驗規則：5 分K 效率比 {er:.2f} < {rules['min_er']:.2f}，趨勢純度不足不進場"
+    if rules.get("max_vwap_atr") and not getattr(self.s, "hold_overnight", False):
+      from .strategies import atr as atr_fn
+      from .learning import to_5min
+      b5 = to_5min(bars)
+      a5 = max(atr_fn(b5), 5.0) if len(b5) >= 2 else 20.0
+      vw = vwap(bars)
+      if abs(bars[-1].c - vw) > rules["max_vwap_atr"] * a5:
+        return f"📚 經驗規則：距離均價 {abs(bars[-1].c - vw):.0f} 點 > {rules['max_vwap_atr']}×ATR，不追高殺低"
     trades = self.ledger.rows("SELECT side, exit_ts, exit_kind, pnl_twd FROM trades WHERE ai=? AND exit_ts>=? "
                               "ORDER BY exit_ts, id", (self.ai, start.isoformat()))
     consec_sl = 0

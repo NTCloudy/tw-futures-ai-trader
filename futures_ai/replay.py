@@ -173,7 +173,8 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
     # Omega (swing, multi-day): needs the EMA60 history, so replay the year of K-bars plus the live bars.
     try:
       rs = simulate_swing(c_post, dict(lookback=10, atr_k=4.0, direction="both", entry="limit", limit_atr=0.3,
-                                       tp_atr=10.0, fill_through=1, min_er=0.20, be_r=0.7), allsess, record=True)
+                                       tp_atr=10.0, fill_through=1, min_er=0.20, be_r=0.7,
+                                       max_ext_atr=3.5, max_sl_pts=1200), allsess, record=True)
       sim = [{"entry": e, "side": side, "pnl": net, "kind": why} for e, _x, side, _ep, _xp, net, why in rs["log"]
              if e >= t0]
       lt = live_trades("omega-swing")

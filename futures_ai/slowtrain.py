@@ -16,7 +16,8 @@ from .swing import simulate_swing
 
 NOVA_BASE = dict(anchor="night", regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5, fill_through=1,
                  min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150))
-OMEGA_BASE = dict(direction="both", entry="limit", fill_through=1, min_er=0.20, be_r=0.7)
+OMEGA_BASE = dict(direction="both", entry="limit", fill_through=1, min_er=0.20, be_r=0.7,
+                  max_ext_atr=3.5, max_sl_pts=1200)
 LIVE_DEFAULTS = {
     "nova-nightorb": dict(range_min=30, window=600, sl_frac=1.0, tp_mult=3.0),
     "omega-swing": dict(lookback=10, atr_k=4.0, limit_atr=0.3, tp_atr=10.0),

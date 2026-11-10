@@ -412,12 +412,14 @@ class SwingTrend:
   limit_min = 60
 
   def __init__(self, lookback: int = 10, atr_k: float = 4.0, direction: str = "both", limit_atr: float = 0.3,
-               tp_atr: float = 10.0, min_er: float | None = 0.20, be_r: float | None = 0.7):
+               tp_atr: float = 10.0, min_er: float | None = 0.20, be_r: float | None = 0.7,
+               max_ext_atr: float | None = 3.5, max_sl_pts: float | None = 1200):
     self.lookback, self.atr_k, self.direction, self.limit_atr_60 = lookback, atr_k, direction, limit_atr
     self.tp_atr, self.min_er, self.be_r = tp_atr, min_er, be_r
+    self.max_ext_atr, self.max_sl_pts = max_ext_atr, max_sl_pts
     self.max_entries = None
-    self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60、ER10≥0.20 做多（{'多空都做' if direction == 'both' else '只做多'}），"
-                  f"可留倉過夜，浮盈 0.7 倍停損移至保本+6、{atr_k:g} 倍 ATR 移動停損、{tp_atr:g} 倍 ATR 停利，限價進場")
+    self.style = (f"60 分K 波段：突破前 {lookback} 根高點且 EMA20>EMA60、ER10≥0.20、乖離≤{max_ext_atr or 3.5:g}×ATR 做多（{'多空都做' if direction == 'both' else '只做多'}），"
+                  f"可留倉過夜，浮盈 0.7 倍停損移至保本+6、{atr_k:g} 倍 ATR 移動停損（上限 {max_sl_pts or 1200:.0f} 點）、{tp_atr:g} 倍 ATR 停利，限價進場")
     self.h60: list[Bar] = []  # completed 60-minute bars across sessions (set by the engine)
     self._last_decided = None
     self.reentry_side: str | None = None
@@ -460,6 +462,8 @@ class SwingTrend:
         path = sum(abs(cl10[k] - cl10[k - 1]) for k in range(1, len(cl10)))
         if (abs(cl10[-1] - cl10[0]) / path if path else 0.0) < self.min_er:
           return None
+      if getattr(self, "max_ext_atr", None) and a > 0 and abs(c - ef) > self.max_ext_atr * a:
+        return None
       if c > hi and ef > es:
         side, why = "B", f"60 分K 收盤 {c:.0f} 突破前 {self.lookback} 根高點 {hi:.0f}，EMA20 {ef:.0f} > EMA60 {es:.0f}"
       elif c < lo and ef < es and self.direction == "both":
@@ -468,6 +472,8 @@ class SwingTrend:
       return None
     d = 1 if side == "B" else -1
     trail = round(self.atr_k * a)
+    if getattr(self, "max_sl_pts", None):
+      trail = min(trail, round(self.max_sl_pts))
     tp = round(a * self.tp_atr)  # 10 x ATR(60m) ~ 2,000-2,500 pts: realistic, and best in the 1-year test.
     return Entry(side, trail, tp, f"{why}｜移動停損 {trail} 點、停利 {tp} 點", trail, round(c - d * self.limit_atr_60 * a))
 
@@ -502,8 +508,11 @@ def build_strategies(params: dict | None = None) -> list:
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
-  for st in (alpha, sigma, nova):
+  for st in (alpha, sigma, nova, omega):
     st.rules = dict(lessons.get(st.id, {}))
+    for rk, rv in st.rules.items():
+      if hasattr(st, rk):
+        setattr(st, rk, rv)
   return [alpha, sigma, nova, omega]
 
 

@@ -198,9 +198,11 @@ class Brain:
       adjust = [f"建議（不即時套用，每週統一檢討）：{a}" for a in adjust if "冷靜" not in a]
     nxt, why = self.choose_mode(regime)
     adjust.append(f"下次{REGIME_ZH[regime]}：{self.modes[nxt] if nxt else '暫停進場'}（{why}）")
-    entry = {"ts": now.isoformat(timespec="seconds"), "ai": self.ai, "pnl": round(pnl), "side": pos["side"],
-             "regime": regime, "mode": mode, "exit_kind": exit_kind, "diagnosis": diag, "adjustments": adjust}
-    st["journal"] = ([entry] + st["journal"])[:60]
+    entry = {"ts": now.isoformat(timespec="seconds"), "entry_ts": pos.get("entry_ts"), "ai": self.ai,
+             "pnl": round(pnl), "side": pos["side"], "regime": regime, "mode": mode, "exit_kind": exit_kind,
+             "mfe": round(mfe, 1), "mae": round(mae, 1), "sl_dist": round(sl_dist, 1), "tp_dist": round(tp_dist, 1),
+             "diagnosis": diag, "adjustments": adjust}
+    st["journal"] = ([entry] + st["journal"])[:200]
     self.save()
     return entry
 

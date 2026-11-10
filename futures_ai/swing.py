@@ -109,10 +109,13 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False,
           else:
             pos["best"] = max(pos["best"], x.h) if d == 1 else min(pos["best"], x.l)
             atr = trs and sum(trs[-14:]) / len(trs[-14:]) or 50
-            new_stop = round(pos["best"] - d * p["atr_k"] * atr)
+            trail_dist = p["atr_k"] * atr
+            if p.get("max_sl_pts"):
+              trail_dist = min(trail_dist, p["max_sl_pts"])
+            new_stop = round(pos["best"] - d * trail_dist)
             be_r = p.get("be_r", 0.7)
             if be_r:
-              init_sl = pos.get("init_sl_pts", p["atr_k"] * atr)
+              init_sl = pos.get("init_sl_pts", trail_dist)
               if (pos["best"] - pos["entry"]) * d >= be_r * init_sl:
                 be_px = round(pos["entry"] + d * 6)
                 new_stop = max(new_stop, be_px) if d == 1 else min(new_stop, be_px)
@@ -133,6 +136,8 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False,
           atr = sum(trs[-14:]) / len(trs[-14:])
           d = 1 if pending["side"] == "B" else -1
           init_sl = round(p["atr_k"] * atr)
+          if p.get("max_sl_pts"):
+            init_sl = min(init_sl, round(p["max_sl_pts"]))
           pos = {"side": pending["side"], "entry": px, "stop": round(px - d * init_sl), "best": px,
                  "init_sl_pts": init_sl, "cost_in": cost(cfg, px), "ts": x.end,
                  "tp": round(px + d * p["tp_atr"] * atr) if p.get("tp_atr") else None}
@@ -191,12 +196,17 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False,
         er10 = abs(er_w[-1] - er_w[0]) / path if path else 0.0
         if er10 < min_er:
           continue
+      max_ext = p.get("max_ext_atr", 3.5)
+      if not used_reentry and max_ext and atr > 0 and abs(h60[-1].c - ef) > max_ext * atr:
+        continue
       d = 1 if side == "B" else -1
       if p.get("entry") == "limit":
         pending = {"side": side, "price": round(h60[-1].c - d * p["limit_atr"] * atr), "expires": x.end + timedelta(minutes=60)}
       else:
         px = h60[-1].c + d * 2
         init_sl = round(p["atr_k"] * atr)
+        if p.get("max_sl_pts"):
+          init_sl = min(init_sl, round(p["max_sl_pts"]))
         pos = {"side": side, "entry": px, "stop": round(px - d * init_sl), "best": px,
                "init_sl_pts": init_sl, "cost_in": cost(cfg, px), "ts": x.end,
                "tp": round(px + d * p["tp_atr"] * atr) if p.get("tp_atr") else None}

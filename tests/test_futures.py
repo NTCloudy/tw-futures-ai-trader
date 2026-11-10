@@ -858,17 +858,34 @@ class LessonReviewTest(unittest.TestCase):
     ]
     r = lessons.review(rows, "nova-nightorb")
     self.assertEqual(r["losses"], 3)
-    self.assertEqual(r["tags"], {"consec_sl": 2, "reversal": 1, "early_open": 2, "other": 0})
+    self.assertEqual(r["tags"], {"consec_sl": 2, "reversal": 1, "early_open": 2, "giveback": 0,
+                                 "overextended": 0, "weak_trend": 0, "other": 0})
+
+  def test_tags_giveback_overextended_and_weak_trend(self):
+    from futures_ai import lessons
+    t = lambda h, m: f"2026-11-06T{h:02d}:{m:02d}:00+08:00"
+    rows = [
+        {"entry_ts": t(9, 47), "exit_ts": t(10, 50), "side": "S", "pnl_twd": -16610, "exit_kind": "SL",
+         "entry_reason": "[盤整盤 ER 0.14｜波段順勢] 60 分K 收盤 38559 跌破前 10 根低點 38792，EMA20 40761 < EMA60 42498｜移動停損 2375 點"},
+    ]
+    journal = [{"entry_ts": t(9, 47), "mfe": 500, "sl_dist": 200, "tp_dist": 800, "regime": "chop"}]
+    r = lessons.review(rows, "omega-swing", journal=journal)
+    self.assertEqual(r["tags"]["giveback"], 1)
+    self.assertEqual(r["tags"]["overextended"], 1)
+    self.assertEqual(r["tags"]["weak_trend"], 1)
+    self.assertEqual(r["tags"]["other"], 0)
 
   def test_recurring_needs_two_weeks(self):
     from futures_ai import lessons
     wk = lambda n: {"tags": {"consec_sl": n, "reversal": 0, "early_open": 0, "other": 0}}
     self.assertEqual(lessons.recurring([wk(5), wk(0), wk(0), wk(0)]), [])
     self.assertEqual(lessons.recurring([wk(3), wk(1), wk(0), wk(0)]), ["consec_sl"])
+    self.assertEqual(lessons.recurring([wk(1), wk(1), wk(0), wk(0)], min_total=2), ["consec_sl"])
 
   def test_rule_text(self):
     from futures_ai import lessons
     self.assertEqual(lessons.rule_zh({"max_sl": 1}), "一盤停損 1 次就休息")
+    self.assertIn("單筆停損上限 1200 點", lessons.rule_zh({"max_ext_atr": 3.5, "max_sl_pts": 1200}))
 
 
 if __name__ == "__main__":
