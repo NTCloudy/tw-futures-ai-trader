@@ -56,7 +56,7 @@ POLICY_NEGATED = ["不進場", "暫不進場", "不護盤", "暫不護盤", "無
 DROP_WORDS = {"暴跌", "崩盤", "崩跌", "大跌", "重挫", "跳水", "下殺", "跌停", "plunge", "selloff", "sell-off", "tumble"}
 BEARISH_SUBJECTS = ("空單", "淨空單", "賣超", "殖利率", "通膨", "失業", "貶", "斷頭", "違約", "vix", "恐慌")
 HIGH_WORDS = {"創高", "創新高", "創歷史新高", "record high"}
-NEG_PREFIXES = ("不", "無", "未", "否認", "駁斥", "排除", "暫緩", "暫停", "取消", "豁免", "解除", "放寬")
+NEG_PREFIXES = ("不", "無", "未", "沒", "否認", "駁斥", "排除", "暫緩", "暫停", "取消", "豁免", "解除", "放寬")
 RELIEF = ["豁免", "降關稅", "協議", "停火", "和談", "降息", "大漲", "急拉", "強彈", "飆漲", "大反彈", "止跌",
           "創高", "創新高", "創歷史新高", "緩和", "解除", "法說報喜", "上修財測", "營收創高", "優於預期",
           "adr大漲", "輝達大漲", "通膨降溫", "cpi低於預期", "鴿派", "軟著陸", "外資大買", "外資回補",
@@ -91,7 +91,8 @@ def _get(url: str, timeout: int = 15) -> str:
 # Phrases that negate or reverse a risk word ("no sanctions", "eases sanctions", "end of the war"):
 # they count as relief and the risk word inside them is not scored.
 NEGATED = ["不會施加制裁", "不會制裁", "不制裁", "放寬制裁", "暫緩制裁", "解除制裁", "放寬對", "暫緩對", "結束戰爭", "戰爭結束",
-           "終戰", "停戰", "no sanctions", "ease sanctions", "eases sanctions", "lift sanctions", "end the war", "end of the war"]
+           "戰爭實際上已結束", "戰爭已結束", "沒必要再發動攻擊", "不再發動攻擊", "終戰", "停戰", "no sanctions",
+           "ease sanctions", "eases sanctions", "lift sanctions", "end the war", "end of the war", "war is over"]
 STORY_SIM = 0.3  # Character-bigram Jaccard similarity above which two headlines are the same story.
 
 
