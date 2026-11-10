@@ -56,10 +56,11 @@ def sim_specs(legacy: bool = False) -> dict:
   specs = {
       "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
                                       hours=("us_open",), fill_through=1, min_width=40, max_width=260, be_r=2.0)),
-      # Sigma: time-limited, max 2 entries/session, max_wick=0.25 (with historical any-time window kept for replay).
+      # Sigma: core ("us_open", "night_open") + high-vol ("day_open", "night_pre_us") when ATR5 >= 35, max 2 entries, max_wick=0.25.
       "sigma-vwap": ("sigma-pullback", dict(g, regimes=("trend",), flip=(), limit_atr=0.2, limit_min=10,
-                                             hours=("us_open", "night_open"), fill_through=1,
-                                             max_entries=2, max_wick=0.25,
+                                             hours=("day_open", "night_open", "night_pre_us", "us_open"),
+                                             bonus_hours=("day_open", "night_pre_us"), bonus_min_atr=35.0,
+                                             fill_through=1, max_entries=2, max_wick=0.25,
                                              hours_free=("2026-10-28T12:00:00+08:00", "2026-11-07T12:30:00+08:00"))),
       "nova-nightorb": ("anchor-orb", nova),
       "nova-us": ("anchor-orb", dict(nova, hours=("us_open",), be_r=1.75)),

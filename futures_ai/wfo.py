@@ -232,16 +232,22 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
   if ai == "sigma-pullback":
     if k + 1 < 6 or s.regime[i] != "trend" or s.direction[i] == 0:
       return None
+    bh = p.get("bonus_hours")
+    hf = p.get("hours_free")
+    if bh and p.get("hours") and not (hf and hf[0] <= x.end.isoformat() < hf[1]):
+      if tod_bucket(x.end) in bh and a < p.get("bonus_min_atr", 35.0):
+        return None
     sl = clamp(a * p["sl_atr"], 20, 150)
     tp = sl * p["tp_mult"]
     trail = a * p["trail_atr"] if p.get("trail_atr") else None
+    rng_b = x.h - x.l
     mw = p.get("max_wick", 0.25)
     if s.direction[i] > 0 and x.l <= vw + p["pull_atr"] * a and x.c > vw and x.c > x.o:
-      if mw is not None and (x.h - x.c) > mw * a:
+      if mw is not None and (rng_b <= 0 or (x.h - x.c) / rng_b > mw):
         return None
       return "B", sl, tp, trail
     if s.direction[i] < 0 and x.h >= vw - p["pull_atr"] * a and x.c < vw and x.c < x.o:
-      if mw is not None and (x.c - x.l) > mw * a:
+      if mw is not None and (rng_b <= 0 or (x.c - x.l) / rng_b > mw):
         return None
       return "S", sl, tp, trail
     return None
@@ -258,9 +264,8 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
         return None
       anchor = datetime.combine(d0, time(15, 0), TPE)
     dst_skip = p.get("dst_skip", (150, 150))
-    if dst_skip and us_dst(ts):
-      uo = us_open_at(ts)
-      if uo - timedelta(minutes=dst_skip[0]) < ts <= uo + timedelta(minutes=dst_skip[1]):
+    if dst_skip and anchor_kind != "us" and not p.get("hours"):
+      if anchor + timedelta(minutes=dst_skip[0]) < ts <= us_open_at(ts) - timedelta(minutes=dst_skip[1]):
         return None
     r_end = anchor + timedelta(minutes=p["range_min"])
     if not (r_end < ts <= r_end + timedelta(minutes=p["window"])):

@@ -167,16 +167,19 @@ class TrendPullback:
 
   id = "sigma-vwap"  # Same slot/id as before so the account history continues.
   name = "Sigma 趨勢回測 AI"
-  style = "5 分K 明確趨勢中，價格回測 VWAP 後收回趨勢方向且逆勢影線 ≤ 25% 順勢進場；每盤最多 2 次"
+  style = "5 分K 明確趨勢中，價格回測 VWAP 後收回趨勢方向且逆勢影線 ≤ 25% 順勢進場；核心時段＋高波動（ATR≥35）自動解鎖日盤早盤與歐盤；每盤最多 2 次"
   color = "#a855f7"
   modes = {"native": "順勢回測", "flip": "順勢回測"}
   allow_flip = False
   block_after_stop = True
 
   def __init__(self, pull_atr: float = 0.5, sl_atr: float = 1.5, tp_mult: float = 4.0,
-               trail_atr: float | None = None, max_entries: int = 2, max_wick: float | None = 0.25):
+               trail_atr: float | None = None, max_entries: int = 2, max_wick: float | None = 0.25,
+               bonus_hours: tuple[str, ...] | None = ("day_open", "night_pre_us"),
+               bonus_min_atr: float = 35.0):
     self.pull, self.sl_atr, self.tp_mult, self.trail_atr = pull_atr, sl_atr, tp_mult, trail_atr
     self.max_entries, self.max_wick = max_entries, max_wick
+    self.bonus_hours, self.bonus_min_atr = bonus_hours, bonus_min_atr
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
              bars1: list[Bar] | None = None) -> Entry | None:
@@ -188,6 +191,10 @@ class TrendPullback:
     a = max(atr(bars), 5.0)
     vw = vwap(bars1 if bars1 else bars)
     x = bars[-1]
+    if self.bonus_hours and getattr(self, "hours", None):
+      from .calendar import tod_bucket
+      if tod_bucket(x.end) in self.bonus_hours and a < self.bonus_min_atr:
+        return None
     rng_b = x.h - x.l
     mw = self.max_wick
     sl = clamp(a * self.sl_atr, 20, 150)
@@ -489,9 +496,9 @@ def build_strategies(params: dict | None = None) -> list:
   sigma.limit_atr, sigma.limit_min = 0.2, 10
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
-  # Sigma: any time from 2026-10-28; back to the time-limited version on 2026-11-07 (user's choice after the
-  # one-year comparison: +56,205 / max DD 19,984 vs any time -23,383 / 76,208). Any-time version = shadow.
-  sigma.hours = ("us_open", "night_open")
+  # Sigma: core hours ("us_open", "night_open") always active + high-volatility ("day_open", "night_pre_us")
+  # unlocked when 5-min ATR >= 35 pts; avoids mid-day ("day") and late-night ("night_late") chop.
+  sigma.hours = ("day_open", "night_open", "night_pre_us", "us_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).

@@ -51,6 +51,7 @@ def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
       continue
     s.base_id, s.id, s.name = s.id, f"allday-{s.id}", f"{s.name}（不限時段）"
     s.hours = None
+    s.bonus_hours = None
     s.skip_window = None
     s.dst_skip = None
     out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))

@@ -415,7 +415,9 @@ class ShadowBuildTest(unittest.TestCase):
   def test_live_sigma_is_time_limited(self):
     from futures_ai.strategies import build_strategies
     sig = [s for s in build_strategies({}) if s.id == "sigma-vwap"][0]
-    self.assertEqual(sig.hours, ("us_open", "night_open"))
+    self.assertEqual(sig.hours, ("day_open", "night_open", "night_pre_us", "us_open"))
+    self.assertEqual(sig.bonus_hours, ("day_open", "night_pre_us"))
+    self.assertEqual(sig.bonus_min_atr, 35.0)
     self.assertEqual(sig.max_entries, 2)
 
 
@@ -569,6 +571,11 @@ class NewsRiskTest(unittest.TestCase):
     from futures_ai.news import score_headline
     self.assertGreater(score_headline("川普宣布對台灣晶片加徵關稅")[0], 0)
     self.assertLess(score_headline("川普突簽行政命令 豁免多項關稅")[0], 0)
+    self.assertLess(score_headline("台股暴跌千點！國安基金擬召開臨時會進場護盤")[0], 0)
+    self.assertLess(score_headline("台股重挫 金管會宣布祭出限空令救市")[0], 0)
+    self.assertLess(score_headline("川普宣布暫緩對台加徵晶片關稅 台指期夜盤急拉300點")[0], 0)
+    self.assertGreater(score_headline("外資台指期淨空單飆破4.5萬口 創歷史新高")[0], 0)
+    self.assertGreater(score_headline("央行理監事會意外升息半碼 調升存準率1碼")[0], 0)
     self.assertGreater(score_headline("China launches missile drills near Taiwan Strait")[0], score_headline("Trump tariff threat")[0])
     self.assertEqual(score_headline("台積電法說會今日登場")[0], 0)
     self.assertEqual(score_headline("【觀察】赫格塞斯出任戰爭部長，談判陷入僵局")[0], 0)

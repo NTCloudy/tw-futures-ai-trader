@@ -113,6 +113,8 @@ def rollover_info(ts: datetime, product: str, roll_days_before: int = 1) -> dict
 # ---- time of day buckets (shared by live trading and training) ----
 def us_dst(d) -> bool:
   import calendar
+  if isinstance(d, datetime):
+    d = d.date()
   m2 = [day for day in range(8, 15) if calendar.weekday(d.year, 3, day) == 6][0]
   n1 = [day for day in range(1, 8) if calendar.weekday(d.year, 11, day) == 6][0]
   return date(d.year, 3, m2) <= d < date(d.year, 11, n1)
