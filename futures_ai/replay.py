@@ -42,6 +42,7 @@ def sim_specs(legacy: bool = False) -> dict:
                                         hours=("us_open",), fill_through=1, min_width=0, max_width=450, be_r=None)),
         "sigma-vwap": ("sigma-pullback", dict(g, regimes=("trend",), flip=(), limit_atr=0.2, limit_min=10,
                                                hours=("us_open", "night_open"), fill_through=1, max_wick=None,
+                                               min_er=None, day_min_atr=None, be_r=None,
                                                hours_free=("2026-10-28T12:00:00+08:00", "2026-11-07T12:30:00+08:00"))),
         "nova-nightorb": ("anchor-orb", nova),
         "nova-us": ("anchor-orb", dict(nova, hours=("us_open",), be_r=1.75)),
@@ -50,16 +51,17 @@ def sim_specs(legacy: bool = False) -> dict:
             for ai, (sa, p) in specs.items()}
   nova = dict(anchor="night", range_min=30, window=600, sl_frac=1.0, tp_mult=3.0, regimes=("trend", "chop"),
               flip=(), limit_atr=0.0, limit_min=5, fill_through=1,
-              min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150))
+              min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75)
   nova.update(lp.get("nova-nightorb", {}))
   les = lp.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
   specs = {
       "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
                                       hours=("us_open",), fill_through=1, min_width=40, max_width=260, be_r=2.0)),
-      # Sigma: core ("us_open", "night_open") + high-vol ("day_open", "night_pre_us") when ATR5 >= 35, max 2 entries, max_wick=0.25.
+      # Sigma: core ("us_open", "night_open") + high-vol ("day_open", "night_pre_us") when ATR5 >= 35 + extreme day ("day") when ATR5 >= 100, ER >= 0.30, be_r = 1.75.
       "sigma-vwap": ("sigma-pullback", dict(g, regimes=("trend",), flip=(), limit_atr=0.2, limit_min=10,
-                                             hours=("day_open", "night_open", "night_pre_us", "us_open"),
+                                             hours=("day_open", "day", "night_open", "night_pre_us", "us_open"),
                                              bonus_hours=("day_open", "night_pre_us"), bonus_min_atr=35.0,
+                                             day_min_atr=100.0, min_er=0.30, be_r=1.75,
                                              fill_through=1, max_entries=2, max_wick=0.25,
                                              hours_free=("2026-10-28T12:00:00+08:00", "2026-11-07T12:30:00+08:00"))),
       "nova-nightorb": ("anchor-orb", nova),

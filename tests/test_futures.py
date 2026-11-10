@@ -415,9 +415,12 @@ class ShadowBuildTest(unittest.TestCase):
   def test_live_sigma_is_time_limited(self):
     from futures_ai.strategies import build_strategies
     sig = [s for s in build_strategies({}) if s.id == "sigma-vwap"][0]
-    self.assertEqual(sig.hours, ("day_open", "night_open", "night_pre_us", "us_open"))
+    self.assertEqual(sig.hours, ("day_open", "day", "night_open", "night_pre_us", "us_open"))
     self.assertEqual(sig.bonus_hours, ("day_open", "night_pre_us"))
     self.assertEqual(sig.bonus_min_atr, 35.0)
+    self.assertEqual(sig.day_min_atr, 100.0)
+    self.assertEqual(sig.min_er, 0.30)
+    self.assertEqual(sig.be_r, 1.75)
     self.assertEqual(sig.max_entries, 2)
 
 
@@ -561,6 +564,11 @@ class NovaTest(unittest.TestCase):
     e = NightOpenBreakout().decide(bars, 0, None)
     self.assertEqual(e.side, "B")
     self.assertEqual(e.tp_pts, e.sl_pts * 3)
+    self.assertEqual(NightOpenBreakout().be_r, 1.75)
+    # Exhausted move (prior bar after 15:30 already reached hi + 2.5 * width = 47040 + 125 = 47165): skip re-breakout.
+    ex_bars = bars_from(rng + [(47010, 47170, 47005, 47020), (47020, 47070, 47018, 47065)], start=start)
+    ex_bars = [Bar(start + timedelta(minutes=5 * i), b.o, b.h, b.l, b.c, b.v) for i, b in enumerate(ex_bars)]
+    self.assertIsNone(NightOpenBreakout().decide(ex_bars, 0, None))
     day = [Bar(at(2026, 10, 16, 9, 0) + timedelta(minutes=5 * i), b.o, b.h, b.l, b.c, b.v) for i, b in enumerate(bars)]
     self.assertIsNone(NightOpenBreakout().decide(day, 0, None))  # day session: never
 

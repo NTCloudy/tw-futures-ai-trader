@@ -232,10 +232,16 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
   if ai == "sigma-pullback":
     if k + 1 < 6 or s.regime[i] != "trend" or s.direction[i] == 0:
       return None
+    min_er = p.get("min_er", 0.30)
+    if min_er and s.er[i] < min_er:
+      return None
     bh = p.get("bonus_hours")
     hf = p.get("hours_free")
-    if bh and p.get("hours") and not (hf and hf[0] <= x.end.isoformat() < hf[1]):
-      if tod_bucket(x.end) in bh and a < p.get("bonus_min_atr", 35.0):
+    if p.get("hours") and not (hf and hf[0] <= x.end.isoformat() < hf[1]):
+      tb = tod_bucket(x.end)
+      if tb == "day" and p.get("day_min_atr") and a < p["day_min_atr"]:
+        return None
+      if bh and tb in bh and a < p.get("bonus_min_atr", 35.0):
         return None
     sl = clamp(a * p["sl_atr"], 20, 150)
     tp = sl * p["tp_mult"]

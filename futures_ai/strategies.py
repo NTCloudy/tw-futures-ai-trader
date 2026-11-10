@@ -167,7 +167,7 @@ class TrendPullback:
 
   id = "sigma-vwap"  # Same slot/id as before so the account history continues.
   name = "Sigma 趨勢回測 AI"
-  style = "5 分K 明確趨勢中，價格回測 VWAP 後收回趨勢方向且逆勢影線 ≤ 25% 順勢進場；核心時段＋高波動（ATR≥35）自動解鎖日盤早盤與歐盤；每盤最多 2 次"
+  style = "5 分K 明確趨勢（ER≥0.30）中，價格回測 VWAP 後收回趨勢方向且逆勢影線 ≤ 25% 順勢進場；浮盈 1.75 倍停損移至保本+6；核心時段＋高波動解鎖早盤/歐盤/極端日盤；每盤最多 2 次"
   color = "#a855f7"
   modes = {"native": "順勢回測", "flip": "順勢回測"}
   allow_flip = False
@@ -176,10 +176,12 @@ class TrendPullback:
   def __init__(self, pull_atr: float = 0.5, sl_atr: float = 1.5, tp_mult: float = 4.0,
                trail_atr: float | None = None, max_entries: int = 2, max_wick: float | None = 0.25,
                bonus_hours: tuple[str, ...] | None = ("day_open", "night_pre_us"),
-               bonus_min_atr: float = 35.0):
+               bonus_min_atr: float = 35.0, day_min_atr: float | None = 100.0,
+               min_er: float | None = 0.30, be_r: float | None = 1.75):
     self.pull, self.sl_atr, self.tp_mult, self.trail_atr = pull_atr, sl_atr, tp_mult, trail_atr
     self.max_entries, self.max_wick = max_entries, max_wick
     self.bonus_hours, self.bonus_min_atr = bonus_hours, bonus_min_atr
+    self.day_min_atr, self.min_er, self.be_r = day_min_atr, min_er, be_r
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
              bars1: list[Bar] | None = None) -> Entry | None:
@@ -188,12 +190,17 @@ class TrendPullback:
     regime, er, d = _trend(bars1 if bars1 else bars)
     if regime != "trend" or d == 0:
       return None
+    if self.min_er and er < self.min_er:
+      return None
     a = max(atr(bars), 5.0)
     vw = vwap(bars1 if bars1 else bars)
     x = bars[-1]
-    if self.bonus_hours and getattr(self, "hours", None):
+    if getattr(self, "hours", None):
       from .calendar import tod_bucket
-      if tod_bucket(x.end) in self.bonus_hours and a < self.bonus_min_atr:
+      tb = tod_bucket(x.end)
+      if tb == "day" and self.day_min_atr and a < self.day_min_atr:
+        return None
+      if self.bonus_hours and tb in self.bonus_hours and a < self.bonus_min_atr:
         return None
     rng_b = x.h - x.l
     mw = self.max_wick
@@ -332,7 +339,7 @@ class NightOpenBreakout:
 
   id = "nova-nightorb"
   name = "Nova 夜盤開盤突破 AI"
-  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、避開美股盤前冷清段），停損＝區間寬度，停利 3 倍，限價進場"
+  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、未達 2.5 倍區間耗盡、避開美股盤前冷清段），浮盈 1.75 倍停損移至保本+6，停損＝區間寬度，停利 3 倍，限價進場"
   color = "#facc15"  # Yellow: distinct from Alpha (sky blue)
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
@@ -340,7 +347,7 @@ class NightOpenBreakout:
 
   def __init__(self, range_min: int = 30, window: int = 600, sl_frac: float = 1.0, tp_mult: float = 3.0,
                min_width: float = 30, reach_r: float | None = 2.5, min_body_atr: float | None = 0.25,
-               dst_skip: tuple[int, int] | None = (150, 150), be_r: float | None = None):
+               dst_skip: tuple[int, int] | None = (150, 150), be_r: float | None = 1.75):
     self.range_min, self.window, self.sl_frac, self.tp_mult = range_min, window, sl_frac, tp_mult
     self.min_width, self.reach_r, self.min_body_atr, self.dst_skip, self.be_r = (
         min_width, reach_r, min_body_atr, dst_skip, be_r)
@@ -379,16 +386,16 @@ class NightOpenBreakout:
     sl = clamp(width * self.sl_frac, 30, 150)
     a = max(atr(bars), 5.0)
     rr = getattr(self, "reach_r", None)
-    if rr:
-      s_close = _dt.combine(d0 + _td(days=1), _t(5, 0), t.tzinfo)
-      remaining = max(1.0, (s_close - t).total_seconds() / 300)
-      if round(a * remaining ** 0.5) < rr * sl:
-        return None
+    after_rng = [b for b in bars[:-1] if b.end > r_end] if rr else []
     vw = vwap(bars1 if bars1 else bars)
     mb = getattr(self, "min_body_atr", None)
     if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw and (not mb or x.c - x.o >= mb * a):
+      if rr and after_rng and max(b.h for b in after_rng) >= hi + rr * width:
+        return None
       return Entry("B", sl, sl * self.tp_mult, f"突破夜盤開盤區間高點 {hi:.0f}（區間 {width:.0f} 點），站上 VWAP {vw:.0f}")
     if x.c < lo - 3 and prev.c >= lo - 3 and x.c < vw and (not mb or x.o - x.c >= mb * a):
+      if rr and after_rng and min(b.l for b in after_rng) <= lo - rr * width:
+        return None
       return Entry("S", sl, sl * self.tp_mult, f"跌破夜盤開盤區間低點 {lo:.0f}（區間 {width:.0f} 點），位於 VWAP {vw:.0f} 之下")
     return None
 
@@ -503,8 +510,8 @@ def build_strategies(params: dict | None = None) -> list:
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
   # Sigma: core hours ("us_open", "night_open") always active + high-volatility ("day_open", "night_pre_us")
-  # unlocked when 5-min ATR >= 35 pts; avoids mid-day ("day") and late-night ("night_late") chop.
-  sigma.hours = ("day_open", "night_open", "night_pre_us", "us_open")
+  # unlocked when 5-min ATR >= 35 pts + extreme day ("day") unlocked when 5-min ATR >= 100 pts; avoids late-night chop.
+  sigma.hours = ("day_open", "day", "night_open", "night_pre_us", "us_open")
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
