@@ -235,6 +235,9 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     min_er = p.get("min_er", 0.30)
     if min_er and s.er[i] < min_er:
       return None
+    max_vwap_pts = p.get("max_vwap_pts", 200.0)
+    if max_vwap_pts and abs(x.c - vw) > max_vwap_pts:
+      return None
     bh = p.get("bonus_hours")
     hf = p.get("hours_free")
     if p.get("hours") and not (hf and hf[0] <= x.end.isoformat() < hf[1]):
@@ -475,6 +478,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         continue  # Lesson: minimum 5-minute efficiency ratio filter.
       if p.get("max_vwap_atr") and abs(x.c - s.vwap[i]) > p["max_vwap_atr"] * max(s.atr5[s.k_at[i]], 5.0):
         continue  # Lesson: do not chase overextended distance from VWAP.
+      if p.get("max_vwap_pts") and abs(x.c - s.vwap[i]) > p["max_vwap_pts"]:
+        continue  # Lesson: do not chase > N points away from VWAP.
       sig = signal5(ai, p, s, s.k_at[i], i)
       if sig and p.get("rev_cool") and last_sl and sig[0] != last_sl[0] and \
           x.end < last_sl[1] + timedelta(minutes=p["rev_cool"]):

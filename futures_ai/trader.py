@@ -418,6 +418,10 @@ class AiTrader:
       vw = vwap(bars)
       if abs(bars[-1].c - vw) > rules["max_vwap_atr"] * a5:
         return f"📚 經驗規則：距離均價 {abs(bars[-1].c - vw):.0f} 點 > {rules['max_vwap_atr']}×ATR，不追高殺低"
+    if rules.get("max_vwap_pts") and not getattr(self.s, "hold_overnight", False):
+      vw = vwap(bars)
+      if abs(bars[-1].c - vw) > rules["max_vwap_pts"]:
+        return f"📚 經驗規則：距離均價 {abs(bars[-1].c - vw):.0f} 點 > {rules['max_vwap_pts']:.0f} 點，不追高殺低"
     trades = self.ledger.rows("SELECT side, exit_ts, exit_kind, pnl_twd FROM trades WHERE ai=? AND exit_ts>=? "
                               "ORDER BY exit_ts, id", (self.ai, start.isoformat()))
     consec_sl = 0

@@ -420,8 +420,26 @@ class ShadowBuildTest(unittest.TestCase):
     self.assertEqual(sig.bonus_min_atr, 35.0)
     self.assertEqual(sig.day_min_atr, 100.0)
     self.assertEqual(sig.min_er, 0.30)
+    self.assertEqual(sig.max_vwap_pts, 200.0)
+    self.assertEqual(sig.limit_atr, 0.0)
+    self.assertEqual(sig.limit_min, 5)
     self.assertEqual(sig.be_r, 1.75)
     self.assertEqual(sig.max_entries, 2)
+
+  def test_sigma_rejects_overextended_vwap_distance(self):
+    from futures_ai.strategies import TrendPullback
+    st = TrendPullback(max_vwap_pts=200.0, min_er=0.30)
+    t0 = at(2026, 11, 6, 15, 0)
+    # 5m uptrend bars around 39470, then a giant bar touching 39470 and closing at 39873 (+403 pts > 200 pts)
+    bars = [Bar(t0 + timedelta(minutes=5 * k), 39400 + k * 20, 39430 + k * 20, 39390 + k * 20, 39420 + k * 20, 100)
+            for k in range(1, 7)]
+    bars_far = bars + [Bar(t0 + timedelta(minutes=35), 39500, 39880, 39460, 39873, 100)]
+    self.assertIsNone(st.decide(bars_far, 0, None))
+    # Same pullback bar but closing within 200 pts of VWAP (e.g. 39600, ~130 pts from VWAP) is accepted
+    bars_ok = bars + [Bar(t0 + timedelta(minutes=35), 39500, 39610, 39460, 39600, 100)]
+    sig = st.decide(bars_ok, 0, None)
+    self.assertIsNotNone(sig)
+    self.assertEqual(sig.side, "B")
 
 
 class InverseOfTest(unittest.TestCase):
@@ -894,6 +912,7 @@ class LessonReviewTest(unittest.TestCase):
     from futures_ai import lessons
     self.assertEqual(lessons.rule_zh({"max_sl": 1}), "一盤停損 1 次就休息")
     self.assertIn("單筆停損上限 1200 點", lessons.rule_zh({"max_ext_atr": 3.5, "max_sl_pts": 1200}))
+    self.assertIn("距均價 ≤ 200 點才進場", lessons.rule_zh({"max_vwap_pts": 200}))
 
 
 if __name__ == "__main__":

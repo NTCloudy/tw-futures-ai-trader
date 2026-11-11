@@ -167,7 +167,7 @@ class TrendPullback:
 
   id = "sigma-vwap"  # Same slot/id as before so the account history continues.
   name = "Sigma 趨勢回測 AI"
-  style = "5 分K 明確趨勢（ER≥0.30）中，價格回測 VWAP 後收回趨勢方向且逆勢影線 ≤ 25% 順勢進場；浮盈 1.75 倍停損移至保本+6；核心時段＋高波動解鎖早盤/歐盤/極端日盤；每盤最多 2 次"
+  style = "5 分K 明確趨勢（ER≥0.30）中，價格回測 VWAP 後收回趨勢方向、距均價 ≤ 200 點且逆勢影線 ≤ 25% 順勢限價進場；浮盈 1.75 倍停損移至保本+6；核心時段＋高波動解鎖早盤/歐盤/極端日盤；每盤最多 2 次"
   color = "#a855f7"
   modes = {"native": "順勢回測", "flip": "順勢回測"}
   allow_flip = False
@@ -177,11 +177,13 @@ class TrendPullback:
                trail_atr: float | None = None, max_entries: int = 2, max_wick: float | None = 0.25,
                bonus_hours: tuple[str, ...] | None = ("day_open", "night_pre_us"),
                bonus_min_atr: float = 35.0, day_min_atr: float | None = 100.0,
-               min_er: float | None = 0.30, be_r: float | None = 1.75):
+               min_er: float | None = 0.30, be_r: float | None = 1.75,
+               max_vwap_pts: float | None = 200.0):
     self.pull, self.sl_atr, self.tp_mult, self.trail_atr = pull_atr, sl_atr, tp_mult, trail_atr
     self.max_entries, self.max_wick = max_entries, max_wick
     self.bonus_hours, self.bonus_min_atr = bonus_hours, bonus_min_atr
     self.day_min_atr, self.min_er, self.be_r = day_min_atr, min_er, be_r
+    self.max_vwap_pts = max_vwap_pts
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
              bars1: list[Bar] | None = None) -> Entry | None:
@@ -195,6 +197,8 @@ class TrendPullback:
     a = max(atr(bars), 5.0)
     vw = vwap(bars1 if bars1 else bars)
     x = bars[-1]
+    if self.max_vwap_pts and abs(x.c - vw) > self.max_vwap_pts:
+      return None
     if getattr(self, "hours", None):
       from .calendar import tod_bucket
       tb = tod_bucket(x.end)
@@ -506,7 +510,7 @@ def build_strategies(params: dict | None = None) -> list:
   # (2026-10-19), Delta (inverse Gamma; one-year backtest -212,029) and the hidden Gamma that drove it (2026-10-22).
   # 方向 B: limit-order entries (validated on one year of data).
   alpha.limit_atr, alpha.limit_min = 0.0, 5
-  sigma.limit_atr, sigma.limit_min = 0.2, 10
+  sigma.limit_atr, sigma.limit_min = 0.0, 5
   # Time-of-day filters (validated: rolling 40-day practice -> 20-day exam).
   alpha.hours = ("us_open",)
   # Sigma: core hours ("us_open", "night_open") always active + high-volatility ("day_open", "night_pre_us")

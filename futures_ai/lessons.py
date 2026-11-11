@@ -49,7 +49,7 @@ CANDIDATES = {
                    "*": [{"min_er": 0.15}, {"min_er": 0.20}, {"min_er": 0.25}]},
     "overextended": {"omega-swing": [{"max_ext_atr": 3.5}, {"max_sl_pts": 1200},
                                      {"max_ext_atr": 3.5, "max_sl_pts": 1200}],
-                     "*": [{"max_vwap_atr": 2.5}]},
+                     "*": [{"max_vwap_pts": 200}, {"max_vwap_atr": 2.5}]},
 }
 TRIAL_DAYS = 10
 RETRY_WEEKS = 8
@@ -75,6 +75,8 @@ def rule_zh(r: dict) -> str:
     out.append(f"單筆停損上限 {r['max_sl_pts']:.0f} 點")
   if r.get("max_vwap_atr"):
     out.append(f"距均價 ≤ {r['max_vwap_atr']:g}×ATR 才進場")
+  if r.get("max_vwap_pts"):
+    out.append(f"距均價 ≤ {r['max_vwap_pts']:.0f} 點才進場")
   return "、".join(out) or "（無）"
 
 
@@ -128,11 +130,13 @@ def review(rows: list[dict], ai: str, journal: list[dict] | None = None) -> dict
       m_sl = re.search(r"移動停損\s*(\d+(?:\.\d+)?)\s*點", reason)
       m_em = re.search(r"收盤\s*(\d+(?:\.\d+)?).*?EMA20\s*(\d+(?:\.\d+)?)", reason)
       m_rg = re.search(r"區間\s*(\d+(?:\.\d+)?)\s*點", reason)
+      m_vw = re.search(r"VWAP\s*(\d+(?:\.\d+)?)", reason)
       sl_pts_r = float(m_sl.group(1)) if m_sl else 0.0
       ext_pts = abs(float(m_em.group(1)) - float(m_em.group(2))) if m_em else 0.0
       atr_est = (sl_pts_r / 4.0) if sl_pts_r > 0 else 0.0
+      vw_dist = abs(float(r.get("entry_price") or 0) - float(m_vw.group(1))) if (m_vw and r.get("entry_price")) else 0.0
       if (ai == "omega-swing" and (sl_pts_r > 1200 or (atr_est > 0 and ext_pts > 2.8 * atr_est))) or \
-         (m_rg and float(m_rg.group(1)) > 260):
+         (m_rg and float(m_rg.group(1)) > 260) or (vw_dist > 200):
         tags["overextended"] += 1
         matched = True
       m_er = re.search(r"ER\s*(\d+(?:\.\d+)?)", reason)
