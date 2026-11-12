@@ -49,8 +49,9 @@ def sim_specs(legacy: bool = False) -> dict:
     }
     return specs
   nova = dict(anchor="night", range_min=30, window=600, sl_frac=1.0, tp_mult=3.0, regimes=("trend", "chop"),
-              flip=(), limit_atr=0.0, limit_min=5, fill_through=1,
-              min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75)
+              flip=(), limit_atr=-0.02, limit_min=5, fill_through=1,
+              min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75,
+              max_vwap_pts=300, max_sl=4)
   nova.update(lp.get("nova-nightorb", {}))
   les = lp.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
   specs = {

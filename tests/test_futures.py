@@ -426,6 +426,18 @@ class ShadowBuildTest(unittest.TestCase):
     self.assertEqual(sig.be_r, 1.75)
     self.assertEqual(sig.max_entries, 2)
 
+  def test_live_nova_breakout_guards(self):
+    from futures_ai.strategies import build_strategies
+    nova = [s for s in build_strategies({}) if s.id == "nova-nightorb"][0]
+    self.assertEqual(nova.limit_atr, -0.02)  # Limit 1-2 pts beyond the breakout close.
+    self.assertEqual(nova.limit_min, 5)
+    self.assertEqual(nova.rules.get("max_vwap_pts"), 300)
+    self.assertEqual(nova.rules.get("max_sl"), 4)
+    # Weekly lessons may add rules but the fixed guards stay.
+    nova2 = [s for s in build_strategies({"lessons": {"nova-nightorb": {"rev_cool": 30}}})
+             if s.id == "nova-nightorb"][0]
+    self.assertEqual(nova2.rules, {"max_vwap_pts": 300, "max_sl": 4, "rev_cool": 30})
+
   def test_sigma_rejects_overextended_vwap_distance(self):
     from futures_ai.strategies import TrendPullback
     st = TrendPullback(max_vwap_pts=200.0, min_er=0.30)

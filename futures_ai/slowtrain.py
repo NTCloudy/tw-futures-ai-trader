@@ -14,8 +14,9 @@ import itertools
 from . import wfo
 from .swing import simulate_swing
 
-NOVA_BASE = dict(anchor="night", regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5, fill_through=1,
-                 min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75)
+NOVA_BASE = dict(anchor="night", regimes=("trend", "chop"), flip=(), limit_atr=-0.02, limit_min=5, fill_through=1,
+                 min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75,
+                 max_vwap_pts=300, max_sl=4)
 OMEGA_BASE = dict(direction="both", entry="limit", fill_through=1, min_er=0.20, be_r=0.7,
                   max_ext_atr=3.5, max_sl_pts=1200)
 LIVE_DEFAULTS = {

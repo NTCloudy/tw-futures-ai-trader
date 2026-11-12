@@ -343,7 +343,7 @@ class NightOpenBreakout:
 
   id = "nova-nightorb"
   name = "Nova 夜盤開盤突破 AI"
-  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、未達 2.5 倍區間耗盡、避開美股盤前冷清段），浮盈 1.75 倍停損移至保本+6，停損＝區間寬度，停利 3 倍，限價進場"
+  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、未達 2.5 倍區間耗盡、距均價 ≤ 300 點、避開美股盤前冷清段），浮盈 1.75 倍停損移至保本+6，停損＝區間寬度，停利 3 倍，順勢讓價 1~2 點限價進場；單晚連續停損 4 次即休息"
   color = "#facc15"  # Yellow: distinct from Alpha (sky blue)
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
@@ -356,7 +356,9 @@ class NightOpenBreakout:
     self.min_width, self.reach_r, self.min_body_atr, self.dst_skip, self.be_r = (
         min_width, reach_r, min_body_atr, dst_skip, be_r)
     self.max_entries = None
-    self.limit_atr, self.limit_min = 0.0, 5
+    # Breakout entry: limit 0.02 x ATR5 (~1-2 pts) beyond the signal close, so a breakout that does not
+    # pull back still fills (with limit 0.0 + fill-through 1 pt, the strongest breakouts were missed).
+    self.limit_atr, self.limit_min = -0.02, 5
 
   def decide(self, bars: list[Bar], entries_this_session: int, bars_since_exit: int | None,
              bars1: list[Bar] | None = None) -> Entry | None:
@@ -496,6 +498,11 @@ def ema_series(values: list[float], n: int) -> list[float]:
   return out
 
 
+# Fixed guard rules (applied under any weekly-adopted lessons). Nova (2026-11-12, user choice B+C):
+# no entry > 300 pts from VWAP, and stop for the night after 4 consecutive stop-losses.
+BASE_RULES = {"nova-nightorb": {"max_vwap_pts": 300, "max_sl": 4}}
+
+
 def build_strategies(params: dict | None = None) -> list:
   """params: optional {ai_id: kwargs} chosen by walk-forward training (data/strategy_params.json)."""
   if params is None:
@@ -520,7 +527,7 @@ def build_strategies(params: dict | None = None) -> list:
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
   for st in (alpha, sigma, nova, omega):
-    st.rules = dict(lessons.get(st.id, {}))
+    st.rules = {**BASE_RULES.get(st.id, {}), **lessons.get(st.id, {})}
     for rk, rv in st.rules.items():
       if hasattr(st, rk):
         setattr(st, rk, rv)
