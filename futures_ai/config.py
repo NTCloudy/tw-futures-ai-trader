@@ -32,6 +32,12 @@ DEFAULTS: dict = {
     "commission_per_side_twd": 12,  # 永豐微台電子單優惠價估計；拿到第一張對帳單後請更新。
     "tax_rate": 0.00002,  # 期交稅 十萬分之二 per side
     "paper_slippage_ticks": 1,
+    # Backtest stop-fill slippage (points beyond the stop / gapped open) per simulator AI; others default to 1.
+    # Sigma = 5: measured live stop slippage 10/19~11/13 (35 stops: mean 4.6, median 2, p75 5 points). Conservative:
+    # the live figure (vs trigger price) includes gaps, which the simulator already fills at min(stop, open).
+    # Nova (anchor-orb) measured mean 2.4 / p75 3 and Alpha 1.2 stay at 1 until a dry run confirms their weekly
+    # parameter selection is unchanged (pending decision).
+    "sim_sl_slip_pts": {"sigma-pullback": 5},
     "roll_days_before": 1,
     "trade_night_session": True,
     "no_entry_minutes_before_close": 20,

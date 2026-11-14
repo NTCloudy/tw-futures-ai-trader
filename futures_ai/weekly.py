@@ -29,6 +29,9 @@ LIVE_KEYS = {"alpha-orb": ("range_bars", "sl_frac", "tp_mult"),
              "gamma-scalp": ("lookback", "sl_atr", "trail_atr")}
 DEFAULT_REGIMES = {"alpha-orb": ("trend", "chop"), "sigma-vwap": ("trend",), "gamma-scalp": ("trend",)}
 NAMES = {"alpha-orb": "Alpha 開盤突破", "sigma-vwap": "Sigma 趨勢回測", "gamma-scalp": "Gamma 趨勢突破"}
+# Expectation policy: in-sample one-year backtests are optimistic, so every expectation shown in reports (and used
+# to judge a change) is the walk-forward out-of-sample result, or the one-year backtest x HAIRCUT.
+HAIRCUT = 0.7
 
 
 def live_exec() -> dict:
@@ -52,16 +55,34 @@ def health_lines(cfg: dict, sessions: list) -> list[str]:
   params = json.loads((ROOT / "data" / "strategy_params.json").read_text(encoding="utf-8")) \
       if (ROOT / "data" / "strategy_params.json").exists() else {}
   c = dict(cfg)
-  out = ["", "🩺 策略健康度（一年回測，目前設定）"]
+  out = ["", "🩺 策略健康度（一年回測，目前設定；一年回測含樣本內偏差，保守預期一律打 7 折）"]
   rows = []
   for ai, (sim_ai, p) in lessons._specs(params.get("lessons", {})).items():
+    if sim_ai == "omega-swing":
+      continue  # Omega is a multi-day swing AI: simulated below with simulate_swing (wfo.simulate rejects it).
     rows.append((lessons.NAMES[ai], wfo.simulate(c, sim_ai, p, sessions)))
   om = {**slowtrain.OMEGA_BASE, **slowtrain.LIVE_DEFAULTS["omega-swing"], **params.get("omega-swing", {})}
   rows.append(("Omega", simulate_swing(c, om, sessions)))
   for name, r in rows:
     flag = "🟢" if r["pnl"] > 0 else "🔴 待結構檢討"
-    out.append(f"{name}：{r['pnl']:+,.0f}｜回撤 {r['maxdd']:,.0f}｜{r['trades']} 筆 {flag}")
+    out.append(f"{name}：{r['pnl']:+,.0f}（保守預期 ×0.7 ≈ {r['pnl'] * HAIRCUT:+,.0f}）｜回撤 {r['maxdd']:,.0f}"
+               f"｜{r['trades']} 筆 {flag}")
   return out
+
+
+EXPECT_NAMES = {"alpha-orb": "Alpha", "sigma-vwap": "Sigma", "nova-nightorb": "Nova", "omega-swing": "Omega"}
+
+
+def expectation_lines(expect: dict) -> list[str]:
+  """Honest expectation per AI: walk-forward out-of-sample (exam-period) P&L scaled to 20 trading days."""
+  parts = []
+  for ai, (oos, n_win, days_per) in expect.items():
+    if n_win and ai in EXPECT_NAMES:
+      parts.append(f"{EXPECT_NAMES[ai]} ≈ {oos / (n_win * days_per) * 20:+,.0f}")
+  if not parts:
+    return []
+  return ["", "📏 誠實預期（樣本外考試成績換算，每 20 個交易日）：" + "｜".join(parts),
+          "改動規範：評估任何改動一律看樣本外成績（或一年回測 ×0.7）；新的經驗規則先實戰驗證 10 個交易日才採用。"]
 
 
 def current_params() -> dict:
@@ -168,9 +189,11 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
            "— 訓練（技術細節）—",
            f"資料 {rep['days'][0]} ～ {rep['days'][1]}（{len(days)} 個交易日）"]
   changes = {}
+  expect = {}  # live_id -> (out-of-sample P&L, number of exam windows, days per window)
   auto_adopt = bool(cfg.get("auto_adopt_lessons", True))
   for live_id, sim_id in SIM_ID.items():
     r = rep["ais"][sim_id]
+    expect[live_id] = (r["oos_pnl"], len(r["windows"]), test_days)
     cur_sim = {**exec_base[live_id], **cur[live_id], "regimes": DEFAULT_REGIMES[live_id], "flip": ()}
     cur_oos = 0.0
     for w in r["windows"]:
@@ -210,6 +233,8 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     except Exception as exc:
       lines.append(f"\n{slowtrain.NAMES[ai]}：訓練失敗（{exc}），維持目前參數")
       continue
+    tr_d, te_d = slowtrain.WINDOWS[ai]
+    expect[ai] = (r["oos_pnl"], max(0, (len(days) - tr_d) // te_d), te_d)
     head = (f"\n{slowtrain.NAMES[ai]}：考試期 訓練挑選 {r['oos_pnl']:+,} vs 目前參數 {r['cur_oos']:+,}"
             f"（{r['trades']} 筆，勝 {r['wins']}）")
     if r["switch"] and auto_adopt and not frozen:
@@ -223,6 +248,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       lines.append(f"{head} → 目前參數考得比較好，維持")
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
+  lines += expectation_lines(expect)
   # Losing-trade review -> recurring lessons -> backtested + forward-validated rules (lessons.py).
   try:
     from . import lessons

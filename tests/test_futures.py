@@ -1009,5 +1009,133 @@ class LessonReviewTest(unittest.TestCase):
     self.assertIn("距均價 ≤ 200 點才進場", lessons.rule_zh({"max_vwap_pts": 200}))
 
 
+class WatchdogTest(unittest.TestCase):
+
+  def test_problems_only_in_session_after_grace(self):
+    from futures_ai.watchdog import problems
+    sat = at(2026, 11, 14, 12, 0)
+    self.assertEqual(problems(sat, False, None, 50.0), {})  # Market closed: no engine alerts.
+    self.assertIn("disk", problems(sat, True, None, 1.0))
+    early = at(2026, 11, 13, 8, 50)  # 5 minutes into the day session: warm-up grace.
+    self.assertEqual(problems(early, False, None, 50.0), {})
+    mid = at(2026, 11, 13, 10, 0)
+    self.assertIn("engine", problems(mid, False, None, 50.0))
+    self.assertEqual(problems(mid, True, mid - timedelta(minutes=2), 50.0), {})
+    self.assertIn("heartbeat", problems(mid, True, mid - timedelta(minutes=25), 50.0))
+
+  def test_run_dedups_and_reports_recovery(self):
+    import tempfile
+    from futures_ai import watchdog
+    sent = []
+    with tempfile.TemporaryDirectory() as d, \
+        mock.patch.object(watchdog, "STATE", Path(d) / "wd.json"), \
+        mock.patch.object(watchdog, "engine_running", return_value=False), \
+        mock.patch.object(watchdog, "last_heartbeat", return_value=None):
+      c = cfg()
+      t = at(2026, 11, 13, 10, 0)
+      watchdog.run(c, now=t, send=sent.append)
+      watchdog.run(c, now=t + timedelta(minutes=5), send=sent.append)  # Same problem: no repeat yet.
+      self.assertEqual(len(sent), 1)
+      watchdog.run(c, now=t + timedelta(minutes=31), send=sent.append)
+      self.assertEqual(len(sent), 2)
+      with mock.patch.object(watchdog, "engine_running", return_value=True), \
+          mock.patch.object(watchdog, "last_heartbeat", return_value=t + timedelta(minutes=35)):
+        watchdog.run(c, now=t + timedelta(minutes=36), send=sent.append)
+      self.assertIn("恢復", sent[-1])
+      n = len(sent)
+      watchdog.run(c, now=t + timedelta(minutes=40), send=sent.append)  # Re-arm the engine alert.
+      watchdog.run(c, now=at(2026, 11, 13, 14, 0), send=sent.append)  # After the close: no false recovery.
+      self.assertTrue(all("恢復" not in m for m in sent[n + 1:]))
+
+  def test_disk_alert_rate_limited_with_hysteresis(self):
+    import tempfile
+    from futures_ai import watchdog
+    sent = []
+    usage = lambda gb: mock.Mock(free=gb * 1e9)
+    with tempfile.TemporaryDirectory() as d, \
+        mock.patch.object(watchdog, "STATE", Path(d) / "wd.json"), \
+        mock.patch.object(watchdog, "engine_running", return_value=True), \
+        mock.patch.object(watchdog, "last_heartbeat", return_value=None):
+      c = cfg()
+      t = at(2026, 11, 14, 12, 0)  # Saturday: only the disk check applies.
+      with mock.patch("shutil.disk_usage", return_value=usage(2.0)):
+        watchdog.run(c, now=t, send=sent.append)
+        watchdog.run(c, now=t + timedelta(hours=1), send=sent.append)
+      self.assertEqual(len(sent), 1)  # Disk alerts repeat at most every 6 hours.
+      with mock.patch("shutil.disk_usage", return_value=usage(3.5)):  # Above 3 GB but below 3 + 1 GB.
+        watchdog.run(c, now=t + timedelta(hours=2), send=sent.append)
+      self.assertEqual(len(sent), 1)
+      with mock.patch("shutil.disk_usage", return_value=usage(5.0)):
+        watchdog.run(c, now=t + timedelta(hours=3), send=sent.append)
+      self.assertIn("磁碟空間已恢復", sent[-1])
+
+  def test_state_write_failure_does_not_crash(self):
+    from futures_ai import watchdog
+    bad = mock.Mock()
+    bad.exists.return_value = False
+    bad.write_text.side_effect = OSError(28, "No space left on device")
+    with mock.patch.object(watchdog, "STATE", bad), \
+        mock.patch.object(watchdog, "engine_running", return_value=False), \
+        mock.patch.object(watchdog, "last_heartbeat", return_value=None):
+      msgs = watchdog.run(cfg(), now=at(2026, 11, 13, 10, 0), send=lambda m: None)
+    self.assertEqual(len(msgs), 1)
+
+
+class WeeklyPolicyTest(unittest.TestCase):
+
+  def test_health_lines_handles_omega_and_shows_haircut(self):
+    from futures_ai import weekly
+    fake = {"pnl": 1000.0, "maxdd": 100.0, "trades": 3, "wins": 1}
+    with mock.patch("futures_ai.wfo.simulate", side_effect=lambda c, ai, p, s, record=False: (
+        (_ for _ in ()).throw(ValueError(ai)) if ai == "omega-swing" else fake)), \
+        mock.patch("futures_ai.swing.simulate_swing", return_value=fake):
+      out = weekly.health_lines(cfg(), [])
+    txt = "\n".join(out)
+    self.assertIn("Omega：+1,000", txt)
+    self.assertIn("×0.7 ≈ +700", txt)
+
+  def test_expectation_lines_per_20_days(self):
+    from futures_ai.weekly import expectation_lines
+    txt = "\n".join(expectation_lines({"sigma-vwap": (84147, 11, 20), "omega-swing": (276212, 10, 20)}))
+    self.assertIn("Sigma ≈ +7,650", txt)
+    self.assertIn("Omega ≈ +27,621", txt)
+    self.assertIn("10 個交易日", txt)
+
+  def test_propose_rejects_unsupported(self):
+    from futures_ai import lessons
+    self.assertFalse(lessons.propose(cfg(), "omega-swing", {"max_sl": 2}, sessions=[])["ok"])
+    self.assertFalse(lessons.propose(cfg(), "sigma-vwap", {"sl_atr": 1.5}, sessions=[])["ok"])
+    self.assertFalse(lessons.propose(cfg(), "sigma-vwap", {"max_sl": "2"}, sessions=[])["ok"])
+
+  def test_propose_blocks_recently_rejected_and_active_rules(self):
+    import json as _json
+    import tempfile
+    from futures_ai import lessons
+    with tempfile.TemporaryDirectory() as d:
+      state, params = Path(d) / "lessons.json", Path(d) / "params.json"
+      params.write_text(_json.dumps({"lessons": {"sigma-vwap": {"max_sl": 2}}}), encoding="utf-8")
+      base = _json.loads(_json.dumps(lessons._specs({"sigma-vwap": {"max_sl": 2}})["sigma-vwap"][1], sort_keys=True))
+      state.write_text(_json.dumps({"trials": {}, "adopted": [], "rejected": [
+          {"ai": "sigma-vwap", "rule": {"min_er": 0.25}, "at": "2026-11-14", "base": base}]}), encoding="utf-8")
+      with mock.patch.object(lessons, "STATE", state), mock.patch.object(lessons, "PARAMS", params):
+        r1 = lessons.propose(cfg(), "sigma-vwap", {"max_sl": 2}, sessions=[], now=at(2026, 11, 15, 10, 0))
+        r2 = lessons.propose(cfg(), "sigma-vwap", {"min_er": 0.25}, sessions=[], now=at(2026, 11, 15, 10, 0))
+    self.assertFalse(r1["ok"])
+    self.assertIn("已經在用", r1["lines"][0])
+    self.assertFalse(r2["ok"])
+    self.assertIn("已被淘汰", r2["lines"][0])
+
+  def test_sigma_backtest_uses_measured_stop_slippage(self):
+    c = cfg()
+    self.assertEqual(c["sim_sl_slip_pts"], {"sigma-pullback": 5})  # Other AIs keep the 1-point default.
+
+  def test_nova_us_sim_matches_live_shadow(self):
+    from futures_ai.replay import sim_specs
+    from futures_ai.strategies import build_nova_us
+    p = sim_specs()["nova-us"][1]
+    live = build_nova_us()
+    self.assertEqual((tuple(p["hours"]), p["dst_skip"], p["be_r"]), (tuple(live.hours), live.dst_skip, live.be_r))
+
+
 if __name__ == "__main__":
   unittest.main()

@@ -9,8 +9,9 @@
 3. Candidate rule per lesson (max_sl / rev_cool / open_delay; implemented in wfo.simulate and in the live
    Trader._lesson_filter). It must beat the current rules on one year of data: full year, last 60 trading
    days, >= 3 of 4 quarters, and max drawdown not more than 10% worse.
-4. Forward trial: the rule is replayed on the newly recorded live bars only (unseen data) for >= 10
-   trading days. If it is not worse than the current rules there, it is adopted
+4. Forward trial (mandatory, no immediate adoption): the rule is replayed on the live bars recorded AFTER
+   the trial starts (unseen data) for >= 10 trading days. A rule that already lost on the recent live bars is
+   rejected without a trial. If it is not worse than the current rules in the trial, it is adopted
    (data/strategy_params.json -> "lessons"); otherwise rejected and not retried for 8 weeks.
 """
 
@@ -354,26 +355,18 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
       eval_since = datetime.fromisoformat("2026-10-19T08:45:00+08:00")
       n_days, rb, rx = _eval_live(c, sim_ai, base, rule, sessions, eval_since)
       b_l, x_l = rb["pnl"], rx["pnl"]
-      if n_days >= TRIAL_DAYS and x_l > b_l and rb.get("log") != rx.get("log"):
-        if adopt:
-          lessons[ai] = {**lessons.get(ai, {}), **rule}
-          st["adopted"].append({"rule": rule, "tag": tag, "base": base_sig, "ai": ai,
-                                "at": now.date().isoformat(), "bt": bt, "fwd": [round(x_l), round(b_l)]})
-          ledger.set_state(f"strategy_since:{ai}", now.isoformat(timespec="seconds"))
-          changed = True
-          lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt}"
-                       f"｜近 {n_days} 天實盤 {x_l:+,.0f} vs {b_l:+,.0f} → ✅ 雙重通過，正式採用")
-        else:
-          lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt}"
-                       f"｜近 {n_days} 天實盤 {x_l:+,.0f} vs {b_l:+,.0f} → 通過（未設定自動套用）")
-      elif n_days >= TRIAL_DAYS and x_l < b_l:
+      # The recent live bars are the same bars whose losses suggested the rule (in-sample), so passing them is
+      # not enough: a rule is never adopted immediately; it always starts a forward trial on NEW bars.
+      if n_days >= TRIAL_DAYS and x_l < b_l:
         st["rejected"].append({"rule": rule, "tag": tag, "base": base_sig, "ai": ai,
                                "at": now.date().isoformat(), "fwd": [round(x_l), round(b_l)]})
         lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt}"
                      f"｜近 {n_days} 天實盤 {x_l:+,.0f} vs {b_l:+,.0f} → ❌ 實盤未變好，不採用")
       else:
         st["trials"][ai] = {"rule": rule, "tag": tag, "base": base_sig, "since": now.isoformat(timespec="seconds"), "bt": bt}
-        lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt} → 回測通過，開始實戰驗證 {TRIAL_DAYS} 天")
+        recent = f"｜近 {n_days} 天實盤 {x_l:+,.0f} vs {b_l:+,.0f}" if n_days else ""
+        lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt}{recent}"
+                     f" → 回測通過，開始實戰驗證 {TRIAL_DAYS} 天（新行情）才決定是否採用")
   active = {ai: r for ai, r in lessons.items() if r}
   if active:
     lines.append("✅ 目前已採用：" + "；".join(f"{NAMES.get(ai, ai)} {rule_zh(r)}" for ai, r in active.items()))
@@ -381,3 +374,57 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
   if changed:
     PARAMS.write_text(json.dumps(params, ensure_ascii=False, indent=2), encoding="utf-8")
   return {"lines": lines, "changed": changed}
+
+
+# Rule keys the live Trader._lesson_filter enforces for intraday AIs (see trader.py).
+LIVE_RULE_KEYS = ("open_delay", "min_er", "max_vwap_atr", "max_vwap_pts", "max_sl", "rev_cool")
+
+
+def propose(cfg: dict, ai: str, rule: dict, sessions: list | None = None, now: datetime | None = None) -> dict:
+  """Manual-change gate: a hand-written rule goes through the same path as a weekly lesson.
+
+  It must pass the one-year / last-60-day / quarters / drawdown backtest, must not lose on the recent live bars,
+  and is then registered as a forward trial (adopted by the Saturday review only after >= TRIAL_DAYS of new bars).
+  Returns {"ok": bool, "lines": [...]}; never adopts directly.
+  """
+  from . import wfo
+  now = now or datetime.now(TPE)
+  if ai not in AIS or ai == "omega-swing":
+    return {"ok": False, "lines": [f"❌ {ai}：只支援當沖 AI（alpha-orb / sigma-vwap / nova-nightorb）"]}
+  bad = [k for k in rule if k not in LIVE_RULE_KEYS]
+  if bad:
+    return {"ok": False, "lines": [f"❌ 不支援的規則欄位 {bad}（即時交易只認得 {list(LIVE_RULE_KEYS)}）"]}
+  if not rule or any(isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0 for v in rule.values()):
+    return {"ok": False, "lines": [f"❌ 規則值必須是大於 0 的數字：{rule}"]}
+  st = load_state()
+  if st["trials"].get(ai):
+    t = st["trials"][ai]
+    return {"ok": False, "lines": [f"⏸ {NAMES[ai]} 已有驗證中的規則「{rule_zh(t['rule'])}」（{t['since'][:10]} 起），一次只驗證一條"]}
+  params = json.loads(PARAMS.read_text(encoding="utf-8")) if PARAMS.exists() else {}
+  have = params.get("lessons", {}).get(ai, {})
+  if all(have.get(k) == v for k, v in rule.items()):
+    return {"ok": False, "lines": [f"⚪ {NAMES[ai]}「{rule_zh(rule)}」已經在用了"]}
+  sim_ai, base = _specs(params.get("lessons", {}))[ai]
+  base_sig = json.loads(json.dumps(base, sort_keys=True))
+  cutoff = (now - timedelta(weeks=RETRY_WEEKS)).date().isoformat()
+  if any(j["ai"] == ai and j["rule"] == rule and j["at"] >= cutoff and (j.get("base") is None or j.get("base") == base_sig)
+         for j in st["rejected"]):
+    return {"ok": False, "lines": [f"⏸ {NAMES[ai]}「{rule_zh(rule)}」{RETRY_WEEKS} 週內已被淘汰過，暫不重試"]}
+  sessions = sessions if sessions is not None else wfo.load_sessions(cfg)
+  days = sorted({s.td for s in sessions})
+  base_m = _metrics(dict(cfg), sim_ai, base, sessions, days)
+  bt = backtest(dict(cfg), sim_ai, base, rule, sessions, days, base_m)
+  exp = (base_m["pnl"] + bt["gain"]) * 0.7
+  lines = [f"📝 提案 {NAMES[ai]}「{rule_zh(rule)}」：一年 {bt['gain']:+,}、近60天 {bt['gain60']:+,}、"
+           f"四季不退步 {bt['qwin']}/4（進步 {bt['qimp']}/4）、回撤 {bt['dd']:,}（原 {bt['base_dd']:,}）",
+           f"   保守預期（一年回測 ×0.7）：{exp:+,.0f}／年"]
+  if not bt["ok"]:
+    return {"ok": False, "lines": lines + ["   → ❌ 回測沒變好，不進入驗證"]}
+  n_days, rb, rx = _eval_live(dict(cfg), sim_ai, base, rule, sessions,
+                              datetime.fromisoformat("2026-10-19T08:45:00+08:00"))
+  if n_days >= TRIAL_DAYS and rx["pnl"] < rb["pnl"]:
+    return {"ok": False, "lines": lines + [f"   → ❌ 近 {n_days} 天實盤 {rx['pnl']:+,.0f} vs {rb['pnl']:+,.0f}，不進入驗證"]}
+  st["trials"][ai] = {"rule": rule, "tag": "manual", "base": base_sig,
+                      "since": now.isoformat(timespec="seconds"), "bt": bt}
+  STATE.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+  return {"ok": True, "lines": lines + [f"   → ✅ 已登記為實戰驗證（{TRIAL_DAYS} 個交易日新行情後，週六檢討自動決定是否採用）"]}

@@ -110,6 +110,10 @@ def main(argv=None) -> int:
   tr.add_argument("--test-days", type=int, default=5)
   sub.add_parser("replay", help="回測 vs 即時 對帳：用即時錄下的 K 棒重跑回測，逐筆比對")
   sub.add_parser("weekly", help="每週自動訓練：滾動前進測試、比較參數、影子排名、LINE 報告")
+  sub.add_parser("watchdog", help="引擎監控：盤中引擎沒跑／卡住／磁碟不足時 LINE 告警（cron 每 5 分鐘）")
+  pr = sub.add_parser("propose", help="手動改規則的關卡：回測＋近期實盤檢查，通過後登記 10 個交易日實戰驗證（不直接上線）")
+  pr.add_argument("ai", choices=["alpha-orb", "sigma-vwap", "nova-nightorb"])
+  pr.add_argument("rule", help='JSON，例如 \'{"max_vwap_pts": 200}\'')
   ex = sub.add_parser("export-history", help="（Mac 上執行）唯讀下載永豐微台指 1 分K 歷史資料，上傳到私人資料庫")
   ex.add_argument("--days", type=int, default=365)
   ex.add_argument("--production", action="store_true", help="改用正式環境行情（API Key 需勾選正式環境＋行情/資料）")
@@ -121,6 +125,11 @@ def main(argv=None) -> int:
   args = ap.parse_args(argv)
 
   cfg = load_config(args.config)
+  if args.cmd == "watchdog":  # Must work even when the DB is unwritable (disk full): no Ledger here.
+    from .watchdog import run as run_watchdog
+    for m in run_watchdog(cfg):
+      print(m)
+    return 0
   if args.cmd == "export-history":  # Data-only: never creates traders, brokers or orders.
     from .export_history import export_history
     export_history(args.days, args.production, not args.no_push)
@@ -170,6 +179,10 @@ def main(argv=None) -> int:
   elif args.cmd == "weekly":
     from .weekly import run_weekly
     run_weekly(cfg)
+  elif args.cmd == "propose":
+    import json as _json
+    from .lessons import propose
+    print("\n".join(propose(cfg, args.ai, _json.loads(args.rule))["lines"]))
   elif args.cmd == "train":
     from .wfo import save_report, walk_forward
     rep = walk_forward(cfg, args.train_days, args.test_days)

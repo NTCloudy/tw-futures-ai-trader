@@ -65,7 +65,8 @@ def sim_specs(legacy: bool = False) -> dict:
                                              fill_through=1, max_entries=2, max_wick=0.25,
                                              hours_free=("2026-10-28T12:00:00+08:00", "2026-11-07T12:30:00+08:00"))),
       "nova-nightorb": ("anchor-orb", nova),
-      "nova-us": ("anchor-orb", dict(nova, hours=("us_open",), be_r=1.75)),
+      # Same as live build_nova_us: dst_skip off (it is ignored whenever "hours" is set, live and simulated).
+      "nova-us": ("anchor-orb", dict(nova, hours=("us_open",), be_r=1.75, dst_skip=None)),
   }
   return {ai: (sa, {**p, **les.get("nova-nightorb" if ai == "nova-us" else ai, {}), **les.get(ai, {})})
           for ai, (sa, p) in specs.items()}

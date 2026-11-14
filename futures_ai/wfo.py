@@ -347,6 +347,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
   if p.get("off"):
     return {"pnl": 0.0, "trades": 0, "wins": 0, "maxdd": 0.0, "curve": []}
   pv = cfg["point_value"]
+  slip_default = (cfg.get("sim_sl_slip_pts") or {}).get(ai, 1)
   cap_entries = min(cfg["max_entries_per_session"], p.get("max_entries", 99))
   pnl = peak = maxdd = 0.0
   trades = wins = 0
@@ -377,7 +378,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         sl_hit = x.l <= sl if d == 1 else x.h >= sl
         tp_hit = x.h >= tp if d == 1 else x.l <= tp
         if sl_hit:
-          sl_slip = p.get("sl_slip", 1)  # Points beyond the stop (or gapped open) at which a stop fills.
+          sl_slip = p.get("sl_slip", slip_default)  # Points beyond the stop (or gapped open) at which a stop fills.
           exit_px, kind = ((min(sl, x.o) - sl_slip) if d == 1 else (max(sl, x.o) + sl_slip)), "SL"
         elif tp_hit:
           slip = 0 if p.get("tp_limit") else 1
