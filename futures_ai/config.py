@@ -33,11 +33,12 @@ DEFAULTS: dict = {
     "tax_rate": 0.00002,  # 期交稅 十萬分之二 per side
     "paper_slippage_ticks": 1,
     # Backtest stop-fill slippage (points beyond the stop / gapped open) per simulator AI; others default to 1.
-    # Sigma = 5: measured live stop slippage 10/19~11/13 (35 stops: mean 4.6, median 2, p75 5 points). Conservative:
-    # the live figure (vs trigger price) includes gaps, which the simulator already fills at min(stop, open).
-    # Nova (anchor-orb) measured mean 2.4 / p75 3 and Alpha 1.2 stay at 1 until a dry run confirms their weekly
-    # parameter selection is unchanged (pending decision).
-    "sim_sl_slip_pts": {"sigma-pullback": 5},
+    # Rule (agreed with the user 11/14): measured live mean rounded to an integer, only with n >= 30 live stops.
+    # Measured 10/19~11/13 (trigger price -> fill): Sigma n=35 mean 4.6 -> 5; Nova n=34 mean 2.4 -> 2. The
+    # simulator already fills gapped bars at min(stop, open) and the gap part averaged 0, so these equal the mean.
+    # Alpha (n=6, mean 1.2) and Omega (n=8, median 2; two outliers were engine/latency issues, not slippage) stay 1.
+    # The monthly report shows the live statistics and flags "建議調整" when n >= 30 and |mean - setting| >= 1.
+    "sim_sl_slip_pts": {"sigma-pullback": 5, "anchor-orb": 2},
     "roll_days_before": 1,
     "trade_night_session": True,
     "no_entry_minutes_before_close": 20,

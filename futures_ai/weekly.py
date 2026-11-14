@@ -32,6 +32,7 @@ NAMES = {"alpha-orb": "Alpha 開盤突破", "sigma-vwap": "Sigma 趨勢回測", 
 # Expectation policy: in-sample one-year backtests are optimistic, so every expectation shown in reports (and used
 # to judge a change) is the walk-forward out-of-sample result, or the one-year backtest x HAIRCUT.
 HAIRCUT = 0.7
+OMEGA_STRESS_SLIP = 47
 
 
 def live_exec() -> dict:
@@ -67,6 +68,10 @@ def health_lines(cfg: dict, sessions: list) -> list[str]:
     flag = "🟢" if r["pnl"] > 0 else "🔴 待結構檢討"
     out.append(f"{name}：{r['pnl']:+,.0f}（保守預期 ×0.7 ≈ {r['pnl'] * HAIRCUT:+,.0f}）｜回撤 {r['maxdd']:,.0f}"
                f"｜{r['trades']} 筆 {flag}")
+  # Risk view only (not used for selection): Omega with the 10/19~11/13 live mean stop slippage of 47 points
+  # (driven by two engine-latency outliers, 269 and 91 points).
+  st = simulate_swing(c, {**om, "sl_slip": OMEGA_STRESS_SLIP}, sessions)
+  out.append(f"Omega 壓測（停損滑價 {OMEGA_STRESS_SLIP} 點，僅看風險）：{st['pnl']:+,.0f}｜回撤 {st['maxdd']:,.0f}")
   return out
 
 

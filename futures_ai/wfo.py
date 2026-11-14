@@ -425,6 +425,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           if cfg.get("enforce_daily_loss") and day_pnl[s.td] <= -cfg["max_daily_loss_twd"]:
             locked_days.add(s.td)
             pend = None
+          # Protected exit: the stop had been moved to the entry price or beyond (breakeven / trailing) and the
+          # fill stayed within 30 points of entry (classification by stop position, independent of costs).
+          protected = d * (pos[2] - entry) >= 0 and (exit_px - entry) * d >= -30
           pos = None
           last_exit_i = i
           if kind == "TP" and p.get("chase"):
@@ -435,9 +438,13 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
             last_sl = None
           if kind == "SL":
             chase_side = None
-            if net < 0:
+            # Comparison options (default off = live behaviour): a protected exit that loses only costs + slippage
+            # is not counted as a stop for max_sl / rev_cool (p["sl_real_only"]) and/or for Sigma's stop-block
+            # (p["sl_real_block"]).
+            if net < 0 and not (p.get("sl_real_only") and protected):
               sl_count += 1
               last_sl = (side, x.end)
+            if net < 0 and not (p.get("sl_real_block") and protected):
               if ai in ("sigma-pullback", "sigma-fixed"):
                 block_side, block_i = side, i
       if pend and not pos:  # Working limit entry from an earlier signal.

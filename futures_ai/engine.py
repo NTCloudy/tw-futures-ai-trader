@@ -377,7 +377,7 @@ class Engine:
             key = start.strftime("%Y-%m")
             if month_closes_after(start) and self.ledger.get_state("monthly_sent") != key:
               self.ledger.set_state("monthly_sent", key)
-              text = monthly_text(self.ledger, names, start.date())
+              text = monthly_text(self.ledger, names, start.date(), self.cfg)
               defer_m = prev_session == "night"
               if self.cfg.get("stock_reports", True):  # Slow parts (bar parsing, git pull + prices): background.
                 from .monthly import regime_lines, stock_month_text

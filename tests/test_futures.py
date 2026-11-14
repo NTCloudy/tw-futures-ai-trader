@@ -1093,6 +1093,29 @@ class WeeklyPolicyTest(unittest.TestCase):
     txt = "\n".join(out)
     self.assertIn("Omega：+1,000", txt)
     self.assertIn("×0.7 ≈ +700", txt)
+    self.assertIn("Omega 壓測（停損滑價 47 點", txt)
+
+  def test_slippage_lines_flag_only_with_enough_samples(self):
+    from futures_ai.ledger import Ledger
+    from futures_ai.slippage import slippage_lines, stats
+    self.assertEqual(stats([1, 3])[0:2], (2, 2.0))
+    lg = Ledger(":memory:")
+    def stop(ai, side, trig, fill):
+      cols = "ai, ts, trading_day, contract, kind, order_type, side, qty, trigger_price, fill_price, status, broker"
+      lg.conn.execute(f"INSERT INTO orders({cols}) VALUES(?, '2026-11-01T10:00:00+08:00', '2026-11-01', 'TMFX6', "
+                      "'SL', 'STOP', ?, 1, ?, NULL, 'TRIGGERED', 'local_paper')", (ai, side, trig))
+      lg.conn.execute(f"INSERT INTO orders({cols}) VALUES(?, '2026-11-01T10:00:00+08:00', '2026-11-01', 'TMFX6', "
+                      "'SL', 'MKT', ?, 1, NULL, ?, 'FILLED', 'local_paper')", (ai, side, fill))
+    for _ in range(30):
+      stop("sigma-vwap", "B", 100, 109)  # Buy-to-cover 9 points above the trigger.
+    for _ in range(5):
+      stop("alpha-orb", "S", 100, 96)
+    txt = "\n".join(slippage_lines(lg, cfg()))
+    self.assertIn("Sigma：30 筆｜平均 9.0", txt)
+    self.assertIn("建議調整為 9", txt)
+    self.assertIn("Alpha：5 筆｜平均 4.0", txt)
+    self.assertIn("樣本不足", txt)
+    self.assertIn("Nova：尚無停損", txt)
 
   def test_expectation_lines_per_20_days(self):
     from futures_ai.weekly import expectation_lines
@@ -1127,7 +1150,7 @@ class WeeklyPolicyTest(unittest.TestCase):
 
   def test_sigma_backtest_uses_measured_stop_slippage(self):
     c = cfg()
-    self.assertEqual(c["sim_sl_slip_pts"], {"sigma-pullback": 5})  # Other AIs keep the 1-point default.
+    self.assertEqual(c["sim_sl_slip_pts"], {"sigma-pullback": 5, "anchor-orb": 2})  # Others keep 1.
 
   def test_nova_us_sim_matches_live_shadow(self):
     from futures_ai.replay import sim_specs

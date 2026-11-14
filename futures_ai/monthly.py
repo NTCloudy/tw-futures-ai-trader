@@ -86,7 +86,7 @@ def crypto_month(start: datetime, end: datetime | None = None) -> list[tuple[str
     c.close()
 
 
-def monthly_text(ledger, names: dict, month: date) -> str:
+def monthly_text(ledger, names: dict, month: date, cfg: dict | None = None) -> str:
   start, end = _month_bounds(month)
   fut = futures_month(ledger, names, start, end)
   cry = crypto_month(start, end)
@@ -97,6 +97,12 @@ def monthly_text(ledger, names: dict, month: date) -> str:
     lines += ["", "₿ 虛擬貨幣（USDT）"]
     lines += [f"{n}：{v:+,.0f}" for n, v in cry]
     lines.append(f"合計：{sum(v for _, v in cry):+,.0f}")
+  try:
+    from .config import DEFAULTS
+    from .slippage import slippage_lines
+    lines += slippage_lines(ledger, cfg or DEFAULTS)
+  except Exception as exc:  # The statistics are informational; never block the monthly report.
+    lines.append(f"停損滑價統計失敗：{exc}")
   return "\n".join(lines)
 
 
