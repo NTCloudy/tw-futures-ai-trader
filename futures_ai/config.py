@@ -39,6 +39,10 @@ DEFAULTS: dict = {
     # Alpha (n=6, mean 1.2) and Omega (n=8, median 2; two outliers were engine/latency issues, not slippage) stay 1.
     # The monthly report shows the live statistics and flags "建議調整" when n >= 30 and |mean - setting| >= 1.
     "sim_sl_slip_pts": {"sigma-pullback": 5, "anchor-orb": 2},
+    # Protected stop exits (stop at/beyond entry, fill within 30 pts) not counted as stop-losses (max_sl, rev_cool,
+    # Sigma stop-block, weekly loss tags). Off until the user approves after the 10-trading-day shadow comparison
+    # (prot-* shadow twins, 11/16~11/27); turning it on switches live, simulator and weekly review together.
+    "protected_not_stop": False,
     "roll_days_before": 1,
     "trade_night_session": True,
     "no_entry_minutes_before_close": 20,

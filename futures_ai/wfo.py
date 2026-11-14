@@ -21,6 +21,7 @@ from pathlib import Path
 from .calendar import TPE
 from .config import ROOT
 from .feed import Bar
+from .trader import is_protected_exit
 from .learning import efficiency_ratio, ER_TREND
 
 HIST = ROOT / "data" / "history"
@@ -348,6 +349,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
     return {"pnl": 0.0, "trades": 0, "wins": 0, "maxdd": 0.0, "curve": []}
   pv = cfg["point_value"]
   slip_default = (cfg.get("sim_sl_slip_pts") or {}).get(ai, 1)
+  prot_mode = bool(cfg.get("protected_not_stop", False))
   cap_entries = min(cfg["max_entries_per_session"], p.get("max_entries", 99))
   pnl = peak = maxdd = 0.0
   trades = wins = 0
@@ -425,9 +427,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           if cfg.get("enforce_daily_loss") and day_pnl[s.td] <= -cfg["max_daily_loss_twd"]:
             locked_days.add(s.td)
             pend = None
-          # Protected exit: the stop had been moved to the entry price or beyond (breakeven / trailing) and the
-          # fill stayed within 30 points of entry (classification by stop position, independent of costs).
-          protected = d * (pos[2] - entry) >= 0 and (exit_px - entry) * d >= -30
+          protected = kind == "SL" and is_protected_exit(side, entry, pos[2], exit_px)  # Same as live trader.
           pos = None
           last_exit_i = i
           if kind == "TP" and p.get("chase"):
@@ -438,13 +438,13 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
             last_sl = None
           if kind == "SL":
             chase_side = None
-            # Comparison options (default off = live behaviour): a protected exit that loses only costs + slippage
-            # is not counted as a stop for max_sl / rev_cool (p["sl_real_only"]) and/or for Sigma's stop-block
-            # (p["sl_real_block"]).
-            if net < 0 and not (p.get("sl_real_only") and protected):
+            # Protected mode (cfg protected_not_stop, default off = live behaviour; p["sl_real_only"] /
+            # p["sl_real_block"] override for comparisons): a protected exit is not counted as a stop for
+            # max_sl / rev_cool and for Sigma's stop-block.
+            if net < 0 and not (p.get("sl_real_only", prot_mode) and protected):
               sl_count += 1
               last_sl = (side, x.end)
-            if net < 0 and not (p.get("sl_real_block") and protected):
+            if net < 0 and not (p.get("sl_real_block", prot_mode) and protected):
               if ai in ("sigma-pullback", "sigma-fixed"):
                 block_side, block_i = side, i
       if pend and not pos:  # Working limit entry from an earlier signal.

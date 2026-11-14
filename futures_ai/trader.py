@@ -22,6 +22,17 @@ KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSI
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉",
            "RETIRE": "AI 下架平倉", "STOP_TIME": "試跑結束時間平倉"}
 BE_OFFSET_PTS = 6  # Breakeven offset (+6 pts) to cover round-trip commission, tax and slippage.
+PROTECT_MAX_LOSS_PTS = 30
+PROTECTED_KEEP = 300
+
+
+def is_protected_exit(side: str, entry: float, stop_at_exit: float, exit_price: float) -> bool:
+  """Protected stop exit: the stop had been moved to the entry price or beyond (breakeven / trailing) and the
+  fill stayed within PROTECT_MAX_LOSS_PTS of entry. Such an exit loses only costs + slippage; in protected
+  mode it is not counted as a stop-loss (max_sl, rev_cool, Sigma's stop-block, weekly loss tags). Shared by the
+  live trader and the simulator (wfo) so both classify identically."""
+  d = 1 if side == "B" else -1
+  return d * (stop_at_exit - entry) >= 0 and (exit_price - entry) * d >= -PROTECT_MAX_LOSS_PTS
 
 
 def tp_cap(sl_pts: float, tp_pts: float, bars: list, minutes_to_close: float, reason: str) -> tuple[float, str]:
@@ -51,6 +62,10 @@ class AiTrader:
     self.qty = cfg["qty"]
     self.pending: dict[str, dict] = {}  # broker_order_id -> {"oid", "kind", "entry"}
     self.learning = bool(cfg.get("learning_mode"))
+    # Protected-exit mode (see is_protected_exit): off for live AIs until the user approves; on for the
+    # "prot-" shadow twins of the 10-trading-day comparison.
+    pm = getattr(strategy, "protected_not_stop", None)
+    self.protected_mode = bool(cfg.get("protected_not_stop", False) if pm is None else pm)
     self.brain = Brain(ledger, strategy, learning=self.learning)
     if not cfg.get("learn_per_trade", True):
       # Parameters change at most once a week (weekly job), never after a single trade: no stop /
@@ -264,7 +279,12 @@ class AiTrader:
     if info["kind"] == "ROLL" and hasattr(self.s, "reentry_side"):
       self.s.reentry_side = p["side"]  # Re-open in the new contract if the trend is intact.
       self.ledger.set_state(f"reentry:{self.ai}", p["side"])
-    if info["kind"] == "SL" and net < 0 and getattr(self.s, "block_after_stop", False):
+    prot = info["kind"] == "SL" and is_protected_exit(p["side"], p["entry_price"], p["sl"], price)
+    if prot:  # Recorded in every mode (analysis); only protected mode acts on it.
+      keep = (self.ledger.get_state(f"protected_exits:{self.ai}") or [])[-(PROTECTED_KEEP - 1):]
+      self.ledger.set_state(f"protected_exits:{self.ai}", keep + [ts.isoformat(timespec="seconds")])
+    if info["kind"] == "SL" and net < 0 and getattr(self.s, "block_after_stop", False) and \
+        not (self.protected_mode and prot):
       self.ledger.set_state(f"block:{self.ai}", {"side": p["side"], "ts": ts.isoformat()})
     lesson = self.brain.review(ts, p, price, info["kind"], net)
     self.ledger.log(f"🧠 檢討：{lesson['diagnosis']}｜{'；'.join(lesson['adjustments'])}", self.ai, "LEARN", ts)
@@ -424,6 +444,9 @@ class AiTrader:
         return f"📚 經驗規則：距離均價 {abs(bars[-1].c - vw):.0f} 點 > {rules['max_vwap_pts']:.0f} 點，不追高殺低"
     trades = self.ledger.rows("SELECT side, exit_ts, exit_kind, pnl_twd FROM trades WHERE ai=? AND exit_ts>=? "
                               "ORDER BY exit_ts, id", (self.ai, start.isoformat()))
+    if self.protected_mode:  # Losing protected exits are not stops: skip them (a winning one still resets,
+      prot = set(self.ledger.get_state(f"protected_exits:{self.ai}") or [])  # exactly as in the simulator).
+      trades = [r for r in trades if not (r["exit_kind"] == "SL" and r["pnl_twd"] < 0 and r["exit_ts"] in prot)]
     consec_sl = 0
     for r in reversed(trades):
       if r["exit_kind"] == "SL" and r["pnl_twd"] < 0:

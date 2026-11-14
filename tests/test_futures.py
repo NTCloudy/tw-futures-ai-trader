@@ -1160,5 +1160,95 @@ class WeeklyPolicyTest(unittest.TestCase):
     self.assertEqual((tuple(p["hours"]), p["dst_skip"], p["be_r"]), (tuple(live.hours), live.dst_skip, live.be_r))
 
 
+class ProtectedExitTest(unittest.TestCase):
+
+  def test_classification_shared_by_live_and_sim(self):
+    from futures_ai import trader, wfo
+    self.assertIs(wfo.is_protected_exit, trader.is_protected_exit)  # One definition for both.
+    f = trader.is_protected_exit
+    self.assertTrue(f("B", 44000, 44006, 44001))    # Breakeven stop +6, filled 1 point above entry.
+    self.assertTrue(f("B", 44000, 44006, 43990))    # Slipped 16 points: still protected (fill >= entry - 30).
+    self.assertFalse(f("B", 44000, 44006, 43960))   # Fill 40 points below entry: counted as a stop.
+    self.assertFalse(f("B", 44000, 43850, 43845))   # Initial stop below entry: a real stop.
+    self.assertTrue(f("S", 44000, 43994, 44005))
+    self.assertFalse(f("S", 44000, 44150, 44152))
+
+  def _trader(self, protected):
+    c = cfg(protected_not_stop=protected)
+    ledger = Ledger(":memory:")
+    st = FakeStrategy(None)
+    st.rules = {"max_sl": 2, "rev_cool": 30}
+    tr = AiTrader(c, st, LocalPaperBroker(c), ledger)
+    def add(ts, side, pnl, pts):
+      ledger.add_trade(ai="alpha-orb", trading_day="2026-11-17", contract="TMFX6", side=side, qty=1,
+                       entry_ts=ts, entry_price=44000, exit_ts=ts, exit_price=44000 + pts, points=pts,
+                       gross_twd=pts * 10, cost_twd=42, pnl_twd=pnl, exit_kind="SL", entry_reason="x")
+    add("2026-11-17T09:10:00+08:00", "B", -1552, -151)  # Real stop.
+    add("2026-11-17T09:40:00+08:00", "B", -32, 1)        # Breakeven exit with 5 points slippage.
+    ledger.set_state("protected_exits:alpha-orb", ["2026-11-17T09:40:00+08:00"])
+    return tr
+
+  def test_lesson_filter_skips_protected_exits_only_in_protected_mode(self):
+    from types import SimpleNamespace
+    bars = bars_from([(44000, 44005, 43995, 44000)] * 40, start=at(2026, 11, 17, 9, 0))
+    sig_b = SimpleNamespace(side="B")
+    self.assertIn("連續停損 2 次", self._trader(False)._lesson_filter(sig_b, bars))  # Live today.
+    self.assertIsNone(self._trader(True)._lesson_filter(sig_b, bars))  # Only 1 real stop; 09:10 + 30 < 09:40.
+
+  def test_winning_protected_exit_still_resets_like_sim(self):
+    from types import SimpleNamespace
+    c = cfg(protected_not_stop=True)
+    ledger = Ledger(":memory:")
+    st = FakeStrategy(None)
+    st.rules = {"max_sl": 2}
+    tr = AiTrader(c, st, LocalPaperBroker(c), ledger)
+    for ts, pnl, pts in (("09:10", -1552, -151), ("09:40", 8, 5), ("10:10", -1552, -151)):
+      t = f"2026-11-17T{ts}:00+08:00"
+      ledger.add_trade(ai="alpha-orb", trading_day="2026-11-17", contract="TMFX6", side="B", qty=1, entry_ts=t,
+                       entry_price=44000, exit_ts=t, exit_price=44000 + pts, points=pts, gross_twd=pts * 10,
+                       cost_twd=42, pnl_twd=pnl, exit_kind="SL", entry_reason="x")
+    ledger.set_state("protected_exits:alpha-orb", ["2026-11-17T09:40:00+08:00"])
+    bars = bars_from([(44000, 44005, 43995, 44000)] * 90, start=at(2026, 11, 17, 9, 0))
+    self.assertIsNone(tr._lesson_filter(SimpleNamespace(side="B"), bars))  # Consecutive real stops = 1 (sim: 1).
+    from futures_ai import lessons
+    rows = [dict(r) for r in ledger.rows("SELECT * FROM trades ORDER BY id")]
+    r = lessons.review(rows, "alpha-orb", protected={"2026-11-17T09:40:00+08:00"})
+    self.assertEqual(r["tags"]["consec_sl"], 0)
+
+  def test_block_after_stop_skipped_for_protected_exit(self):
+    c = cfg(protected_not_stop=True)
+    ledger = Ledger(":memory:")
+    st = FakeStrategy(None)
+    st.block_after_stop = True
+    tr = AiTrader(c, st, LocalPaperBroker(c), ledger)
+    tr.pos = {"side": "B", "qty": 1, "entry_price": 44000, "entry_ts": "2026-11-17T09:00:00+08:00",
+              "contract": "TMFX6", "trading_day": "2026-11-17", "session_key": "k", "sl": 44006, "tp": 44600,
+              "sl_oid": 0, "tp_oid": 0, "entry_cost": 21, "reason": "x", "mfe": 300, "mae": 0}
+    tr._close(at(2026, 11, 17, 9, 30), {"kind": "SL", "code": "TMFX6"}, 44001)
+    self.assertIsNone(ledger.get_state("block:alpha-orb"))
+    self.assertEqual(ledger.get_state("protected_exits:alpha-orb"), ["2026-11-17T09:30:00+08:00"])
+
+  def test_weekly_review_ignores_protected_exits_in_protected_mode(self):
+    from futures_ai import lessons
+    rows = [{"entry_ts": "2026-11-17T09:00:00+08:00", "exit_ts": "2026-11-17T09:10:00+08:00", "side": "B",
+             "pnl_twd": -32, "exit_kind": "SL", "entry_price": 44000, "entry_reason": ""},
+            {"entry_ts": "2026-11-17T09:20:00+08:00", "exit_ts": "2026-11-17T09:30:00+08:00", "side": "B",
+             "pnl_twd": -1552, "exit_kind": "SL", "entry_price": 44000, "entry_reason": ""}]
+    self.assertEqual(lessons.review(rows, "sigma-vwap")["tags"]["consec_sl"], 1)
+    r = lessons.review(rows, "sigma-vwap", protected={"2026-11-17T09:10:00+08:00"})
+    self.assertEqual((r["tags"]["consec_sl"], r["losses"]), (0, 1))
+
+  def test_protected_twins_and_report(self):
+    from futures_ai import shadows
+    tw = shadows.build_protected_twins(cfg(), Ledger(":memory:"))
+    self.assertEqual(sorted(t.ai for t in tw), ["prot-alpha-orb", "prot-nova-nightorb", "prot-sigma-vwap"])
+    self.assertTrue(all(t.protected_mode for t in tw))
+    live, sh = Ledger(":memory:"), Ledger(":memory:")
+    txt = "\n".join(shadows.protected_shadow_lines(live, sh, now=at(2026, 11, 27, 23, 0)))
+    self.assertIn("第 10/10 個交易日", txt)
+    self.assertIn("已滿 10 個交易日", txt)
+    self.assertEqual(shadows.protected_shadow_lines(live, sh, now=at(2026, 11, 14, 12, 0)), [])
+
+
 if __name__ == "__main__":
   unittest.main()

@@ -89,8 +89,10 @@ def _session(ts: datetime) -> tuple:
   return (d, "night", datetime.combine(d, datetime.min.time(), TPE).replace(hour=15))
 
 
-def review(rows: list[dict], ai: str, journal: list[dict] | None = None) -> dict:
-  """Tag the losing trades in `rows` (one AI, ordered by entry). Returns {tag: count} and the loss count."""
+def review(rows: list[dict], ai: str, journal: list[dict] | None = None, protected: set | None = None) -> dict:
+  """Tag the losing trades in `rows` (one AI, ordered by entry). Returns {tag: count} and the loss count.
+  protected: exit_ts of protected stop exits (protected mode); losing ones are neither losses nor stops here
+  (a winning protected exit still resets the counters, as in the simulator)."""
   tags = {k: 0 for k in TAG_ZH}
   sl_in = {}
   last_sl = {}
@@ -101,6 +103,8 @@ def review(rows: list[dict], ai: str, journal: list[dict] | None = None) -> dict
       j_by_ts[j["entry_ts"]] = j
     if j.get("ts"):
       j_by_ts[j["ts"]] = j
+  if protected:
+    rows = [r for r in rows if not (r["exit_kind"] == "SL" and r["pnl_twd"] < 0 and r["exit_ts"] in protected)]
   for r in rows:
     e = datetime.fromisoformat(r["entry_ts"])
     sig_t = e.replace(second=0, microsecond=0) - timedelta(minutes=e.minute % 5)
@@ -156,10 +160,12 @@ def review(rows: list[dict], ai: str, journal: list[dict] | None = None) -> dict
   return {"tags": tags, "losses": losses, "trades": len(rows)}
 
 
-def weekly_reviews(ledger: Ledger, now: datetime, weeks: int = 4, respect_since: bool = False) -> dict:
+def weekly_reviews(ledger: Ledger, now: datetime, weeks: int = 4, respect_since: bool = False,
+                   protected_mode: bool = False) -> dict:
   """{ai: [review of this week, last week, ...]}."""
   out = {}
   for ai in AIS:
+    prot = set(ledger.get_state(f"protected_exits:{ai}") or []) if protected_mode else None
     b_state = ledger.get_state(f"brain:{ai}") or {}
     journal = b_state.get("journal") or []
     since_ts = ledger.get_state(f"strategy_since:{ai}") if respect_since else None
@@ -170,7 +176,7 @@ def weekly_reviews(ledger: Ledger, now: datetime, weeks: int = 4, respect_since:
                          (ai, lo.isoformat(), hi.isoformat()))
       if since_ts:
         rows = [r for r in rows if r["entry_ts"] >= since_ts]
-      out[ai].append(review(rows, ai, journal=journal))
+      out[ai].append(review(rows, ai, journal=journal, protected=prot))
   return out
 
 
@@ -282,8 +288,9 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
   lessons = params.setdefault("lessons", {})
   specs = _specs(lessons)
   days = sorted({s.td for s in sessions})
-  revs = weekly_reviews(ledger, now, respect_since=False)
-  revs_since = weekly_reviews(ledger, now, respect_since=True)
+  pm = bool(cfg.get("protected_not_stop", False))
+  revs = weekly_reviews(ledger, now, respect_since=False, protected_mode=pm)
+  revs_since = weekly_reviews(ledger, now, respect_since=True, protected_mode=pm)
   lines = ["", "📚 本週學到什麼（虧損檢討）"]
   changed = False
   for ai in AIS:

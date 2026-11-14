@@ -269,6 +269,11 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     lines.append(f"\n🩺 策略健康度計算失敗：{exc}")
 
   lines += shadow_summary(ledger=ledger)
+  try:
+    from .shadows import protected_shadow_lines
+    lines += protected_shadow_lines(ledger)
+  except Exception as exc:
+    lines.append(f"\n🧪 受保護出場影子比對失敗：{exc}")
 
   report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes, "text": "\n".join(lines)}
   (ROOT / "data" / "weekly_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
