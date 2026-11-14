@@ -666,6 +666,88 @@ class ReplayMatchTest(unittest.TestCase):
     both, lo, so = _match(live, sim)
     self.assertEqual((len(both), len(lo), len(so)), (1, 1, 1))
 
+  def test_rule_periods_follow_live_versions(self):
+    from futures_ai.replay import RULE_VERSIONS, rule_periods
+    ps = rule_periods(at(2026, 10, 19, 8, 45))
+    self.assertEqual(len(ps), len(RULE_VERSIONS) + 1)
+    self.assertIsNone(ps[0][3])  # Legacy specs before the 11/08 upgrade.
+    self.assertEqual(ps[0][1], at(2026, 11, 8, 0, 3, 52))
+    self.assertIsNone(ps[-1][1])
+    for (a, b, _l, _o), (c, _d, _m, _p) in zip(ps, ps[1:]):
+      self.assertEqual(b, c)  # Contiguous, no gaps.
+    late = rule_periods(at(2026, 11, 11, 15, 0))  # Starting inside a version keeps that version's rules.
+    self.assertEqual(late[0][2], RULE_VERSIONS[2][1])
+    self.assertEqual(late[-1][3], {})
+
+  def test_old_versions_disable_later_rules(self):
+    from futures_ai.replay import RULE_VERSIONS, sim_specs
+    p_now = sim_specs()["nova-nightorb"][1]
+    self.assertEqual((p_now["limit_atr"], p_now["max_sl"]), (-0.02, 4))
+    v1 = {**p_now, **RULE_VERSIONS[0][2]["nova-nightorb"]}
+    self.assertEqual((v1["limit_atr"], v1["max_sl"], v1["be_r"]), (0.0, None, None))
+    sg = {**sim_specs()["sigma-vwap"][1], **RULE_VERSIONS[0][2]["sigma-vwap"]}
+    self.assertEqual((sg["limit_atr"], sg["min_er"], sg["max_vwap_pts"]), (0.2, None, None))
+    self.assertIsNone(sg["max_sl"])  # Lesson rules were only loaded by the 11/11 13:46 restart.
+    self.assertIsNone(sg["rev_cool"])
+    al = {**sim_specs()["alpha-orb"][1], **RULE_VERSIONS[1][2]["alpha-orb"]}
+    self.assertIsNone(al["rev_cool"])
+    self.assertNotIn("alpha-orb", RULE_VERSIONS[2][2])  # From 11/11 13:46 the current lesson rules apply.
+
+  def test_summary_shows_fair_and_hindsight_columns(self):
+    from futures_ai.replay import summary_lines
+    rep = {"ais": [{"id": "sigma-vwap", "name": "Sigma 趨勢回測 AI", "live_pnl": 9125, "sim_pnl": 6957,
+                    "sim_now_pnl": 43473}]}
+    txt = "\n".join(summary_lines(rep))
+    self.assertIn("回測（當時規則）", txt)
+    self.assertIn("事後套用", txt)
+    self.assertIn("Sigma｜+9,125｜+6,957｜+43,473", txt)
+
+
+def _swing_sessions():
+  """20 day sessions: steady uptrend (2 pts/min), then a sharp drop on the last day to hit the trailing stop."""
+  from futures_ai.wfo import Session
+  out, px = [], 40000.0
+  for k in range(20):
+    d = date(2026, 9, 1) + timedelta(days=k)
+    start = datetime(d.year, d.month, d.day, 8, 45, tzinfo=TPE)
+    bars = []
+    for i in range(300):
+      step = -12.0 if (k == 19 and i >= 120) else 2.0
+      o, c = px, px + step
+      bars.append(Bar(start + timedelta(minutes=i + 1), o, max(o, c) + 3, min(o, c) - 3, c, 10))
+      px = c
+    out.append(Session(d, "day", "TMFU6", bars, datetime(d.year, d.month, d.day, 13, 45, tzinfo=TPE)))
+  return out
+
+
+class StopSlipTest(unittest.TestCase):
+  P = dict(lookback=10, atr_k=3.0, direction="both", entry="market", tp_atr=None, min_er=None, be_r=None,
+           max_ext_atr=None, max_sl_pts=None)
+
+  def test_swing_sl_slip_worsens_stop_fill_only(self):
+    from futures_ai.swing import simulate_swing
+    c = cfg()
+    sess = _swing_sessions()
+    base = simulate_swing(c, dict(self.P), sess, record=True)
+    same = simulate_swing(c, dict(self.P, sl_slip=1), sess, record=True)
+    worse = simulate_swing(c, dict(self.P, sl_slip=10), sess, record=True)
+    self.assertEqual(base["pnl"], same["pnl"])  # Default = 1 point, unchanged behaviour.
+    stops = [t for t in base["log"] if t[6] == "trail_stop"]
+    self.assertGreaterEqual(len(stops), 1)
+    self.assertEqual(base["trades"], worse["trades"])
+    self.assertAlmostEqual(base["pnl"] - worse["pnl"], 9 * c["point_value"] * len(stops), delta=2 * len(stops))
+
+  def test_swing_schedule_switches_params_by_session(self):
+    from futures_ai.swing import simulate_swing
+    c = cfg()
+    sess = _swing_sessions()
+    slip10 = dict(self.P, sl_slip=10)
+    direct = simulate_swing(c, slip10, sess)
+    early = simulate_swing(c, dict(self.P), sess, schedule=[(at(2026, 8, 1, 0, 0), slip10)])
+    late = simulate_swing(c, dict(self.P), sess, schedule=[(at(2026, 12, 1, 0, 0), slip10)])
+    self.assertEqual(direct["pnl"], early["pnl"])
+    self.assertEqual(simulate_swing(c, dict(self.P), sess)["pnl"], late["pnl"])
+
 
 class SessionReportTest(unittest.TestCase):
 

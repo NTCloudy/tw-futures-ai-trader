@@ -43,8 +43,15 @@ def cost(cfg, price):
 
 
 def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False,
-                   start_td=None, close_at_end: bool = False) -> dict:
-  """Runs the swing strategy over chronologically ordered sessions (each with 1-min bars)."""
+                   start_td=None, close_at_end: bool = False, schedule: list | None = None) -> dict:
+  """Runs the swing strategy over chronologically ordered sessions (each with 1-min bars).
+
+  schedule: optional [(start_datetime, params)] sorted by time; from each session whose first bar ends at or
+  after start_datetime the matching params apply (open positions carry over, as in the live engine after a
+  rule change). p applies before the first entry.
+  p["sl_slip"]: points beyond the stop (or the gapped open) at which a stop fills; default 1.
+  """
+  base_p = p
   pv = cfg["point_value"]
   capital = cfg["capital_per_ai_twd"] if "capital_per_ai_twd" in cfg else round(cfg["initial_margin_twd"] * 1.5)
   maint = cfg.get("maintenance_margin_twd", 26900)
@@ -79,6 +86,11 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False,
     closes.append(bar60.c)
 
   for si, s in enumerate(sessions):
+    if schedule and s.bars:
+      p = base_p
+      for ts, q in schedule:
+        if s.bars[0].end >= ts:
+          p = q
     month = active_month(s.td)
     prev_month = month
     nxt_month = active_month(sessions[si + 1].td) if si + 1 < len(sessions) else month
@@ -98,7 +110,8 @@ def simulate_swing(cfg: dict, p: dict, sessions: list, record: bool = False,
           close_pos(tp - d * slip, "take_profit", x.end)
           continue
         if hit:
-          px = (min(pos["stop"], x.o) - 1) if d == 1 else (max(pos["stop"], x.o) + 1)
+          slip = p.get("sl_slip", 1)
+          px = (min(pos["stop"], x.o) - slip) if d == 1 else (max(pos["stop"], x.o) + slip)
           close_pos(px, "trail_stop", x.end)
         else:
           worst = x.l if d == 1 else x.h

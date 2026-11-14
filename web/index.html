@@ -309,14 +309,15 @@ function render(s) {
   const rpSide = x => x === 'B' ? '多' : '空';
   const tl = arr => arr.map(t => `${t.entry} ${rpSide(t.side)} ${nt(t.pnl)}${t.note === 'engine_offline' ? '（引擎離線）' : ''}`).join('<br>') || '–';
   document.getElementById('replayTbl').innerHTML = !rp ? '<tr><td class="mute">每盤收盤後自動產生</td></tr>' :
-    '<tr><th>AI</th><th>即時 筆數／損益</th><th>回測 筆數／損益</th><th>同一筆</th><th>只有即時有</th><th>只有回測有</th></tr>' +
+    '<tr><th>AI</th><th>即時 筆數／損益</th><th>回測（當時規則）筆數／損益</th><th>回測（現行規則·事後套用）</th><th>同一筆</th><th>只有即時有</th><th>只有回測有</th></tr>' +
     rp.ais.map(a => {
       const openInfo = a.open_live ? `<div class="mute">在倉：${rpSide(a.open_live.side)} @ ${a.open_live.entry_price}（${a.open_live.entry_ts}）</div>` : '';
       return `<tr><td>${a.name}${openInfo}</td><td>${a.live_n}｜<span class="${cls(a.live_pnl)}">${nt(a.live_pnl)}</span></td>` +
-        `<td>${a.sim_n}｜<span class="${cls(a.sim_pnl)}">${nt(a.sim_pnl)}</span></td><td><b>${a.matched}</b></td>` +
+        `<td>${a.sim_n}｜<span class="${cls(a.sim_pnl)}">${nt(a.sim_pnl)}</span></td>` +
+        `<td class="mute">${a.sim_now_pnl === undefined ? '–' : `${a.sim_now_n}｜${nt(a.sim_now_pnl)}`}</td><td><b>${a.matched}</b></td>` +
         `<td class="mute">${tl(a.live_only)}</td><td class="mute">${tl(a.sim_only)}</td></tr>`;
     }).join('');
-  document.getElementById('replayNote').textContent = rp ? `${rp.since} 起共 ${rp.sessions} 盤｜更新 ${rp.generated_at.slice(5, 16).replace('T', ' ')}｜兩邊一致代表一年回測的結果可信度高；不一致的筆數會列在右邊兩欄。` : '';
+  document.getElementById('replayNote').textContent = rp ? `${rp.since} 起共 ${rp.sessions} 盤｜更新 ${rp.generated_at.slice(5, 16).replace('T', ' ')}｜「當時規則」= 每一盤用當時實際在跑的規則重跑（公平比較）；「現行規則」= 把今天的規則套回整段，屬事後套用、只供參考。兩邊一致代表一年回測的結果可信度高；不一致的筆數會列在右邊兩欄。` : '';
   const sessZh = { day: '日盤', night: '夜盤' };
   document.getElementById('dailyHist').innerHTML = `<tr><th>交易日</th><th>盤別</th>${s.ais.map(a => `<th>${a.name}</th>`).join('')}<th>合計</th></tr>` +
     ((s.daily_history || []).map(r => `<tr><td>${r.trading_day}</td><td>${sessZh[r.session]}</td>${s.ais.map(a => {

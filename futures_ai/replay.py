@@ -22,7 +22,7 @@ LIVE_1M = ROOT / "data" / "live_1m.csv"
 KBARS = ROOT / "data" / "kbars_repo" / "TMF_1min.csv"
 REPORT = ROOT / "data" / "replay_report.json"
 MATCH_MIN = 10  # A live and a simulated entry on the same side within 10 minutes count as the same trade.
-UPGRADE_TS = "2026-11-08T00:00:00+08:00"  # Consensus upgrade boundary (pre-upgrade vs post-upgrade live rules).
+UPGRADE_TS = "2026-11-08T00:03:52+08:00"  # Reference only: first entry of RULE_VERSIONS (consensus upgrade restart).
 
 
 def sim_specs(legacy: bool = False) -> dict:
@@ -71,6 +71,56 @@ def sim_specs(legacy: bool = False) -> dict:
           for ai, (sa, p) in specs.items()}
 
 
+# Omega simulator settings. OMEGA_LEGACY = live rules before the 11/08 upgrade (no ER / breakeven / extension /
+# stop cap). The pre-11/07 live "news tightening" of the trailing stop was removed on 11/07 and is not modelled.
+OMEGA_NOW = dict(lookback=10, atr_k=4.0, direction="both", entry="limit", limit_atr=0.3, tp_atr=10.0,
+                 fill_through=1, min_er=0.20, be_r=0.7, max_ext_atr=3.5, max_sl_pts=1200)
+OMEGA_LEGACY = dict(OMEGA_NOW, min_er=None, be_r=None, max_ext_atr=None, max_sl_pts=None)
+
+# Rule versions that were actually live, by engine restart time (Taipei). Each entry overrides the current
+# (post-upgrade) simulator spec, so "回測（當時規則）" replays every session with the rules running at that time.
+# Before the first entry the legacy specs apply. Keep this table in sync whenever a live rule change is deployed.
+# - The weekly lesson rules (Alpha rev_cool=30; Sigma rev_cool=30, max_sl=2, min_er=0.30) were written to
+#   strategy_params.json on 11/10 21:30-21:42 and only loaded by the 11/11 13:46 restart, so V1/V2 disable them.
+# - The 11/08 00:03:52 restart happened inside the 11/07 night session; that whole session replays with the old
+#   rules (no intraday trades between 00:03 and 05:00, so no effect).
+# - Known limit: before fa5208f (live 11/11 13:46) live Nova used the old reach_r formula (remaining time x ATR);
+#   the simulator only has the fixed formula, so Nova in V1/V2 is not an exact reproduction.
+_SIGMA_V1 = dict(limit_atr=0.2, limit_min=10, hours=("us_open", "night_open"), bonus_hours=None, day_min_atr=None,
+                 min_er=None, max_vwap_pts=None, be_r=None, rev_cool=None, max_sl=None)
+_ALPHA_V1 = dict(rev_cool=None)
+_NOVA_V1 = dict(limit_atr=0.0, be_r=None, max_vwap_pts=None, max_sl=None)
+_NOVA_V3 = dict(limit_atr=0.0, max_vwap_pts=None, max_sl=None)
+RULE_VERSIONS = [
+    ("2026-11-08T00:03:52+08:00", "共識升級 f8482a5",
+     {"alpha-orb": _ALPHA_V1, "sigma-vwap": _SIGMA_V1, "nova-nightorb": _NOVA_V1, "nova-us": dict(_NOVA_V1, be_r=1.75),
+      "omega-swing": dict(max_ext_atr=None, max_sl_pts=None)}),
+    ("2026-11-10T13:48:12+08:00", "Sigma 高波動時段 c748809",
+     {"alpha-orb": _ALPHA_V1, "sigma-vwap": dict(_SIGMA_V1, hours=("day_open", "night_open", "night_pre_us", "us_open"),
+                         bonus_hours=("day_open", "night_pre_us"), bonus_min_atr=35.0),
+      "nova-nightorb": _NOVA_V1, "nova-us": dict(_NOVA_V1, be_r=1.75),
+      "omega-swing": dict(max_ext_atr=None, max_sl_pts=None)}),
+    ("2026-11-11T13:46:42+08:00", "Sigma 方案3＋Omega 乖離/停損上限 95a2d13",
+     {"nova-nightorb": _NOVA_V3, "nova-us": _NOVA_V3}),
+    ("2026-11-12T13:47:05+08:00", "Nova B+C 485129c", {}),
+]
+
+
+def rule_periods(since: datetime) -> list[tuple[datetime, datetime | None, str, dict | None]]:
+  """[(start, end, label, overrides)] covering since..now; overrides None = legacy specs."""
+  out = []
+  start, label, ov = since, "升級前（舊規則）", None
+  for ts_iso, lab, o in RULE_VERSIONS:
+    ts = datetime.fromisoformat(ts_iso)
+    if ts <= since:
+      label, ov = lab, o
+      continue
+    out.append((start, ts, label, ov))
+    start, label, ov = ts, lab, o
+  out.append((start, None, label, ov))
+  return out
+
+
 def _match(live: list[dict], sim: list[dict], match_min: int = MATCH_MIN) -> tuple[list, list, list]:
   both, used = [], set()
   live_only = []
@@ -105,11 +155,8 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
   from . import wfo
   from .swing import simulate_swing
   t0 = datetime.fromisoformat(since)
-  up_ts = datetime.fromisoformat(UPGRADE_TS)
   allsess = wfo.load_sessions(cfg)
   live_sessions = [s for s in allsess if s.bars and s.bars[0].end >= t0]
-  pre_sessions = [s for s in live_sessions if s.bars[0].end < up_ts]
-  post_sessions = [s for s in live_sessions if s.bars[0].end >= up_ts]
   ledger = Ledger(cfg["db_path"])
   shadow = Ledger(str(ROOT / "data" / "shadow.db")) if (ROOT / "data" / "shadow.db").exists() else None
   try:
@@ -153,12 +200,29 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
 
     pre_specs = sim_specs(legacy=True)
     post_specs = sim_specs(legacy=False)
+    periods = rule_periods(t0)
+    out["rule_versions"] = [{"from": a.strftime("%m/%d %H:%M"), "to": b.strftime("%m/%d %H:%M") if b else "now",
+                             "label": lab} for a, b, lab, _ov in periods]
+
+    def in_period(s, a, b) -> bool:
+      return s.bars[0].end >= a and (b is None or s.bars[0].end < b)
+
     for ai, (sim_ai, p_post) in post_specs.items():
       _, p_pre = pre_specs[ai]
-      r_pre = wfo.simulate(c_pre, sim_ai, p_pre, pre_sessions, record=True) if pre_sessions else {"log": []}
-      r_post = wfo.simulate(c_post, sim_ai, p_post, post_sessions, record=True) if post_sessions else {"log": []}
-      sim = [{"entry": e, "side": side, "pnl": net, "kind": kind}
-             for e, _x, side, net, kind in (r_pre.get("log", []) + r_post.get("log", [])) if e and e >= t0]
+      # 回測（當時規則）: each period is replayed with the rules that were live in it (fair comparison).
+      logs = []
+      for a, b, _lab, ov in periods:
+        sess = [s for s in live_sessions if in_period(s, a, b)]
+        if not sess:
+          continue
+        if ov is None:
+          logs += wfo.simulate(c_pre, sim_ai, p_pre, sess, record=True).get("log", [])
+        else:
+          logs += wfo.simulate(c_post, sim_ai, {**p_post, **ov.get(ai, {})}, sess, record=True).get("log", [])
+      sim = [{"entry": e, "side": side, "pnl": net, "kind": kind} for e, _x, side, net, kind in logs if e and e >= t0]
+      # 回測（現行規則·事後套用）: today's rules over the whole period, including rules written after the losses.
+      r_now = wfo.simulate(c_post, sim_ai, p_post, live_sessions, record=True) if live_sessions else {"log": []}
+      sim_now = [t for t in r_now.get("log", []) if t[0] and t[0] >= t0]
       lt = live_trades(ai)
       both, lo, so = _match(lt, sim)
       for st in so:
@@ -166,6 +230,7 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
           st["note"] = "engine_offline"
       open_p = (shadow if ai == "nova-us" and shadow else ledger).get_state(f"pos:{ai}")
       out["ais"].append({"id": ai, "name": names.get(ai, ai), "live_n": len(lt), "sim_n": len(sim),
+                         "sim_now_n": len(sim_now), "sim_now_pnl": round(sum(t[3] for t in sim_now)),
                          "live_pnl": round(sum(t["pnl"] for t in lt)), "sim_pnl": round(sum(t["pnl"] for t in sim)),
                          "matched": len(both), "live_only": [_fmt(t) for t in lo], "sim_only": [_fmt(t) for t in so],
                          "open_live": {"side": open_p["side"], "entry_price": open_p["entry_price"],
@@ -174,11 +239,14 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
 
     # Omega (swing, multi-day): needs the EMA60 history, so replay the year of K-bars plus the live bars.
     try:
-      rs = simulate_swing(c_post, dict(lookback=10, atr_k=4.0, direction="both", entry="limit", limit_atr=0.3,
-                                       tp_atr=10.0, fill_through=1, min_er=0.20, be_r=0.7,
-                                       max_ext_atr=3.5, max_sl_pts=1200), allsess, record=True)
+      # 當時規則: legacy rules until the first version, then each version's rules (positions carry over).
+      sched = [(a, OMEGA_LEGACY if ov is None else {**OMEGA_NOW, **ov.get("omega-swing", {})})
+               for a, _b, _lab, ov in periods]
+      rs = simulate_swing(c_post, OMEGA_LEGACY, allsess, record=True, schedule=sched)
       sim = [{"entry": e, "side": side, "pnl": net, "kind": why} for e, _x, side, _ep, _xp, net, why in rs["log"]
              if e >= t0]
+      rs_now = simulate_swing(c_post, OMEGA_NOW, allsess, record=True)  # 現行規則·事後套用
+      sim_now = [t for t in rs_now["log"] if t[0] >= t0]
       lt = live_trades("omega-swing")
       both, lo, so = _match(lt, sim, match_min=60)
       for st in so:
@@ -189,6 +257,7 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
       out["ais"].append({"id": "omega-swing", "name": names.get("omega-swing", "Omega"), "live_n": len(lt),
                          "sim_n": len(sim), "live_pnl": round(sum(t["pnl"] for t in lt)),
                          "sim_pnl": round(sum(t["pnl"] for t in sim)), "matched": len(both),
+                         "sim_now_n": len(sim_now), "sim_now_pnl": round(sum(t[5] for t in sim_now)),
                          "live_only": [_fmt(t) for t in lo], "sim_only": [_fmt(t) for t in so],
                          "open_live": {"side": open_p["side"], "entry_price": open_p["entry_price"],
                                        "entry_ts": open_p["entry_ts"][5:16].replace("T", " ")} if open_p else None,
@@ -207,7 +276,11 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
 
 
 def summary_lines(rep: dict) -> list[str]:
-  lines = ["🔁 回測 vs 即時（同一段行情重跑回測，NT$）", "AI｜即時｜回測"]
+  lines = ["🔁 回測 vs 即時（同一段行情重跑回測，NT$）", "AI｜即時｜回測（當時規則）｜回測（現行規則·事後套用）"]
   for a in rep["ais"]:
-    lines.append(f"{a['name'].split(' ')[0]}{' 美股' if a['id'] == 'nova-us' else ''}｜{a['live_pnl']:+,}｜{a['sim_pnl']:+,}")
+    now = f"{a['sim_now_pnl']:+,}" if "sim_now_pnl" in a else "–"
+    lines.append(f"{a['name'].split(' ')[0]}{' 美股' if a['id'] == 'nova-us' else ''}｜{a['live_pnl']:+,}"
+                 f"｜{a['sim_pnl']:+,}｜{now}")
+  lines.append("說明：「當時規則」= 每一盤用當時實際在跑的規則重跑，跟即時比才公平；"
+               "「現行規則」= 把今天的規則（含看過虧損才加的）套回整段，屬事後諸葛，只供參考、不代表預期。")
   return lines

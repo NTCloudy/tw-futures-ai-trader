@@ -377,7 +377,8 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
         sl_hit = x.l <= sl if d == 1 else x.h >= sl
         tp_hit = x.h >= tp if d == 1 else x.l <= tp
         if sl_hit:
-          exit_px, kind = ((min(sl, x.o) - 1) if d == 1 else (max(sl, x.o) + 1)), "SL"
+          sl_slip = p.get("sl_slip", 1)  # Points beyond the stop (or gapped open) at which a stop fills.
+          exit_px, kind = ((min(sl, x.o) - sl_slip) if d == 1 else (max(sl, x.o) + sl_slip)), "SL"
         elif tp_hit:
           slip = 0 if p.get("tp_limit") else 1
           exit_px, kind = (tp - slip) if d == 1 else (tp + slip), "TP"
