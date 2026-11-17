@@ -654,6 +654,24 @@ class AlertTest(unittest.TestCase):
     self.assertIn("訊號", sent[0])
     self.assertIn("nova-us", sent[1])
 
+  def test_default_alerts_omega_only_with_stop_and_target(self):
+    from futures_ai.notify import LineNotifier
+    c = cfg()  # Built from DEFAULTS.
+    self.assertEqual(c["notify"]["alert_ais"], ["omega-swing"])
+    ledger = Ledger(":memory:")
+    n = LineNotifier(c, ledger)
+    sent = []
+    n._send = sent.append
+    for ai in ("alpha-orb", "sigma-vwap", "nova-nightorb"):
+      ledger.log("📣 訊號：做多｜進場（限價）：41000｜停損：40900（100 點）｜停利：41300（300 點）", ai, "SIGNAL")
+    ledger.log("📣 訊號：放空｜進場（限價）：41084（60 分鐘內有效）｜停損：42284（1200 點）｜停利：36165（4919 點）",
+               "omega-swing", "SIGNAL")
+    n.collect({})
+    self.assertEqual(len(sent), 1)
+    self.assertIn("omega-swing", sent[0])
+    self.assertIn("停損：42284", sent[0])
+    self.assertIn("停利：36165", sent[0])
+
 
 class ReplayMatchTest(unittest.TestCase):
 

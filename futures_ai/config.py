@@ -60,8 +60,9 @@ DEFAULTS: dict = {
     "control_poll_seconds": 10,
     # digest_minutes 0 = no intraday digests; day report at 13:45, night report next morning.
     "notify": {"line_enabled": True, "digest_minutes": 0, "night_report_time": "08:30",
-               "alert_ais": ["alpha-orb", "nova-nightorb"],
-               "alert_windows": {"nova-nightorb": ["us_open"]}},  # Instant LINE alert on entry signals only.
+               # Instant LINE alert on entry signals only (with stop and take-profit). User's choice 11/17: Omega only.
+               "alert_ais": ["omega-swing"],
+               "alert_windows": {}},
     "publish": {
         "enabled": False,
         "repo": "NTCloudy/tw-futures-ai-trader",
