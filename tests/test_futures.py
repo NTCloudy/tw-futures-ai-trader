@@ -1530,3 +1530,25 @@ class ParamHistoryReplayTest(unittest.TestCase):
     self.assertEqual(sim_specs(legacy=True)["nova-nightorb"][1]["tp_mult"], 3.0)
     nova_old = [s for s in old_strategies() if s.id == "nova-nightorb"][0]
     self.assertEqual((nova_old.range_min, nova_old.window, nova_old.sl_frac, nova_old.tp_mult), (30, 600, 1.0, 3.0))
+
+
+class SwitchGuardTest(unittest.TestCase):
+
+  def test_sigma_needs_10pct_and_2000_and_profit(self):
+    from futures_ai.weekly import beats_current, switch_need
+    self.assertEqual(switch_need("sigma-vwap", 100000), 110000)
+    self.assertFalse(beats_current("sigma-vwap", 109999, 100000))
+    self.assertTrue(beats_current("sigma-vwap", 110001, 100000))
+    self.assertEqual(switch_need("sigma-vwap", 10000), 12000)  # Floor NT$2,000 when 10% is smaller.
+    self.assertFalse(beats_current("sigma-vwap", 11500, 10000))
+    self.assertEqual(switch_need("sigma-vwap", -20000), -18000)  # Negative current: 10% of |current|.
+    self.assertFalse(beats_current("sigma-vwap", -1000, -20000))  # Must itself be profitable.
+    self.assertTrue(beats_current("sigma-vwap", 500, -20000))
+    self.assertEqual(switch_need("sigma-vwap", 0), 2000)  # Zero current: no division, floor applies.
+    self.assertFalse(beats_current("sigma-vwap", 1999, 0))
+    self.assertFalse(beats_current("sigma-vwap", 90731, 102075))  # This week's actual numbers: keep 2.0.
+
+  def test_alpha_keeps_plain_rule(self):
+    from futures_ai.weekly import beats_current
+    self.assertTrue(beats_current("alpha-orb", 100001, 100000))
+    self.assertFalse(beats_current("alpha-orb", 100000, 100000))

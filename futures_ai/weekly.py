@@ -32,6 +32,22 @@ NAMES = {"alpha-orb": "Alpha 開盤突破", "sigma-vwap": "Sigma 趨勢回測", 
 # Expectation policy: in-sample one-year backtests are optimistic, so every expectation shown in reports (and used
 # to judge a change) is the walk-forward out-of-sample result, or the one-year backtest x HAIRCUT.
 HAIRCUT = 0.7
+# Switch guard (user decision 2026-11-18, with Sigma's wider-stop options 2.5/3.0 in the grid): the trained
+# choice must beat the current parameters in the same exam windows by at least 10% of |current| and at least
+# NT$2,000, and must itself be profitable. Only Sigma for now; other AIs keep the plain "better than current" rule.
+SWITCH_MARGIN = {"sigma-vwap": (0.10, 2000.0)}
+
+
+def switch_need(live_id: str, cur_oos: float) -> float:
+  """Exam-period P&L the trained choice must exceed to replace the current parameters."""
+  rel, floor = SWITCH_MARGIN.get(live_id, (0.0, 0.0))
+  return cur_oos + max(rel * abs(cur_oos), floor)
+
+
+def beats_current(live_id: str, new_oos: float, cur_oos: float) -> bool:
+  if live_id not in SWITCH_MARGIN:
+    return new_oos > cur_oos
+  return new_oos > switch_need(live_id, cur_oos) and new_oos > 0
 OMEGA_STRESS_SLIP = 47
 
 
@@ -207,12 +223,13 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     new = r["latest_params"]
     switched = False
     frozen = datetime.now(TPE).date().isoformat() <= cfg.get("params_frozen_until", "")
-    if frozen and not new.get("off") and r["oos_pnl"] > cur_oos:
+    better = beats_current(live_id, r["oos_pnl"], cur_oos)
+    if frozen and not new.get("off") and better:
       kw = {k: new[k] for k in LIVE_KEYS[live_id] if k in new}
       lines.append(f"\n{NAMES[live_id]}：評選期間參數凍結（至 {cfg['params_frozen_until']}），"
                    f"建議改為 {kw}（考試期 {r['oos_pnl']:+,} vs 目前 {cur_oos:+,.0f}），評選後統一決定")
       continue
-    if not frozen and auto_adopt and not new.get("off") and r["windows"] and r["oos_pnl"] > cur_oos:
+    if not frozen and auto_adopt and not new.get("off") and r["windows"] and better:
       kw = {k: new[k] for k in LIVE_KEYS[live_id] if k in new}
       if kw != {k: cur[live_id].get(k) for k in kw}:
         live_params[live_id] = kw
@@ -227,6 +244,10 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       verdict = "訓練建議暫停（最近練習期沒有任何組合賺錢）；維持目前參數繼續觀察"
     elif r["oos_pnl"] <= cur_oos:
       verdict = "目前參數考得比較好，維持"
+    elif not better:
+      rel, floor = SWITCH_MARGIN.get(live_id, (0.0, 0.0))
+      verdict = (f"新參數贏得不夠多（需 > {switch_need(live_id, cur_oos):+,.0f}：至少贏 {rel:.0%} 且 NT${floor:,.0f}，"
+                 f"本身也要賺錢），維持")
     else:
       verdict = "維持目前參數"
     lines.append(f"\n{NAMES[live_id]}：考試期 訓練挑選 {r['oos_pnl']:+,} vs 目前參數 {cur_oos:+,.0f}"
