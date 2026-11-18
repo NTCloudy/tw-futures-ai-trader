@@ -1014,7 +1014,8 @@ class LessonReviewTest(unittest.TestCase):
     r = lessons.review(rows, "nova-nightorb")
     self.assertEqual(r["losses"], 3)
     self.assertEqual(r["tags"], {"consec_sl": 2, "reversal": 1, "early_open": 2, "giveback": 0,
-                                 "overextended": 0, "weak_trend": 0, "other": 0})
+                                 "overextended": 0, "weak_trend": 0, "night_chop": 0, "noise_stop": 0,
+                                 "other": 0})
 
   def test_tags_giveback_overextended_and_weak_trend(self):
     from futures_ai import lessons
@@ -1552,3 +1553,132 @@ class SwitchGuardTest(unittest.TestCase):
     from futures_ai.weekly import beats_current
     self.assertTrue(beats_current("alpha-orb", 100001, 100000))
     self.assertFalse(beats_current("alpha-orb", 100000, 100000))
+
+
+class LessonUpgradeTest(unittest.TestCase):
+  """User request 2026-11-18: night_chop / noise_stop tags, monthly rule retirement, AI brain digest."""
+
+  def _sessions(self):
+    from datetime import timedelta
+    from futures_ai import wfo
+    from futures_ai.feed import Bar
+    out = []
+    for k, d in enumerate((9, 10, 11, 12, 13, 16)):
+      st = at(2026, 11, d, 15, 0)
+      bars = []
+      for m in range(1, 121):
+        c = 1000 + (5 if m % 2 else -5)  # flat, choppy night
+        if k == 5 and m > 30:
+          c = 1000 - 60 if m < 50 else 1000 + 10  # last night: drop then back above 1000
+        o = 1000 if m == 1 else c
+        cl = 1000 if (m == 120 and k < 5) else c  # Net move 0 over a 16-point range: efficiency 0.
+        bars.append(Bar(st + timedelta(minutes=m), o, max(o, cl) + 3, min(o, cl) - 3, cl, 1))
+      out.append(wfo.Session(None, "night", "X", bars, st + timedelta(hours=14)))
+    wfo.set_prior_night_effs(out)
+    return out
+
+  def test_new_tags(self):
+    from futures_ai.lessons import MarketCtx, review
+    ctx = MarketCtx(self._sessions())
+    self.assertLess(ctx.night_mean(at(2026, 11, 16, 15, 40)), 0.40)
+    self.assertIsNone(ctx.night_mean(at(2026, 11, 16, 9, 40)))  # Day session: not a night.
+    rows = [{"ai": "alpha-orb", "side": "B", "entry_ts": "2026-11-16T15:31:00+08:00", "entry_price": 1000,
+             "exit_ts": "2026-11-16T15:35:00+08:00", "exit_kind": "SL", "pnl_twd": -800, "entry_reason": ""}]
+    r = review(rows, "alpha-orb", ctx=ctx)
+    self.assertEqual(r["tags"]["night_chop"], 1)
+    self.assertEqual(r["tags"]["noise_stop"], 1)  # Back at 1000+ by 15:50 (within 30 min).
+    rows[0]["exit_ts"] = "2026-11-16T15:10:00+08:00"
+    rows[0]["entry_price"] = 1100  # Never back up to 1100.
+    self.assertEqual(review(rows, "alpha-orb", ctx=ctx)["tags"]["noise_stop"], 0)
+    self.assertEqual(review(rows, "alpha-orb")["tags"]["night_chop"], 0)  # Without market context: no new tags.
+
+  def test_rule_text_and_candidates(self):
+    from futures_ai.lessons import CANDIDATES, LIVE_RULE_KEYS, rule_zh
+    self.assertIn("停損上限 200 點", rule_zh({"sl_cap": 200}))
+    self.assertIn("前 5 個夜盤", rule_zh({"night_eff": [5, 0.40]}))
+    self.assertEqual(CANDIDATES["noise_stop"]["omega-swing"], [])
+    self.assertIn("sl_cap", LIVE_RULE_KEYS)
+
+  def test_lesson_can_override_base_rules_live(self):
+    import json, tempfile
+    from futures_ai.strategies import build_strategies
+    params = {"lessons": {"alpha-orb": {"sl_cap": 200, "night_eff": [3, 0.35]}, "nova-nightorb": {"sl_cap": 250}}}
+    live = {s.id: s for s in build_strategies(params)}
+    self.assertEqual(live["alpha-orb"].sl_cap, 200)  # Lesson wins over the base cap 160.
+    self.assertEqual(live["alpha-orb"].night_eff, (3, 0.35))
+    self.assertEqual(live["nova-nightorb"].sl_cap, 250)
+    self.assertEqual(live["sigma-vwap"].sl_cap, 150)
+
+  def test_apply_trial_add_and_retire(self):
+    from futures_ai.lessons import apply_trial
+    have = {"rev_cool": 30, "max_sl": 2}
+    self.assertEqual(apply_trial(have, {"rule": {"min_er": 0.2}}), {"rev_cool": 30, "max_sl": 2, "min_er": 0.2})
+    self.assertEqual(apply_trial(have, {"rule": {"max_sl": None}, "retire": True}), {"rev_cool": 30})
+    self.assertEqual(have, {"rev_cool": 30, "max_sl": 2})  # Input untouched.
+
+  def test_retire_check_starts_trial_only_when_removal_helps(self):
+    from unittest import mock
+    from futures_ai import lessons as L
+    st = {"trials": {}, "rejected": [], "adopted": []}
+    lines = []
+    base = {"rev_cool": 30, "max_sl": 2, "min_er": 0.3}
+    base_wo = {"min_er": 0.3}  # Without lessons: no rev_cool / max_sl; min_er is a base rule.
+    def fake_bt(c, sim_ai, b, rule, sessions, days, base_m):
+      good = rule == {"max_sl": None}
+      return {"ok": good, "gain": 5000 if good else -3000, "gain60": 100, "qwin": 4, "qimp": 3, "dd": 10, "base_dd": 10,
+              "trades": 1, "base_trades": 1}
+    idle_lines = []
+    idle = {"ok": False, "gain": 0, "gain60": 0, "qwin": 4, "qimp": 0, "dd": 10, "base_dd": 10, "trades": 5,
+            "base_trades": 5}
+    with mock.patch.object(L, "_metrics", return_value={}), mock.patch.object(L, "backtest", return_value=idle):
+      self.assertFalse(L._retire_check({}, "sigma-vwap", "sigma-pullback", base, base_wo, {"max_sl": 2}, [], [],
+                                       {"trials": {}, "rejected": []}, {}, at(2026, 12, 5, 10, 0), idle_lines))
+    self.assertIn("規則目前沒有作用", idle_lines[0])
+    with mock.patch.object(L, "_metrics", return_value={}), mock.patch.object(L, "backtest", side_effect=fake_bt), \
+        mock.patch.object(L, "_eval_live", return_value=(12, {"pnl": 100}, {"pnl": 200})):
+      started = L._retire_check({}, "sigma-vwap", "sigma-pullback", base, base_wo, {"rev_cool": 30, "max_sl": 2,
+                                "min_er": 0.3}, [], [], st, {}, at(2026, 12, 5, 10, 0), lines)
+    self.assertTrue(started)
+    t = st["trials"]["sigma-vwap"]
+    self.assertEqual((t["rule"], t["retire"]), ({"max_sl": None}, True))
+    txt = "\n".join(lines)
+    self.assertIn("規則仍有用，保留", txt)  # rev_cool removal did not pass.
+    self.assertIn("開始實戰驗證", txt)
+    self.assertNotIn("效率比", txt)  # min_er equals the base rule: removing the lesson changes nothing, not tested.
+    st2 = {"trials": {}, "rejected": [], "adopted": []}
+    with mock.patch.object(L, "_metrics", return_value={}), mock.patch.object(L, "backtest", side_effect=fake_bt), \
+        mock.patch.object(L, "_eval_live", return_value=(12, {"pnl": 300}, {"pnl": 200})):
+      self.assertFalse(L._retire_check({}, "sigma-vwap", "sigma-pullback", base, base_wo, {"max_sl": 2}, [], [],
+                                       st2, {}, at(2026, 12, 5, 10, 0), []))
+    self.assertEqual(st2["trials"], {})
+    self.assertTrue(st2["rejected"][0]["retire"])  # Recent live bars say the rule still helps.
+
+  def test_brain_digest(self):
+    from futures_ai.lessons import brain_digest
+    led = Ledger(":memory:")
+    now = at(2026, 11, 21, 10, 0)
+    led.set_state("brain:nova-nightorb", {"journal": [
+        {"ts": "2026-11-19T16:00:00+08:00", "pnl": -1550, "diagnosis": "進場後立刻反向（1.0 分鐘就停損），趨勢盤中的假訊號"},
+        {"ts": "2026-11-18T16:00:00+08:00", "pnl": -1500, "diagnosis": "走勢與判斷相反（最大浮盈 20 點）；觸發後滑價 5 點"},
+        {"ts": "2026-11-18T17:00:00+08:00", "pnl": 3000, "diagnosis": "判斷正確"},
+        {"ts": "2026-11-01T16:00:00+08:00", "pnl": -1500, "diagnosis": "走勢與判斷相反"}]})
+    txt = "\n".join(brain_digest(led, now))
+    self.assertIn("Nova：", txt)
+    self.assertIn("進場就反向的假訊號 1 筆（-1,550）", txt)
+    self.assertIn("方向判斷錯誤 1 筆（-1,500）", txt)  # The 11/01 trade is outside this week.
+    self.assertIn("停損滑價 ≥3 點 1 次", txt)
+    self.assertIn("最大一筆 -1,550", txt)
+    self.assertIn("本週沒有虧損單", "\n".join(brain_digest(Ledger(":memory:"), now)))
+
+  def test_specs_without_file_lessons(self):
+    from futures_ai.lessons import _specs
+    from futures_ai.replay import sim_specs
+    base = _specs({}, file_lessons=False)
+    self.assertIsNone(base["alpha-orb"][1].get("rev_cool"))  # Base rules only.
+    self.assertEqual(base["sigma-vwap"][1]["min_er"], 0.30)  # A base rule stays.
+    self.assertEqual(sim_specs(with_lessons=False)["nova-nightorb"][1]["max_sl"], 4)
+
+  def test_candidate_equal_to_base_is_skipped(self):
+    from futures_ai.lessons import _norm
+    self.assertEqual(_norm([5, 0.40]), _norm((5, 0.40)))
+    self.assertNotEqual(_norm([3, 0.35]), _norm((5, 0.40)))

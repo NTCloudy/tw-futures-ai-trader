@@ -30,7 +30,7 @@ from .regime import NIGHT_EFF_K as _K, NIGHT_EFF_MIN as _MIN  # noqa: E402
 _NIGHT_EFF = (_K, _MIN)  # Plan A (live since 2026-11-18): skip nights after choppy nights (Sigma, Nova).
 
 
-def sim_specs(legacy: bool = False) -> dict:
+def sim_specs(legacy: bool = False, with_lessons: bool = True) -> dict:
   """Simulator equivalents of the live AIs, built from the live parameters."""
   params_file = ROOT / "data" / "strategy_params.json"
   lp = json.loads(params_file.read_text(encoding="utf-8")) if params_file.exists() else {}
@@ -60,7 +60,8 @@ def sim_specs(legacy: bool = False) -> dict:
               min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75,
               max_vwap_pts=300, max_sl=4, night_eff=_NIGHT_EFF)
   nova.update(lp.get("nova-nightorb", {}))
-  les = lp.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
+  # Rules adopted from the weekly losing-trade review (lessons.py); with_lessons=False = base rules only.
+  les = lp.get("lessons", {}) if with_lessons else {}
   specs = {
       "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
                                       hours=("us_open",), fill_through=1, min_width=40, max_width=260, be_r=2.0,

@@ -9,10 +9,17 @@
 3. Candidate rule per lesson (max_sl / rev_cool / open_delay; implemented in wfo.simulate and in the live
    Trader._lesson_filter). It must beat the current rules on one year of data: full year, last 60 trading
    days, >= 3 of 4 quarters, and max drawdown not more than 10% worse.
+   Tags added 2026-11-18 (user request): night_chop (a losing night trade although the previous 5 nights were
+   choppy, regime.py) and noise_stop (stopped out, then price came back to the entry within 30 minutes).
 4. Forward trial (mandatory, no immediate adoption): the rule is replayed on the live bars recorded AFTER
    the trial starts (unseen data) for >= 10 trading days. A rule that already lost on the recent live bars is
    rejected without a trial. If it is not worse than the current rules in the trial, it is adopted
    (data/strategy_params.json -> "lessons"); otherwise rejected and not retried for 8 weeks.
+5. Monthly rule retirement (first Saturday review of each month): every adopted lesson rule is backtested with
+   the rule removed. If removing it passes the same gate (one year, last 60 days, quarters, drawdown) and does not
+   lose on the recent live bars, the removal goes through the same 10-trading-day forward trial before the rule
+   is dropped. Rules thus do not only pile up.
+6. The weekly report also summarises the AI brain's per-trade diagnosis of this week's losing trades.
 """
 
 from __future__ import annotations
@@ -36,9 +43,13 @@ TAG_ZH = {
     "giveback": "大幅浮盈後回吐停損",
     "overextended": "乖離過大追高殺低",
     "weak_trend": "盤整或弱趨勢假突破",
+    "night_chop": "夜盤洗盤仍進場",
+    "noise_stop": "停損後 30 分鐘內回到進場價",
     "other": "其他",
 }
-ACTIONABLE_TAGS = ("consec_sl", "reversal", "early_open", "giveback", "overextended", "weak_trend")
+ACTIONABLE_TAGS = ("consec_sl", "reversal", "early_open", "giveback", "overextended", "weak_trend", "night_chop",
+                   "noise_stop")
+NOISE_BACK_MIN = 30  # noise_stop: price back at the entry within this many minutes after the stop-out.
 OPEN_MIN = {"alpha-orb": 15, "sigma-vwap": 15, "nova-nightorb": 60}
 CANDIDATES = {
     "consec_sl": {"nova-nightorb": [{"max_sl": 1}, {"max_sl": 2}, {"max_sl": 3}], "*": [{"max_sl": 1}, {"max_sl": 2}]},
@@ -51,6 +62,9 @@ CANDIDATES = {
     "overextended": {"omega-swing": [{"max_ext_atr": 3.5}, {"max_sl_pts": 1200},
                                      {"max_ext_atr": 3.5, "max_sl_pts": 1200}],
                      "*": [{"max_vwap_pts": 200}, {"max_vwap_atr": 2.5}]},
+    "night_chop": {"omega-swing": [], "*": [{"night_eff": [5, 0.40]}, {"night_eff": [3, 0.35]}]},
+    "noise_stop": {"omega-swing": [], "alpha-orb": [{"sl_cap": 200}, {"sl_cap": 240}],
+                   "*": [{"sl_cap": 200}, {"sl_cap": 250}]},
 }
 TRIAL_DAYS = 10
 RETRY_WEEKS = 8
@@ -58,6 +72,11 @@ RETRY_WEEKS = 8
 
 def rule_zh(r: dict) -> str:
   out = []
+  if "night_eff" in r:
+    ne = r["night_eff"]
+    out.append(f"前 {ne[0]} 個夜盤平均淨移動/振幅 < {ne[1]:.2f} 時當晚不進場" if ne else "取消夜盤盤勢過濾")
+  if r.get("sl_cap"):
+    out.append(f"停損上限 {r['sl_cap']:.0f} 點")
   if r.get("max_sl"):
     out.append(f"一盤停損 {r['max_sl']} 次就休息")
   if r.get("rev_cool"):
@@ -89,7 +108,47 @@ def _session(ts: datetime) -> tuple:
   return (d, "night", datetime.combine(d, datetime.min.time(), TPE).replace(hour=15))
 
 
-def review(rows: list[dict], ai: str, journal: list[dict] | None = None, protected: set | None = None) -> dict:
+class MarketCtx:
+  """Market facts for tagging: night regime before a trade and price after a stop-out (from wfo sessions)."""
+
+  def __init__(self, sessions: list | None):
+    import bisect
+    from .regime import NIGHT_EFF_K, mean_prior
+    self._bisect = bisect
+    self.night: dict = {}
+    bars = []
+    for s in sessions or []:
+      if not s.bars:
+        continue
+      if s.name == "night":
+        start = (s.bars[0].end - timedelta(minutes=1)).replace(second=0, microsecond=0)
+        start = start.replace(hour=15, minute=0) if start.hour >= 15 else start
+        self.night[start.isoformat()] = mean_prior(s.prior_night_effs, NIGHT_EFF_K)
+      bars.extend(s.bars)
+    bars.sort(key=lambda b: b.end)
+    self.bars = bars
+    self.ends = [b.end for b in bars]
+
+  def night_mean(self, ts: datetime) -> float | None:
+    d, name, open_t = _session(ts)
+    return self.night.get(open_t.isoformat()) if name == "night" else None
+
+  def back_to_entry(self, side: str, entry: float, exit_ts: datetime, minutes: int = NOISE_BACK_MIN) -> bool:
+    i = self._bisect.bisect_right(self.ends, exit_ts)
+    lim = exit_ts + timedelta(minutes=minutes)
+    sess = _session(exit_ts)[:2]
+    while i < len(self.bars) and self.bars[i].end <= lim:
+      b = self.bars[i]
+      if _session(b.end - timedelta(seconds=1))[:2] != sess:
+        break
+      if (side == "B" and b.h >= entry) or (side == "S" and b.l <= entry):
+        return True
+      i += 1
+    return False
+
+
+def review(rows: list[dict], ai: str, journal: list[dict] | None = None, protected: set | None = None,
+           ctx: MarketCtx | None = None) -> dict:
   """Tag the losing trades in `rows` (one AI, ordered by entry). Returns {tag: count} and the loss count.
   protected: exit_ts of protected stop exits (protected mode); losing ones are neither losses nor stops here
   (a winning protected exit still resets the counters, as in the simulator)."""
@@ -149,6 +208,16 @@ def review(rows: list[dict], ai: str, journal: list[dict] | None = None, protect
       if "盤整盤" in reason or j.get("regime") == "chop" or (er_val is not None and er_val < 0.25):
         tags["weak_trend"] += 1
         matched = True
+      if ctx is not None:
+        from .regime import NIGHT_EFF_MIN
+        nm = ctx.night_mean(e)
+        if nm is not None and nm < NIGHT_EFF_MIN:
+          tags["night_chop"] += 1
+          matched = True
+        if r["exit_kind"] == "SL" and r.get("exit_ts") and r.get("entry_price") is not None and \
+            ctx.back_to_entry(r["side"], float(r["entry_price"]), datetime.fromisoformat(r["exit_ts"])):
+          tags["noise_stop"] += 1
+          matched = True
       if not matched:
         tags["other"] += 1
     if r["pnl_twd"] > 0:
@@ -161,7 +230,7 @@ def review(rows: list[dict], ai: str, journal: list[dict] | None = None, protect
 
 
 def weekly_reviews(ledger: Ledger, now: datetime, weeks: int = 4, respect_since: bool = False,
-                   protected_mode: bool = False) -> dict:
+                   protected_mode: bool = False, ctx: MarketCtx | None = None) -> dict:
   """{ai: [review of this week, last week, ...]}."""
   out = {}
   for ai in AIS:
@@ -176,7 +245,7 @@ def weekly_reviews(ledger: Ledger, now: datetime, weeks: int = 4, respect_since:
                          (ai, lo.isoformat(), hi.isoformat()))
       if since_ts:
         rows = [r for r in rows if r["entry_ts"] >= since_ts]
-      out[ai].append(review(rows, ai, journal=journal, protected=prot))
+      out[ai].append(review(rows, ai, journal=journal, protected=prot, ctx=ctx))
   return out
 
 
@@ -191,10 +260,12 @@ def recurring(revs: list[dict], min_total: int = 4) -> list[str]:
   return [t for _, t in sorted(out, reverse=True)]
 
 
-def _specs(lessons: dict) -> dict:
+def _specs(lessons: dict, file_lessons: bool = True) -> dict:
+  """Simulator specs of the live AIs + `lessons`. file_lessons=False: without the adopted lessons in
+  strategy_params.json (base rules only), used by the monthly retirement check."""
   from . import slowtrain
   from .replay import sim_specs
-  specs = sim_specs()
+  specs = sim_specs(with_lessons=file_lessons)
   sim_ai, p = specs["sigma-vwap"]
   p = dict(p)  # Current live Sigma: time-limited throughout (drop the historical any-time period).
   p.pop("hours_free", None)
@@ -289,8 +360,9 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
   specs = _specs(lessons)
   days = sorted({s.td for s in sessions})
   pm = bool(cfg.get("protected_not_stop", False))
-  revs = weekly_reviews(ledger, now, respect_since=False, protected_mode=pm)
-  revs_since = weekly_reviews(ledger, now, respect_since=True, protected_mode=pm)
+  ctx = MarketCtx(sessions)
+  revs = weekly_reviews(ledger, now, respect_since=False, protected_mode=pm, ctx=ctx)
+  revs_since = weekly_reviews(ledger, now, respect_since=True, protected_mode=pm, ctx=ctx)
   lines = ["", "📚 本週學到什麼（虧損檢討）"]
   changed = False
   for ai in AIS:
@@ -300,6 +372,10 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
       lines.append(f"{NAMES[ai]}：虧 {r0['losses']}/{r0['trades']} 筆｜{parts}")
     else:
       lines.append(f"{NAMES[ai]}：本週沒有虧損單" if r0["trades"] else f"{NAMES[ai]}：本週沒有交易")
+  lines += brain_digest(ledger, now)
+  month = now.strftime("%Y-%m")
+  st.setdefault("retire_checked", {})
+  base_nolessons = _specs({}, file_lessons=False)
   for ai in AIS:
     sim_ai, base = specs[ai]
     base_sig = json.loads(json.dumps(base, sort_keys=True))
@@ -312,7 +388,8 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
       n_days, rb, rx = _eval_live(c, sim_ai, base, trial["rule"], sessions, since)
       b, x = rb["pnl"], rx["pnl"]
       diff_n = abs(len(rb.get("log", [])) - len(rx.get("log", [])))
-      head = f"🧪 {NAMES[ai]} 驗證中「{rule_zh(trial['rule'])}」：{n_days}/{TRIAL_DAYS} 天，套用 {x:+,.0f} vs 不套用 {b:+,.0f}"
+      what = trial.get("label") or f"「{rule_zh(trial['rule'])}」"
+      head = f"🧪 {NAMES[ai]} 驗證中{what}：{n_days}/{TRIAL_DAYS} 天，套用 {x:+,.0f} vs 不套用 {b:+,.0f}"
       if n_days < TRIAL_DAYS:
         lines.append(head)
         continue
@@ -322,7 +399,7 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
         continue
       del st["trials"][ai]
       if passed and adopt:
-        lessons[ai] = {**lessons.get(ai, {}), **trial["rule"]}
+        lessons[ai] = apply_trial(lessons.get(ai, {}), trial)
         st["adopted"].append({**trial, "base": base_sig, "ai": ai, "at": now.date().isoformat(), "fwd": [round(x), round(b)]})
         ledger.set_state(f"strategy_since:{ai}", now.isoformat(timespec="seconds"))
         changed = True
@@ -335,6 +412,11 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
       else:
         lines.append(head + " → ⚪ 期間未觸發有效差異，結束觀察")
       continue
+    if st["retire_checked"].get(ai) != month and lessons.get(ai):
+      st["retire_checked"][ai] = month
+      if _retire_check(c, ai, sim_ai, base, base_nolessons[ai][1], lessons[ai], sessions, days, st, base_sig, now,
+                       lines):
+        continue  # One trial per AI at a time: the removal trial runs first.
     tags = recurring(revs_since[ai], min_total=2 if ai == "omega-swing" else 4)
     if not tags:
       continue
@@ -348,8 +430,9 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
       if tag not in CANDIDATES:
         continue
       for rule in CANDIDATES[tag].get(ai, CANDIDATES[tag]["*"]):
-        if rule in tried or all(have.get(k) == v for k, v in rule.items()):
-          continue
+        if rule in tried or all(_norm(have.get(k)) == _norm(v) for k, v in rule.items()) or \
+            all(_norm(base.get(k)) == _norm(v) for k, v in rule.items()):
+          continue  # Already in use (adopted lesson or base rule): nothing to test.
         bt = backtest(c, sim_ai, base, rule, sessions, days, base_m)
         txt = (f"一年 {bt['gain']:+,}、近60天 {bt['gain60']:+,}、四季不退步 {bt['qwin']}/4（進步 {bt['qimp']}/4）、"
                f"回撤 {bt['dd']:,}（原 {bt['base_dd']:,}）")
@@ -383,8 +466,100 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
   return {"lines": lines, "changed": changed}
 
 
+def _norm(v):
+  """Comparable value: lists and tuples (night_eff) compare equal."""
+  return tuple(v) if isinstance(v, (list, tuple)) else v
+
+
+def apply_trial(have: dict, trial: dict) -> dict:
+  """Adopted trial -> new lesson rules of one AI. A retirement trial drops its keys (live falls back to the base
+  behaviour); a normal trial adds / overrides its keys."""
+  cur = dict(have)
+  if trial.get("retire"):
+    for k in trial["rule"]:
+      cur.pop(k, None)
+  else:
+    cur.update(trial["rule"])
+  return cur
+
+
+def _retire_check(c, ai, sim_ai, base, base_wo, have, sessions, days, st, base_sig, now, lines) -> bool:
+  """Monthly: is any adopted lesson rule of `ai` now useless? Removing it must pass the adoption gate and not lose
+  on the recent live bars; then the removal starts a forward trial. Returns True if a removal trial started."""
+  if sim_ai == "omega-swing":
+    return False
+  cutoff = (now - timedelta(weeks=RETRY_WEEKS)).date().isoformat()
+  base_m = _metrics(c, sim_ai, base, sessions, days)
+  best = None
+  for k, v in have.items():
+    fallback = base_wo.get(k)  # What live does without this lesson (constructor / base rule value, or None).
+    if fallback == v:
+      continue  # Removing it would change nothing live.
+    rule = {k: fallback}
+    if any(j["ai"] == ai and j.get("retire") and j["rule"] == rule and j["at"] >= cutoff for j in st["rejected"]):
+      continue
+    bt = backtest(c, sim_ai, base, rule, sessions, days, base_m)
+    txt = (f"一年 {bt['gain']:+,}、近60天 {bt['gain60']:+,}、四季不退步 {bt['qwin']}/4（進步 {bt['qimp']}/4）、"
+           f"回撤 {bt['dd']:,}（原 {bt['base_dd']:,}）")
+    label = f"拿掉「{rule_zh({k: v})}」"
+    if bt["ok"] and (best is None or bt["gain"] > best[2]["gain"]):
+      best = (k, rule, bt, txt, label)
+    elif not bt["ok"]:
+      idle = bt["gain"] == 0 and bt["gain60"] == 0 and bt["trades"] == bt["base_trades"]
+      verdict = "規則目前沒有作用（拿掉也沒差），保留不動" if idle else "規則仍有用，保留"
+      lines.append(f"🧹 {NAMES[ai]} 每月規則健檢：{label} → {txt} → {verdict}")
+  if not best:
+    return False
+  k, rule, bt, txt, label = best
+  n_days, rb, rx = _eval_live(c, sim_ai, base, rule, sessions, datetime.fromisoformat("2026-10-19T08:45:00+08:00"))
+  if n_days >= TRIAL_DAYS and rx["pnl"] < rb["pnl"]:
+    st["rejected"].append({"rule": rule, "tag": "retire", "retire": True, "base": base_sig, "ai": ai,
+                           "at": now.date().isoformat(), "fwd": [round(rx["pnl"]), round(rb["pnl"])]})
+    lines.append(f"🧹 {NAMES[ai]} 每月規則健檢：{label} → {txt}｜近 {n_days} 天實盤 {rx['pnl']:+,.0f} vs "
+                 f"{rb['pnl']:+,.0f} → 實盤顯示仍有用，保留")
+    return False
+  st["trials"][ai] = {"rule": rule, "tag": "retire", "retire": True, "label": label, "base": base_sig,
+                      "since": now.isoformat(timespec="seconds"), "bt": bt}
+  lines.append(f"🧹 {NAMES[ai]} 每月規則健檢：{label} → {txt} → 拿掉回測比較好，開始實戰驗證 {TRIAL_DAYS} 天才決定")
+  return True
+
+
+BRAIN_CATS = (("進場後立刻反向", "進場就反向的假訊號"), ("回吐到停損", "浮盈回吐到停損"),
+              ("走勢與判斷相反", "方向判斷錯誤"), ("收盤前仍未達停利", "收盤前強制平倉"))
+
+
+def brain_digest(ledger: Ledger, now: datetime, days: int = 7) -> list[str]:
+  """Weekly report: the AI brain's per-trade diagnosis of this week's losing trades, grouped per AI."""
+  since = (now - timedelta(days=days)).isoformat()
+  out = ["", "🧠 AI 大腦診斷（本週虧損單）"]
+  any_loss = False
+  for ai in AIS:
+    j = [x for x in ((ledger.get_state(f"brain:{ai}") or {}).get("journal") or [])
+         if x.get("ts", "") >= since and (x.get("pnl") or 0) < 0]
+    if not j:
+      continue
+    any_loss = True
+    cats: dict[str, list] = {}
+    slips = 0
+    for x in j:
+      d = x.get("diagnosis") or ""
+      name = next((zh for key, zh in BRAIN_CATS if key in d), "其他")
+      cats.setdefault(name, []).append(x["pnl"])
+      slips += "滑價" in d
+    parts = "、".join(f"{k} {len(v)} 筆（{sum(v):+,.0f}）" for k, v in sorted(cats.items(), key=lambda kv: sum(kv[1])))
+    worst = min(j, key=lambda x: x["pnl"])
+    line = f"{NAMES[ai]}：{parts}"
+    if slips:
+      line += f"；停損滑價 ≥3 點 {slips} 次"
+    out.append(line)
+    out.append(f"  最大一筆 {worst['pnl']:+,}（{worst.get('ts', '')[5:16].replace('T', ' ')}）：{worst.get('diagnosis', '')[:60]}")
+  if not any_loss:
+    out.append("本週沒有虧損單")
+  return out
+
+
 # Rule keys the live Trader._lesson_filter enforces for intraday AIs (see trader.py).
-LIVE_RULE_KEYS = ("open_delay", "min_er", "max_vwap_atr", "max_vwap_pts", "max_sl", "rev_cool")
+LIVE_RULE_KEYS = ("open_delay", "min_er", "max_vwap_atr", "max_vwap_pts", "max_sl", "rev_cool", "sl_cap")
 
 
 def propose(cfg: dict, ai: str, rule: dict, sessions: list | None = None, now: datetime | None = None) -> dict:

@@ -44,6 +44,7 @@ class OrbBreakout:
   style = "5 分K：開盤前 15 分鐘（3 根）區間突破 + VWAP 確認（區間 40–260 點），停損＝區間×比例（30–160 點），浮盈 2 倍停損移至保本+6，每盤最多 2 次"
   color = "#38bdf8"
   modes = {"native": "順勢突破", "flip": "假突破反向"}
+  night_eff = None  # Night-regime filter (regime.py); may be set by an adopted weekly lesson.
 
   def __init__(self, range_bars: int = 3, max_entries: int = 2, buffer_pts: float = 3,
                sl_frac: float = 0.5, tp_mult: float = 2.0, min_width: float = 40, max_width: float = 260,
@@ -173,6 +174,8 @@ class TrendPullback:
   modes = {"native": "順勢回測", "flip": "順勢回測"}
   allow_flip = False
   block_after_stop = True
+  sl_cap = 150  # Stop cap in points (a weekly lesson may change it).
+  night_eff = None
 
   def __init__(self, pull_atr: float = 0.5, sl_atr: float = 1.5, tp_mult: float = 4.0,
                trail_atr: float | None = None, max_entries: int = 2, max_wick: float | None = 0.25,
@@ -209,7 +212,7 @@ class TrendPullback:
         return None
     rng_b = x.h - x.l
     mw = self.max_wick
-    sl = clamp(a * self.sl_atr, 20, 150)
+    sl = clamp(a * self.sl_atr, 20, self.sl_cap)
     tp = sl * self.tp_mult
     trail = a * self.trail_atr if self.trail_atr else None
     if d > 0 and x.l <= vw + self.pull * a and x.c > vw and x.c > x.o:
@@ -349,6 +352,8 @@ class NightOpenBreakout:
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
   learn_scale = False  # Keep the validated stop / take-profit geometry.
+  sl_cap = 150  # Stop cap in points (a weekly lesson may change it).
+  night_eff = None
 
   def __init__(self, range_min: int = 30, window: int = 600, sl_frac: float = 1.0, tp_mult: float = 3.0,
                min_width: float = 30, reach_r: float | None = 2.5, min_body_atr: float | None = 0.25,
@@ -390,7 +395,7 @@ class NightOpenBreakout:
     width = hi - lo
     if width > 450 or width < getattr(self, "min_width", 0):
       return None
-    sl = clamp(width * self.sl_frac, 30, 150)
+    sl = clamp(width * self.sl_frac, 30, self.sl_cap)
     a = max(atr(bars), 5.0)
     rr = getattr(self, "reach_r", None)
     after_rng = [b for b in bars[:-1] if b.end > r_end] if rr else []
@@ -530,14 +535,14 @@ def build_strategies(params: dict | None = None) -> list:
   nova = NightOpenBreakout(**params.get("nova-nightorb", {}))
   # Nova US (US-open-only Nova) runs as a background shadow since 2026-10-22: see build_nova_us().
   lessons = params.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
+  from .regime import NIGHT_EFF_K, NIGHT_EFF_MIN
+  alpha.sl_cap = ALPHA_SL_CAP  # Base rules first, so an adopted lesson can still override them.
+  sigma.night_eff = nova.night_eff = (NIGHT_EFF_K, NIGHT_EFF_MIN)
   for st in (alpha, sigma, nova, omega):
     st.rules = {**BASE_RULES.get(st.id, {}), **lessons.get(st.id, {})}
     for rk, rv in st.rules.items():
       if hasattr(st, rk):
-        setattr(st, rk, rv)
-  from .regime import NIGHT_EFF_K, NIGHT_EFF_MIN
-  alpha.sl_cap = ALPHA_SL_CAP
-  sigma.night_eff = nova.night_eff = (NIGHT_EFF_K, NIGHT_EFF_MIN)
+        setattr(st, rk, tuple(rv) if rk == "night_eff" and isinstance(rv, list) else rv)
   return [alpha, sigma, nova, omega]
 
 

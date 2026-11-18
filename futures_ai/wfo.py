@@ -261,7 +261,7 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
         return None
       if bh and tb in bh and a < p.get("bonus_min_atr", 35.0):
         return None
-    sl = clamp(a * p["sl_atr"], 20, 150)
+    sl = clamp(a * p["sl_atr"], 20, p.get("sl_cap", 150))
     tp = sl * p["tp_mult"]
     trail = a * p["trail_atr"] if p.get("trail_atr") else None
     rng_b = x.h - x.l
@@ -306,7 +306,7 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
       return None
     reach_r = p.get("reach_r", 2.5)
     after_rng = [y for y in b[:k] if y.end > r_end] if reach_r else []
-    sl = clamp(width * p["sl_frac"], 30, 150)
+    sl = clamp(width * p["sl_frac"], 30, p.get("sl_cap", 150))
     tp = sl * p["tp_mult"]
     if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
       if reach_r and after_rng and max(y.h for y in after_rng) >= hi + reach_r * width:
