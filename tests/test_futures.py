@@ -709,7 +709,18 @@ class ReplayMatchTest(unittest.TestCase):
     self.assertIsNone(sg["rev_cool"])
     al = {**sim_specs()["alpha-orb"][1], **RULE_VERSIONS[1][2]["alpha-orb"]}
     self.assertIsNone(al["rev_cool"])
-    self.assertNotIn("alpha-orb", RULE_VERSIONS[2][2])  # From 11/11 13:46 the current lesson rules apply.
+    self.assertNotIn("rev_cool", RULE_VERSIONS[2][2]["alpha-orb"])  # From 11/11 13:46 the lesson rules apply.
+    # Before the 11/18 switch every version replays the old stop cap / no night filter / old Sigma stop.
+    for _ts, _lab, ov in RULE_VERSIONS[:-1]:
+      self.assertEqual(ov["alpha-orb"]["sl_cap"], 120)
+      self.assertIsNone(ov["sigma-vwap"]["night_eff"])
+      self.assertEqual(ov["sigma-vwap"]["sl_atr"], 2.0)
+      self.assertIsNone(ov["nova-nightorb"]["night_eff"])
+    self.assertEqual(RULE_VERSIONS[-1][2], {})
+    now = sim_specs()
+    self.assertEqual(now["alpha-orb"][1]["sl_cap"], 160)
+    self.assertEqual(now["sigma-vwap"][1]["night_eff"], (5, 0.40))
+    self.assertEqual(now["nova-nightorb"][1]["night_eff"], (5, 0.40))
 
   def test_summary_shows_fair_and_hindsight_columns(self):
     from futures_ai.replay import summary_lines
@@ -1270,3 +1281,204 @@ class ProtectedExitTest(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class PlanABSwitchTest(unittest.TestCase):
+  """User decision 2026-11-18: live Alpha A2 (stop cap 160), Sigma A+B, Nova A; previous version as old- shadows."""
+
+  def _night_bars(self, start, closes_range):
+    """1-minute bars for one night session starting at `start` (15:00): open 100, close closes_range[0],
+    high/low spanning closes_range[1]."""
+    from datetime import timedelta
+    from futures_ai.feed import Bar
+    close, rng = closes_range
+    out = []
+    for m in range(1, 61):
+      end = start + timedelta(minutes=m)
+      c = 100 + close * m / 60
+      out.append(Bar(end, 100 if m == 1 else c, max(c, 100) + (rng if m == 30 else 0), min(c, 100), c, 1))
+    return out
+
+  def test_session_efficiency_and_prior_nights(self):
+    from futures_ai.regime import blocked, prior_night_effs, session_efficiency
+    bars = []
+    starts = [at(2026, 11, d, 15, 0) for d in (9, 10, 11, 12, 13, 16)]  # weeknights (no Saturday night session)
+    for st, (close, rng) in zip(starts, [(100, 0), (10, 90), (10, 90), (10, 90), (10, 90), (10, 90)]):
+      bars += self._night_bars(st, (close, rng))
+    self.assertAlmostEqual(session_efficiency(bars[:60]), 1.0)
+    self.assertEqual(len(prior_night_effs(bars, starts[3])), 3)  # Only nights that started before.
+    effs = prior_night_effs(bars, at(2026, 11, 17, 15, 0))
+    self.assertEqual(len(effs), 6)
+    self.assertAlmostEqual(effs[0], 1.0)
+    chop = session_efficiency(bars[60:120])  # net +10, range 95
+    self.assertAlmostEqual(chop, 10 / 95)
+    self.assertAlmostEqual(effs[1], chop)
+    off, m = blocked(effs, (5, 0.40))
+    self.assertTrue(off)
+    self.assertAlmostEqual(m, chop)
+    off, m = blocked(effs, (6, 0.40))
+    self.assertAlmostEqual(m, (1.0 + 5 * chop) / 6)
+    self.assertTrue(off)
+    self.assertFalse(blocked([0.5, 0.6], (5, 0.40))[0])
+    self.assertEqual(blocked([], (5, 0.40)), (False, None))  # No history: never blocks.
+
+  def test_live_strategies_and_old_shadows(self):
+    from futures_ai.shadows import build_shadows, old_strategies
+    from futures_ai.strategies import build_strategies
+    live = {s.id: s for s in build_strategies()}
+    self.assertEqual(live["alpha-orb"].sl_cap, 160)
+    self.assertEqual(live["sigma-vwap"].night_eff, (5, 0.40))
+    self.assertEqual(live["nova-nightorb"].night_eff, (5, 0.40))
+    self.assertIsNone(getattr(live["alpha-orb"], "night_eff", None))
+    self.assertIsNone(getattr(live["omega-swing"], "night_eff", None))
+    old = {s.id: s for s in old_strategies()}
+    self.assertEqual(set(old), {"alpha-orb", "sigma-vwap", "nova-nightorb"})
+    self.assertEqual(old["alpha-orb"].sl_cap, 120)
+    self.assertEqual((old["sigma-vwap"].pull, old["sigma-vwap"].sl_atr), (0.5, 2.0))
+    self.assertTrue(all(s.night_eff is None for s in old.values()))
+    c = cfg()
+    led = Ledger(":memory:")
+    sh = {t.ai: t for t in build_shadows(c, led)}
+    for ai in ("alpha-orb", "sigma-vwap", "nova-nightorb"):
+      self.assertIn(f"old-{ai}", sh)
+      self.assertIsNone(sh[f"prot-{ai}"].s.night_eff)  # The running protected-exit comparison keeps its rules.
+      self.assertTrue(sh[f"prot-{ai}"].protected_mode)
+      self.assertFalse(sh[f"old-{ai}"].protected_mode)
+    self.assertEqual(sh["prot-alpha-orb"].s.sl_cap, 120)
+    self.assertEqual(sh["old-alpha-orb"].s.sl_cap, 120)
+
+  def test_alpha_stop_cap_160(self):
+    from futures_ai.strategies import OrbBreakout
+    from futures_ai.feed import Bar
+    from datetime import timedelta
+    t0 = at(2026, 11, 18, 15, 0)  # Night session open: range = first three 5-minute bars.
+    rng = [Bar(t0 + timedelta(minutes=5 * k), 1000, 1250, 1000, 1100, 1) for k in range(1, 4)]  # width 250
+    prev = Bar(t0 + timedelta(minutes=20), 1100, 1200, 1100, 1200, 1)
+    brk = Bar(t0 + timedelta(minutes=25), 1240, 1300, 1240, 1290, 1)
+    bars = rng + [prev, brk]
+    a = OrbBreakout(range_bars=3, sl_frac=0.75, tp_mult=3.0, max_width=260)
+    a.sl_cap = 160
+    e = a.decide(bars, 0, None)
+    self.assertIsNotNone(e)
+    self.assertEqual(e.sl_pts, 160)  # 250 x 0.75 = 187.5 -> capped at 160 (was 120)
+    a.sl_cap = 120
+    self.assertEqual(a.decide(bars, 0, None).sl_pts, 120)
+
+  def test_trader_night_filter(self):
+    from futures_ai import trader as tm
+    from futures_ai.strategies import Entry
+    from futures_ai.trader import AiTrader
+    from futures_ai.brokers import LocalPaperBroker
+    from futures_ai.strategies import build_strategies
+    from futures_ai.shadows import old_strategies
+    from futures_ai.feed import Bar
+    from datetime import timedelta
+    c = cfg()
+    led = Ledger(":memory:")
+    sig_live = [s for s in build_strategies() if s.id == "sigma-vwap"][0]
+    sig_old = [s for s in old_strategies() if s.id == "sigma-vwap"][0]
+    t_live = AiTrader(c, sig_live, LocalPaperBroker(c), led)
+    sig_old.id = "old-sigma-vwap"
+    t_old = AiTrader(c, sig_old, LocalPaperBroker(c), led)
+    start = at(2026, 11, 18, 15, 0)
+    bars = [Bar(start + timedelta(minutes=5 * k), 100 + k, 101 + k, 99 + k, 100 + k, 10) for k in range(1, 8)]
+    e = Entry("B", 50, 100, "test")
+    try:
+      tm.NIGHT_STATE.clear()
+      tm.NIGHT_STATE.update(start=start.isoformat(), effs=[0.2, 0.3, 0.25, 0.3, 0.35])
+      why = t_live._filter(e, bars)
+      self.assertIsNotNone(why)
+      self.assertIn("夜盤盤勢過濾", why)
+      self.assertNotIn("夜盤盤勢過濾", t_old._filter(e, bars) or "")  # The old- shadow has no night filter.
+      tm.NIGHT_STATE.update(effs=[0.5, 0.45, 0.6, 0.4, 0.5])
+      self.assertNotIn("夜盤盤勢過濾", t_live._filter(e, bars) or "")
+      tm.NIGHT_STATE.update(start=(start - timedelta(days=1)).isoformat(), effs=[0.1] * 5)  # Stale session.
+      self.assertNotIn("夜盤盤勢過濾", t_live._filter(e, bars) or "")
+      day = [Bar(at(2026, 11, 18, 9, 0) + timedelta(minutes=5 * k), 100, 101, 99, 100, 10) for k in range(1, 8)]
+      tm.NIGHT_STATE.update(start=start.isoformat(), effs=[0.1] * 5)
+      self.assertNotIn("夜盤盤勢過濾", t_live._filter(e, day) or "")  # Day session: never filtered.
+    finally:
+      tm.NIGHT_STATE.clear()
+
+  def test_wfo_night_filter_and_sigma_grid(self):
+    from futures_ai import wfo
+    sl = sorted({p["sl_atr"] for p in wfo.grid("sigma-pullback") if not p.get("off")})
+    self.assertEqual(sl, [1.5, 2.0, 2.5, 3.0])
+
+    class S:  # Minimal session stub: the filter must stop all decisions before any signal work.
+      name, bars, td = "night", [], None
+    s = S()
+    s.prior_night_effs = [0.1] * 5
+    self.assertTrue(wfo.regime_blocked(s.prior_night_effs, (5, 0.40))[0])
+
+  def test_set_prior_night_effs(self):
+    from datetime import timedelta
+    from futures_ai import wfo
+    from futures_ai.feed import Bar
+    sess = []
+    d0 = at(2026, 11, 9, 15, 0)
+    for k, close in enumerate([100, 10, 50]):
+      bars = self._night_bars(d0 + timedelta(days=k), (close, 0))
+      s = wfo.Session(None, "night", "X", bars, d0 + timedelta(days=k, hours=14))
+      sess.append(s)
+    day = wfo.Session(None, "day", "X", [Bar(at(2026, 11, 10, 9, 0), 1, 2, 0, 1, 1)], at(2026, 11, 10, 13, 45))
+    wfo.set_prior_night_effs(sess + [day])
+    self.assertEqual(sess[0].prior_night_effs, [])
+    self.assertEqual(len(sess[2].prior_night_effs), 2)
+    self.assertIsNone(day.prior_night_effs)
+
+  def test_weekly_lines(self):
+    from futures_ai.shadows import red_light_lines, version_compare_lines, protected_shadow_lines
+    live, sh = Ledger(":memory:"), Ledger(":memory:")
+    now = at(2026, 11, 25, 9, 0)
+    def add(led, ai, ts, pnl):
+      led.conn.execute("INSERT INTO trades (ai, trading_day, contract, side, qty, entry_ts, entry_price, exit_ts, "
+                       "exit_price, points, gross_twd, cost_twd, pnl_twd, exit_kind) VALUES "
+                       "(?, '2026-11-20', 'TMF', 'B', 1, ?, 100, ?, 90, -10, -100, 20, ?, 'SL')", (ai, ts, ts, pnl))
+    add(live, "nova-nightorb", "2026-11-17T16:00:00+08:00", -500)   # before the switch: old version live
+    add(live, "nova-nightorb", "2026-11-19T16:00:00+08:00", -13000)  # new version
+    add(sh, "old-nova-nightorb", "2026-11-19T16:00:00+08:00", -2000)
+    add(sh, "prot-nova-nightorb", "2026-11-19T16:00:00+08:00", -1500)
+    txt = "\n".join(version_compare_lines(live, sh, now))
+    self.assertIn("Nova｜-13,000（1 筆）｜-2,000（1 筆）", txt)
+    red = "\n".join(red_light_lines(live, now, expect_hist=[{"alpha-orb": -5}, {"alpha-orb": -3}]))
+    self.assertIn("Nova：-13,000（紅線 −12,352）🔴", red)
+    self.assertIn("連續 2 週樣本外預期為負", red)
+    self.assertIn("Sigma：+0（紅線 −18,036）🟢", red)
+    prot = "\n".join(protected_shadow_lines(live, sh, now))
+    self.assertIn("Nova｜-2,500（2 筆）｜-1,500（1 筆）", prot)  # live before the switch + old- shadow after
+
+
+class NightRegimeEngineSafetyTest(unittest.TestCase):
+
+  def test_barstore_failure_does_not_stop_the_loop(self):
+    from futures_ai import trader as tm
+    c = cfg()
+    ledger = Ledger(":memory:")
+    tr = AiTrader(c, FakeStrategy(None), LocalPaperBroker(c), ledger)
+    calls = []
+    tr.on_price = lambda *a, **k: calls.append(a[0])
+
+    class BadStore:
+      def add(self, bars):
+        pass
+
+      def sixty_min(self, now):
+        return []
+
+      @property
+      def bars(self):
+        raise OSError("disk full")
+
+    now = at(2026, 10, 20, 20, 0)  # Night session.
+    eng = Engine(c, ledger, [tr], feed=FakeFeed(), clock=lambda: now)
+    eng.barstore = BadStore()
+    try:
+      tm.NIGHT_STATE.clear()
+      eng.step()
+      eng.step()
+      self.assertEqual(len(calls), 2)  # on_price still runs every step.
+      self.assertEqual(tm.NIGHT_STATE.get("effs"), [])  # Failure = no filter (fail-open), not retried each poll.
+      self.assertTrue(tm.NIGHT_STATE.get("start"))
+    finally:
+      tm.NIGHT_STATE.clear()

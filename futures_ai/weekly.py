@@ -254,6 +254,9 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
   if changes:
     params_file.write_text(json.dumps(live_params, ensure_ascii=False, indent=2), encoding="utf-8")
   lines += expectation_lines(expect)
+  hist = list(ledger.get_state("expect_hist", []) or [])
+  hist.append({ai: round(oos / (n_win * dp) * 20) for ai, (oos, n_win, dp) in expect.items() if n_win})
+  ledger.set_state("expect_hist", hist[-8:])
   # Losing-trade review -> recurring lessons -> backtested + forward-validated rules (lessons.py).
   try:
     from . import lessons
@@ -274,6 +277,12 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     lines += protected_shadow_lines(ledger)
   except Exception as exc:
     lines.append(f"\n🧪 受保護出場影子比對失敗：{exc}")
+  try:
+    from .shadows import red_light_lines, version_compare_lines
+    lines += version_compare_lines(ledger)
+    lines += red_light_lines(ledger, expect_hist=ledger.get_state("expect_hist", []))
+  except Exception as exc:
+    lines.append(f"\n🆚 新舊版比對失敗：{exc}")
 
   report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes, "text": "\n".join(lines)}
   (ROOT / "data" / "weekly_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

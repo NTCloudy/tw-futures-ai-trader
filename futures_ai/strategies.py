@@ -41,14 +41,15 @@ class OrbBreakout:
 
   id = "alpha-orb"
   name = "Alpha 開盤突破 AI"
-  style = "5 分K：開盤前 15 分鐘（3 根）區間突破 + VWAP 確認（區間 40–260 點），浮盈 2 倍停損移至保本+6，每盤最多 2 次"
+  style = "5 分K：開盤前 15 分鐘（3 根）區間突破 + VWAP 確認（區間 40–260 點），停損＝區間×比例（30–160 點），浮盈 2 倍停損移至保本+6，每盤最多 2 次"
   color = "#38bdf8"
   modes = {"native": "順勢突破", "flip": "假突破反向"}
 
   def __init__(self, range_bars: int = 3, max_entries: int = 2, buffer_pts: float = 3,
                sl_frac: float = 0.5, tp_mult: float = 2.0, min_width: float = 40, max_width: float = 260,
-               be_r: float | None = 2.0):
+               be_r: float | None = 2.0, sl_cap: float = 120):
     self.range_bars = range_bars
+    self.sl_cap = sl_cap  # Stop cap in points; live Alpha uses ALPHA_SL_CAP (160) since 2026-11-18.
     self.max_entries = max_entries
     self.buffer = buffer_pts
     self.sl_frac, self.tp_mult = sl_frac, tp_mult
@@ -77,7 +78,7 @@ class OrbBreakout:
       return None
     last, prev = bars[-1], bars[-2]
     vw = vwap(bars1 if bars1 else bars)
-    sl = clamp(width * self.sl_frac, 30, 120)
+    sl = clamp(width * self.sl_frac, 30, self.sl_cap)
     tp = sl * self.tp_mult
     if last.c > hi + self.buffer and prev.c <= hi + self.buffer and last.c > vw:
       return Entry("B", sl, tp, f"5 分K 突破開盤區間高點 {hi:.0f}（區間 {width:.0f} 點），站上 VWAP {vw:.0f}")
@@ -167,7 +168,7 @@ class TrendPullback:
 
   id = "sigma-vwap"  # Same slot/id as before so the account history continues.
   name = "Sigma 趨勢回測 AI"
-  style = "5 分K 明確趨勢（ER≥0.30）中，價格回測 VWAP 後收回趨勢方向、距均價 ≤ 200 點且逆勢影線 ≤ 25% 順勢限價進場；浮盈 1.75 倍停損移至保本+6；核心時段＋高波動解鎖早盤/歐盤/極端日盤；每盤最多 2 次"
+  style = "5 分K 明確趨勢（ER≥0.30）中，價格回測 VWAP 後收回趨勢方向、距均價 ≤ 200 點且逆勢影線 ≤ 25% 順勢限價進場；浮盈 1.75 倍停損移至保本+6；核心時段＋高波動解鎖早盤/歐盤/極端日盤；前 5 個夜盤平均淨移動/振幅 < 0.40（洗盤）時當晚不進場；每盤最多 2 次"
   color = "#a855f7"
   modes = {"native": "順勢回測", "flip": "順勢回測"}
   allow_flip = False
@@ -343,7 +344,7 @@ class NightOpenBreakout:
 
   id = "nova-nightorb"
   name = "Nova 夜盤開盤突破 AI"
-  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、未達 2.5 倍區間耗盡、距均價 ≤ 300 點、避開美股盤前冷清段），浮盈 1.75 倍停損移至保本+6，停損＝區間寬度，停利 3 倍，順勢讓價 1~2 點限價進場；單晚連續停損 4 次即休息"
+  style = "夜盤 15:00–15:30 開盤區間突破（區間 ≥ 30 點、實體 ≥ 0.25×ATR、未達 2.5 倍區間耗盡、距均價 ≤ 300 點、避開美股盤前冷清段），浮盈 1.75 倍停損移至保本+6，停損＝區間寬度，停利 3 倍，順勢讓價 1~2 點限價進場；單晚連續停損 4 次即休息；前 5 個夜盤平均淨移動/振幅 < 0.40（洗盤）時當晚不進場"
   color = "#facc15"  # Yellow: distinct from Alpha (sky blue)
   modes = {"native": "夜盤開盤突破", "flip": "夜盤開盤突破"}
   allow_flip = False
@@ -501,6 +502,9 @@ def ema_series(values: list[float], n: int) -> list[float]:
 # Fixed guard rules (applied under any weekly-adopted lessons). Nova (2026-11-12, user choice B+C):
 # no entry > 300 pts from VWAP, and stop for the night after 4 consecutive stop-losses.
 BASE_RULES = {"nova-nightorb": {"max_vwap_pts": 300, "max_sl": 4}}
+# User decision 2026-11-18 (backtests: one year, second half out of sample, WFO): Alpha stop cap 120 -> 160 (A2);
+# Sigma and Nova skip nights after choppy nights (A, regime.py). The previous version runs as "old-" shadows.
+ALPHA_SL_CAP = 160
 
 
 def build_strategies(params: dict | None = None) -> list:
@@ -531,6 +535,9 @@ def build_strategies(params: dict | None = None) -> list:
     for rk, rv in st.rules.items():
       if hasattr(st, rk):
         setattr(st, rk, rv)
+  from .regime import NIGHT_EFF_K, NIGHT_EFF_MIN
+  alpha.sl_cap = ALPHA_SL_CAP
+  sigma.night_eff = nova.night_eff = (NIGHT_EFF_K, NIGHT_EFF_MIN)
   return [alpha, sigma, nova, omega]
 
 

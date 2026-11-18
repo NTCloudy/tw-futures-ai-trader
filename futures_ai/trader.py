@@ -17,6 +17,8 @@ from .strategies import vwap
 ENTRY_BUS: dict[str, dict] = {}
 # Market risk from the news radar (set by the engine): normal / elevated / high / positive, + FOMC window.
 RISK_STATE: dict = {"mode": "normal", "fomc_window": False}
+# Night regime (plan A, regime.py), set by the engine once per night session: {"start": iso, "effs": [...]}.
+NIGHT_STATE: dict = {}
 
 KIND_ZH = {"ENTRY": "進場", "TP": "停利觸發", "SL": "停損觸發", "SESSION_END": "收盤前平倉",
            "RISK": "每日虧損上限平倉", "KILL": "緊急停止平倉", "ROLL": "換倉平倉",
@@ -385,6 +387,16 @@ class AiTrader:
     hold = getattr(self.s, "hold_overnight", False)
     if RISK_STATE.get("fomc_window") and not hold:
       return "🏦 聯準會利率決議前後 1 小時，暫停當沖進場"
+    night_rule = getattr(self.s, "night_eff", None)
+    if night_rule and bars:
+      from .calendar import session_of
+      from .regime import blocked
+      s_name, s_start, _ = session_of(bars[-1].end - timedelta(seconds=1))
+      if s_name == "night" and s_start is not None and NIGHT_STATE.get("start") == s_start.isoformat():
+        off, m = blocked(NIGHT_STATE.get("effs"), night_rule)
+        if off:
+          return (f"🌙 夜盤盤勢過濾：前 {night_rule[0]} 個夜盤平均淨移動/振幅 {m:.2f} < {night_rule[1]:.2f}"
+                  f"（最近在來回洗），今晚不進場")
     regime, er, direction = market_regime(bars)
     against = (sig.side == "B" and direction < 0) or (sig.side == "S" and direction > 0)
     if regime == "trend" and against and not getattr(self.s, "skip_trend_filter", False):

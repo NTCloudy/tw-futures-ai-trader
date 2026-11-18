@@ -25,6 +25,11 @@ MATCH_MIN = 10  # A live and a simulated entry on the same side within 10 minute
 UPGRADE_TS = "2026-11-08T00:03:52+08:00"  # Reference only: first entry of RULE_VERSIONS (consensus upgrade restart).
 
 
+from .regime import NIGHT_EFF_K as _K, NIGHT_EFF_MIN as _MIN  # noqa: E402
+
+_NIGHT_EFF = (_K, _MIN)  # Plan A (live since 2026-11-18): skip nights after choppy nights (Sigma, Nova).
+
+
 def sim_specs(legacy: bool = False) -> dict:
   """Simulator equivalents of the live AIs, built from the live parameters."""
   params_file = ROOT / "data" / "strategy_params.json"
@@ -32,6 +37,8 @@ def sim_specs(legacy: bool = False) -> dict:
   a = lp.get("alpha-orb", {"range_bars": 3, "sl_frac": 0.75, "tp_mult": 3.0})
   g = lp.get("sigma-vwap", {"pull_atr": 0.5, "sl_atr": 2.0, "tp_mult": 4.0, "trail_atr": None})
   if legacy:
+    from .shadows import OLD_PARAMS  # Parameters live before the 11/18 switch (weekly picks unchanged since 10/19).
+    a, g = dict(OLD_PARAMS["alpha-orb"]), dict(OLD_PARAMS["sigma-vwap"])
     nova = dict(anchor="night", range_min=30, window=600, sl_frac=1.0, tp_mult=3.0, regimes=("trend", "chop"),
                 flip=(), limit_atr=0.0, limit_min=5, fill_through=1,
                 min_width=0, reach_r=None, min_body_atr=0, dst_skip=None)
@@ -51,18 +58,19 @@ def sim_specs(legacy: bool = False) -> dict:
   nova = dict(anchor="night", range_min=30, window=600, sl_frac=1.0, tp_mult=3.0, regimes=("trend", "chop"),
               flip=(), limit_atr=-0.02, limit_min=5, fill_through=1,
               min_width=30, reach_r=2.5, min_body_atr=0.25, dst_skip=(150, 150), be_r=1.75,
-              max_vwap_pts=300, max_sl=4)
+              max_vwap_pts=300, max_sl=4, night_eff=_NIGHT_EFF)
   nova.update(lp.get("nova-nightorb", {}))
   les = lp.get("lessons", {})  # Rules adopted from the weekly losing-trade review (lessons.py).
   specs = {
       "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
-                                      hours=("us_open",), fill_through=1, min_width=40, max_width=260, be_r=2.0)),
+                                      hours=("us_open",), fill_through=1, min_width=40, max_width=260, be_r=2.0,
+                                      sl_cap=160)),
       # Sigma: core ("us_open", "night_open") + high-vol ("day_open", "night_pre_us") when ATR5 >= 35 + extreme day ("day") when ATR5 >= 100, ER >= 0.30, max_vwap_pts = 200, limit_atr = 0.0 (5m), be_r = 1.75.
       "sigma-vwap": ("sigma-pullback", dict(g, regimes=("trend",), flip=(), limit_atr=0.0, limit_min=5,
                                              hours=("day_open", "day", "night_open", "night_pre_us", "us_open"),
                                              bonus_hours=("day_open", "night_pre_us"), bonus_min_atr=35.0,
                                              day_min_atr=100.0, min_er=0.30, max_vwap_pts=200.0, be_r=1.75,
-                                             fill_through=1, max_entries=2, max_wick=0.25,
+                                             fill_through=1, max_entries=2, max_wick=0.25, night_eff=_NIGHT_EFF,
                                              hours_free=("2026-10-28T12:00:00+08:00", "2026-11-07T12:30:00+08:00"))),
       "nova-nightorb": ("anchor-orb", nova),
       # Same as live build_nova_us: dst_skip off (it is ignored whenever "hours" is set, live and simulated).
@@ -92,18 +100,27 @@ _SIGMA_V1 = dict(limit_atr=0.2, limit_min=10, hours=("us_open", "night_open"), b
 _ALPHA_V1 = dict(rev_cool=None)
 _NOVA_V1 = dict(limit_atr=0.0, be_r=None, max_vwap_pts=None, max_sl=None)
 _NOVA_V3 = dict(limit_atr=0.0, max_vwap_pts=None, max_sl=None)
+# Before the 11/18 switch: Alpha stop cap 120, no night filter, Sigma pull/stop as frozen in shadows.OLD_PARAMS.
+_PRE_ALPHA = dict(sl_cap=120)
+_PRE_SIGMA = dict(night_eff=None, pull_atr=0.5, sl_atr=2.0)
+_PRE_NOVA = dict(night_eff=None)
 RULE_VERSIONS = [
     ("2026-11-08T00:03:52+08:00", "共識升級 f8482a5",
-     {"alpha-orb": _ALPHA_V1, "sigma-vwap": _SIGMA_V1, "nova-nightorb": _NOVA_V1, "nova-us": dict(_NOVA_V1, be_r=1.75),
+     {"alpha-orb": dict(_ALPHA_V1, **_PRE_ALPHA), "sigma-vwap": dict(_SIGMA_V1, **_PRE_SIGMA),
+      "nova-nightorb": dict(_NOVA_V1, **_PRE_NOVA), "nova-us": dict(_NOVA_V1, be_r=1.75, **_PRE_NOVA),
       "omega-swing": dict(max_ext_atr=None, max_sl_pts=None)}),
     ("2026-11-10T13:48:12+08:00", "Sigma 高波動時段 c748809",
-     {"alpha-orb": _ALPHA_V1, "sigma-vwap": dict(_SIGMA_V1, hours=("day_open", "night_open", "night_pre_us", "us_open"),
-                         bonus_hours=("day_open", "night_pre_us"), bonus_min_atr=35.0),
-      "nova-nightorb": _NOVA_V1, "nova-us": dict(_NOVA_V1, be_r=1.75),
+     {"alpha-orb": dict(_ALPHA_V1, **_PRE_ALPHA),
+      "sigma-vwap": dict(_SIGMA_V1, hours=("day_open", "night_open", "night_pre_us", "us_open"),
+                         bonus_hours=("day_open", "night_pre_us"), bonus_min_atr=35.0, **_PRE_SIGMA),
+      "nova-nightorb": dict(_NOVA_V1, **_PRE_NOVA), "nova-us": dict(_NOVA_V1, be_r=1.75, **_PRE_NOVA),
       "omega-swing": dict(max_ext_atr=None, max_sl_pts=None)}),
     ("2026-11-11T13:46:42+08:00", "Sigma 方案3＋Omega 乖離/停損上限 95a2d13",
-     {"nova-nightorb": _NOVA_V3, "nova-us": _NOVA_V3}),
-    ("2026-11-12T13:47:05+08:00", "Nova B+C 485129c", {}),
+     {"alpha-orb": _PRE_ALPHA, "sigma-vwap": _PRE_SIGMA, "nova-nightorb": dict(_NOVA_V3, **_PRE_NOVA),
+      "nova-us": dict(_NOVA_V3, **_PRE_NOVA)}),
+    ("2026-11-12T13:47:05+08:00", "Nova B+C 485129c",
+     {"alpha-orb": _PRE_ALPHA, "sigma-vwap": _PRE_SIGMA, "nova-nightorb": _PRE_NOVA, "nova-us": _PRE_NOVA}),
+    ("2026-11-18T13:46:00+08:00", "A2/A+B/A 夜盤盤勢過濾＋Alpha 停損上限 160", {}),
 ]
 
 

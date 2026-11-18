@@ -44,6 +44,7 @@ class Session:
   b5: list = None
   atr5: list = None
   k_at: dict = None
+  prior_night_effs: list = None  # Night sessions: efficiencies of the previous night sessions (regime.py).
 
 
 KBAR_FILES = [ROOT / "data" / "kbars" / "TMF_1min.csv", ROOT / "data" / "kbars_repo" / "TMF_1min.csv"]
@@ -122,7 +123,19 @@ def load_sessions(cfg: dict) -> list[Session]:
     if s.vwap is None or len(s.vwap) != len(s.bars):
       precompute(s)
   out.sort(key=lambda s: s.bars[0].end)
+  set_prior_night_effs(out)
   return out
+
+
+def set_prior_night_effs(sessions: list[Session]) -> None:
+  """Stores, on every night session, the efficiencies of the previous night sessions (plan A filter)."""
+  from .regime import KEEP, session_efficiency
+  hist: list[float] = []
+  for s in sorted(sessions, key=lambda x: x.bars[0].end if x.bars else datetime.min.replace(tzinfo=TPE)):
+    if s.name != "night" or not s.bars:
+      continue
+    s.prior_night_effs = hist[-KEEP:]
+    hist.append(session_efficiency(s.bars))
 
 
 def precompute(s: Session) -> None:
@@ -186,6 +199,7 @@ def precompute(s: Session) -> None:
 
 
 from .calendar import tod_bucket, us_dst, us_open_at  # noqa: E402,F401  (shared with live trading)
+from .regime import blocked as regime_blocked  # noqa: E402
 
 
 # ---------------------------------------------------------------- signals
@@ -223,7 +237,7 @@ def signal5(ai: str, p: dict, s: Session, k: int, i: int):
     width = hi - lo
     if width < p.get("min_width", 40) or width > p.get("max_width", 260):
       return None
-    sl = clamp(width * p["sl_frac"], 30, 120)
+    sl = clamp(width * p["sl_frac"], 30, p.get("sl_cap", 120))  # Live Alpha: 160 since 2026-11-18 (plan A2).
     tp = sl * p["tp_mult"]
     if x.c > hi + 3 and prev.c <= hi + 3 and x.c > vw:
       return "B", sl, tp, None
@@ -370,6 +384,9 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
     sl_count = 0  # Lesson rules (learned from losing-trade reviews): consecutive stop-losses in this session,
     last_sl = None  # and (side, time) of the most recent stop-loss.
     s_start = b[0].end - timedelta(minutes=1) if b else None
+    # Plan A: no entries tonight when the previous night sessions were choppy (same rule as live, regime.py).
+    night_off = bool(p.get("night_eff") and s.name == "night" and
+                     regime_blocked(s.prior_night_effs, p["night_eff"])[0])
     for i in range(len(b)):
       x = b[i]
       mtc = (s.close - x.end).total_seconds() / 60
@@ -462,7 +479,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           pend = None
       if pos or pend or entries >= cap_entries or mtc <= cfg["no_entry_minutes_before_close"] or s.td in locked_days:
         continue
-      if i not in s.k_at:  # Decisions only when a 5-minute bar completes.
+      if i not in s.k_at or night_off:  # Decisions only when a 5-minute bar completes.
         continue
       hf = p.get("hours_free")  # (start_iso, end_iso): period in which the live AI traded at any time.
       if p.get("hours") and tod_bucket(x.end) not in p["hours"] and \
@@ -544,7 +561,7 @@ def grid(ai: str) -> list[dict]:
          for r, f, t in itertools.product([3, 6], [0.5, 0.75], [2.0, 3.0])]
   elif ai == "sigma-pullback":
     g = [dict(pull_atr=pa, sl_atr=sa, tp_mult=4.0, trail_atr=None, regimes=("trend",), flip=())
-         for pa, sa in itertools.product([0.2, 0.5], [1.5, 2.0])]
+         for pa, sa in itertools.product([0.2, 0.5], [1.5, 2.0, 2.5, 3.0])]  # 2.5/3.0 added 2026-11-18 (plan B).
   elif ai == "gamma-trend":
     g = [dict(lookback=lb, sl_atr=sa, trail_atr=ta, regimes=("trend",), flip=())
          for lb, sa, ta in itertools.product([6, 12, 24], [1.5, 2.0, 3.0], [2.0, 3.0, 4.0])]

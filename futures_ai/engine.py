@@ -160,6 +160,8 @@ class Engine:
       for tr in self.traders + self.shadows:
         if hasattr(tr.s, "h60"):
           tr.s.h60 = h60
+    if name == "night":
+      self._update_night_regime(start)
 
     for tr in self.traders:
       tr.on_price(now, td, code, quote, minutes_to_close, kill)
@@ -189,6 +191,31 @@ class Engine:
 
     self._record_equity(now, snap.last)
     return "trading" if fresh else "stale"
+
+  def _update_night_regime(self, start: datetime) -> None:
+    """Plan A (regime.py): once per night session, the efficiencies of the previous night sessions."""
+    from . import trader as trader_mod
+    from .regime import NIGHT_EFF_K, NIGHT_EFF_MIN, blocked, prior_night_effs
+    key = start.isoformat()
+    if trader_mod.NIGHT_STATE.get("start") == key:
+      return
+    try:
+      effs = prior_night_effs(self.barstore.bars.values(), start) if self.barstore is not None else []
+    except Exception as exc:  # Never block the loop (stops / targets of open positions must keep running).
+      effs = []
+      print(f"night regime failed: {exc}")
+    trader_mod.NIGHT_STATE.clear()
+    trader_mod.NIGHT_STATE.update(start=key, effs=effs)  # Set first: a failure below is not retried every poll.
+    try:
+      self.ledger.set_state("night_regime", {"start": key, "effs": [round(e, 3) for e in effs]})
+      off, m = blocked(effs, (NIGHT_EFF_K, NIGHT_EFF_MIN))
+      if m is None:
+        self.ledger.log("🌙 夜盤盤勢：沒有前幾個夜盤的資料，今晚不套用洗盤過濾", level="WARN")
+      else:
+        self.ledger.log(f"🌙 夜盤盤勢：前 {NIGHT_EFF_K} 個夜盤平均淨移動/振幅 {m:.2f}（門檻 {NIGHT_EFF_MIN:.2f}）→ "
+                        f"{'Sigma、Nova 今晚不進場（最近在來回洗）' if off else 'Sigma、Nova 今晚照常交易'}")
+    except Exception as exc:
+      print(f"night regime log failed: {exc}")
 
   def refresh_margin(self) -> None:
     from .margin import fetch_margin
