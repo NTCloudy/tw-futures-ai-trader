@@ -143,6 +143,8 @@ class LineNotifier:
     text = self.ledger.get_state("night_report")
     hh, mm = (int(x) for x in self.cfg.get("night_report_time", "08:30").split(":"))
     if (now.hour, now.minute) >= (hh, mm) and now.hour < 15:
+      if text and not self.cfg.get("news_line", False):
+        text = text.split("\n\n新聞：")[0]  # A report stored before news was turned off.
       if text:
         if self._send(text) is False:
           return
@@ -156,8 +158,8 @@ class LineNotifier:
     self.last_digest = time.monotonic()
 
 
-def summary_text(state: dict, session_label: str) -> str:
-  """Short report: each AI's PnL for the session, open positions, and notable news (if any)."""
+def summary_text(state: dict, session_label: str, include_news: bool = False) -> str:
+  """Short report: each AI's PnL for the session, open positions, and notable news (only if include_news)."""
   title = "昨晚夜盤" if session_label == "夜盤" else "今日日盤"
   cs = state.get("curve_session") or {}
   span = f"{cs['open'][5:10].replace('-', '/')} {cs['open'][11:16]}–{cs['close'][11:16]}" if cs.get("open") else ""
@@ -177,7 +179,7 @@ def summary_text(state: dict, session_label: str) -> str:
                    f"（停損 {p['sl']:.0f}，未實現 {p['unrealized']:+,}）")
   else:
     lines.append("目前無留倉")
-  news = state.get("news") or {}
+  news = (state.get("news") or {}) if include_news else {}
   if news.get("mode") in ("elevated", "high", "positive") or news.get("fomc_window"):
     zh = {"high": "🔴 高風險", "elevated": "🟡 風險升高", "positive": "🟢 偏多消息"}.get(news.get("mode"), "⚪ 一般")
     lines.append("")

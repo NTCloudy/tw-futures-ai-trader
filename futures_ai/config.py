@@ -62,7 +62,10 @@ DEFAULTS: dict = {
     "notify": {"line_enabled": True, "digest_minutes": 0, "night_report_time": "08:30",
                # Instant LINE alert on entry signals only (with stop and take-profit). User's choice 11/17: Omega only.
                "alert_ais": ["omega-swing"],
-               "alert_windows": {}},
+               "alert_windows": {},
+               # News on LINE (high-risk spike pushes + headlines in session reports). Off since 2026-11-18 (user:
+               # 「股市新聞不要再傳到賴了」); the news radar still runs for the dashboard and the FOMC entry pause.
+               "news_line": False},
     "publish": {
         "enabled": False,
         "repo": "NTCloudy/tw-futures-ai-trader",

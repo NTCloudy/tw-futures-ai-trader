@@ -1682,3 +1682,35 @@ class LessonUpgradeTest(unittest.TestCase):
     from futures_ai.lessons import _norm
     self.assertEqual(_norm([5, 0.40]), _norm((5, 0.40)))
     self.assertNotEqual(_norm([3, 0.35]), _norm((5, 0.40)))
+
+
+class NewsOffLineTest(unittest.TestCase):
+  """User 2026-11-18: 「股市新聞不要再傳到賴了」 -> no news on LINE (radar keeps running for the dashboard)."""
+
+  def test_reports_have_no_news_by_default(self):
+    from futures_ai.notify import summary_text
+    self.assertFalse(cfg()["notify"]["news_line"])
+    st = {"curve_session": {}, "ais": [{"name": "Omega 波段順勢 AI", "session_pnl": 100}],
+          "combined": {"session_pnl": 100},
+          "news": {"mode": "high", "fomc_window": False, "headlines": [{"title": "關稅新聞"}]}}
+    self.assertNotIn("新聞", summary_text(st, "日盤"))
+    self.assertIn("關稅新聞", summary_text(st, "日盤", include_news=True))
+
+  def test_stored_night_report_is_stripped(self):
+    from futures_ai.notify import LineNotifier
+    c = cfg()
+    led = Ledger(":memory:")
+    n = LineNotifier(c, led)
+    sent = []
+    n._send = sent.append
+    led.set_state("night_report", "【微台 AI】昨晚夜盤結果\n本盤合計：+0\n目前無留倉\n\n新聞：🔴 高風險\n・某新聞")
+    n.maybe_send_night(at(2026, 11, 19, 8, 31))
+    self.assertEqual(len(sent), 1)
+    self.assertNotIn("新聞", sent[0])
+    self.assertIn("本盤合計：+0", sent[0])
+
+  def test_radar_gets_no_notifier_when_off(self):
+    from futures_ai.news import NewsRadar
+    led = Ledger(":memory:")
+    r = NewsRadar(led, 10, None)
+    self.assertIsNone(r.notifier)

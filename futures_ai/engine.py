@@ -259,7 +259,8 @@ class Engine:
     shown = self.ledger.rows("SELECT COALESCE(MAX(id),0) m FROM events")[0]["m"]
     from .news import NewsRadar
     from . import trader as trader_mod
-    radar = NewsRadar(self.ledger, self.cfg.get("news_poll_minutes", 10), notifier)
+    news_line = bool(self.cfg.get("notify", {}).get("news_line", False))
+    radar = NewsRadar(self.ledger, self.cfg.get("news_poll_minutes", 10), notifier if news_line else None)
     st0 = self.ledger.get_state("news") or {}
     trader_mod.RISK_STATE.update(mode=st0.get("mode", "normal"), fomc_window=st0.get("fomc_window", False))
     names = {t.ai: t.s.name for t in self.traders}
@@ -394,10 +395,11 @@ class Engine:
           if status != "holiday":
             # Evaluate the state as of the last second of the closed session (correct trading day).
             st = build_state(self.cfg, self.ledger, now=prev_end - timedelta(seconds=1))
+            news_line = bool(self.cfg.get("notify", {}).get("news_line", False))
             if prev_session == "day":
-              notifier.session_summary(summary_text(st, "日盤"))  # 13:45 report
+              notifier.session_summary(summary_text(st, "日盤", news_line))  # 13:45 report
             else:
-              notifier.defer_night(summary_text(st, "夜盤"))  # Sent at notify.night_report_time (08:30)
+              notifier.defer_night(summary_text(st, "夜盤", news_line))  # Sent at notify.night_report_time (08:30)
             # Monthly report right after the last session that starts in the calendar month.
             from .monthly import month_closes_after, monthly_text
             start = prev_end - (timedelta(hours=5) if prev_session == "day" else timedelta(hours=14))
