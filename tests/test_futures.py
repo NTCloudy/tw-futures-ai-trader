@@ -1505,7 +1505,7 @@ class ParamHistoryReplayTest(unittest.TestCase):
       pre = by_start["2026-11-16T08:45:00+08:00"]
       self.assertEqual(pre["sigma-vwap"]["sl_atr"], 2.0)
       self.assertEqual(pre["alpha-orb"]["sl_cap"], 120)
-      sw = by_start["2026-11-18T13:46:00+08:00"]
+      sw = by_start["2026-11-18T13:46:55+08:00"]
       self.assertEqual(sw["sigma-vwap"]["sl_atr"], 2.0)  # Parameters live at the switch (not the newest).
       self.assertNotIn("night_eff", sw["sigma-vwap"])  # New rules (from the current spec) apply after the switch.
       wk = by_start["2026-11-21T22:00:00+08:00"]
@@ -1522,7 +1522,7 @@ class ParamHistoryReplayTest(unittest.TestCase):
       record_param_switch("nova-nightorb", {"range_min": 30, "window": 600, "sl_frac": 1.0, "tp_mult": 4.0},
                           ts="2026-11-21T22:00:00+08:00", path=f)
       per = {a.isoformat(): ov for a, _b, _l, ov in rule_periods(at(2026, 11, 16, 8, 45), path=f)}
-      for k in ("2026-11-16T08:45:00+08:00", "2026-11-18T13:46:00+08:00"):
+      for k in ("2026-11-16T08:45:00+08:00", "2026-11-18T13:46:55+08:00"):
         self.assertEqual(per[k]["nova-nightorb"]["tp_mult"], 3.0)
         self.assertEqual(per[k]["nova-us"]["tp_mult"], 3.0)
       self.assertEqual(per["2026-11-21T22:00:00+08:00"]["nova-nightorb"]["tp_mult"], 4.0)

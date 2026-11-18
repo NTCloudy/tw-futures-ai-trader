@@ -120,7 +120,7 @@ RULE_VERSIONS = [
       "nova-us": dict(_NOVA_V3, **_PRE_NOVA)}),
     ("2026-11-12T13:47:05+08:00", "Nova B+C 485129c",
      {"alpha-orb": _PRE_ALPHA, "sigma-vwap": _PRE_SIGMA, "nova-nightorb": _PRE_NOVA, "nova-us": _PRE_NOVA}),
-    ("2026-11-18T13:46:00+08:00", "A2/A+B/A 夜盤盤勢過濾＋Alpha 停損上限 160", {}),
+    ("2026-11-18T13:46:55+08:00", "A2/A+B/A 夜盤盤勢過濾＋Alpha 停損上限 160", {}),
 ]
 
 

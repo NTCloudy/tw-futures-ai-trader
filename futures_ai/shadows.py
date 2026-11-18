@@ -63,7 +63,7 @@ def build_allday_twins(cfg: dict, ledger: Ledger) -> list[AiTrader]:
 # Live switched to plan A2 (Alpha stop cap 160), A+B (Sigma night filter + sl_atr 2.5/3.0 in the weekly grid) and
 # A (Nova night filter). The version that was live until then keeps running as a shadow with its parameters frozen
 # as they were at the switch, so the new live version can be compared forward on the same quotes.
-SWITCH_TS = "2026-11-18T13:46:00+08:00"  # Engine restart that put the new version live.
+SWITCH_TS = "2026-11-18T13:46:55+08:00"  # Engine restart that put the new version live.
 OLD_PARAMS = {
     "alpha-orb": {"range_bars": 3, "sl_frac": 0.75, "tp_mult": 3.0},
     "sigma-vwap": {"pull_atr": 0.5, "sl_atr": 2.0, "tp_mult": 4.0, "trail_atr": None},
