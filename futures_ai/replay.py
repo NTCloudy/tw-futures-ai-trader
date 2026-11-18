@@ -42,7 +42,7 @@ def sim_specs(legacy: bool = False) -> dict:
     nova = dict(anchor="night", range_min=30, window=600, sl_frac=1.0, tp_mult=3.0, regimes=("trend", "chop"),
                 flip=(), limit_atr=0.0, limit_min=5, fill_through=1,
                 min_width=0, reach_r=None, min_body_atr=0, dst_skip=None)
-    nova.update(lp.get("nova-nightorb", {}))
+    nova.update(OLD_PARAMS["nova-nightorb"])  # Not today's trained values (no back-fill).
     les = lp.get("lessons", {})
     specs = {
         "alpha-orb": ("alpha-orb", dict(a, regimes=("trend", "chop"), flip=(), limit_atr=0.0, limit_min=5,
@@ -101,9 +101,9 @@ _ALPHA_V1 = dict(rev_cool=None)
 _NOVA_V1 = dict(limit_atr=0.0, be_r=None, max_vwap_pts=None, max_sl=None)
 _NOVA_V3 = dict(limit_atr=0.0, max_vwap_pts=None, max_sl=None)
 # Before the 11/18 switch: Alpha stop cap 120, no night filter, Sigma pull/stop as frozen in shadows.OLD_PARAMS.
-_PRE_ALPHA = dict(sl_cap=120)
-_PRE_SIGMA = dict(night_eff=None, pull_atr=0.5, sl_atr=2.0)
-_PRE_NOVA = dict(night_eff=None)
+_PRE_ALPHA = dict(sl_cap=120, range_bars=3, sl_frac=0.75, tp_mult=3.0)
+_PRE_SIGMA = dict(night_eff=None, pull_atr=0.5, sl_atr=2.0, tp_mult=4.0, trail_atr=None)
+_PRE_NOVA = dict(night_eff=None, range_min=30, window=600, sl_frac=1.0, tp_mult=3.0)
 RULE_VERSIONS = [
     ("2026-11-08T00:03:52+08:00", "共識升級 f8482a5",
      {"alpha-orb": dict(_ALPHA_V1, **_PRE_ALPHA), "sigma-vwap": dict(_SIGMA_V1, **_PRE_SIGMA),
@@ -124,8 +124,54 @@ RULE_VERSIONS = [
 ]
 
 
-def rule_periods(since: datetime) -> list[tuple[datetime, datetime | None, str, dict | None]]:
-  """[(start, end, label, overrides)] covering since..now; overrides None = legacy specs."""
+PARAM_HISTORY = ROOT / "data" / "param_versions.json"  # Weekly automatic parameter switches (weekly.py).
+
+
+def record_param_switch(ai: str, params: dict, ts: str | None = None, path=None) -> None:
+  """Called by the weekly job whenever it switches an AI's trained parameters, so the replay's "當時規則"
+  uses each period's real parameters instead of back-filling the newest ones."""
+  f = path or PARAM_HISTORY
+  hist = json.loads(f.read_text(encoding="utf-8")) if f.exists() else []
+  hist.append({"ts": ts or datetime.now(TPE).isoformat(timespec="seconds"), "ai": ai, "params": params})
+  f.write_text(json.dumps(hist, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def param_history(path=None) -> list[tuple[str, str, dict]]:
+  """[(ts, ai, params)] sorted: the parameters live at the 11/18 switch (shadows.OLD_PARAMS) + weekly switches."""
+  from .shadows import OLD_PARAMS, SWITCH_TS
+  out = [(SWITCH_TS, ai, dict(OLD_PARAMS[ai])) for ai in ("alpha-orb", "sigma-vwap", "nova-nightorb")]
+  f = path or PARAM_HISTORY
+  if f.exists():
+    out += [(h["ts"], h["ai"], h["params"]) for h in json.loads(f.read_text(encoding="utf-8"))]
+  return sorted(out, key=lambda t: t[0])
+
+
+def rule_periods(since: datetime, path=None) -> list[tuple[datetime, datetime | None, str, dict | None]]:
+  """[(start, end, label, overrides)] covering since..now; overrides None = legacy specs. Periods after the
+  11/18 switch are split at every weekly parameter switch and carry the parameters live in that period."""
+  static = _static_periods(since)
+  hist = param_history(path)
+  cuts = sorted({datetime.fromisoformat(ts) for ts, _ai, _p in hist})
+  out = []
+  for a, b, lab, ov in static:
+    bounds = [a] + [c for c in cuts if a < c and (b is None or c < b)] + [b]
+    for k in range(len(bounds) - 1):
+      sa, sb = bounds[k], bounds[k + 1]
+      o = ov
+      live = {}
+      for ts, ai, prm in hist:
+        if datetime.fromisoformat(ts) <= sa:
+          live[ai] = prm
+      if o is not None and live:
+        o = {key: dict(val) for key, val in o.items()}
+        for ai, prm in live.items():
+          for tgt in ((ai, "nova-us") if ai == "nova-nightorb" else (ai,)):
+            o[tgt] = {**o.get(tgt, {}), **prm}
+      out.append((sa, sb, lab if k == 0 else f"{lab}＋參數 {sa:%m/%d}", o))
+  return out
+
+
+def _static_periods(since: datetime) -> list[tuple[datetime, datetime | None, str, dict | None]]:
   out = []
   start, label, ov = since, "升級前（舊規則）", None
   for ts_iso, lab, o in RULE_VERSIONS:

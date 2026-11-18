@@ -685,17 +685,23 @@ class ReplayMatchTest(unittest.TestCase):
     self.assertEqual((len(both), len(lo), len(so)), (1, 1, 1))
 
   def test_rule_periods_follow_live_versions(self):
+    from pathlib import Path
     from futures_ai.replay import RULE_VERSIONS, rule_periods
-    ps = rule_periods(at(2026, 10, 19, 8, 45))
+    from futures_ai.shadows import OLD_PARAMS
+    none = Path("/nonexistent/param_versions.json")  # No weekly switches yet.
+    ps = rule_periods(at(2026, 10, 19, 8, 45), path=none)
     self.assertEqual(len(ps), len(RULE_VERSIONS) + 1)
     self.assertIsNone(ps[0][3])  # Legacy specs before the 11/08 upgrade.
     self.assertEqual(ps[0][1], at(2026, 11, 8, 0, 3, 52))
     self.assertIsNone(ps[-1][1])
     for (a, b, _l, _o), (c, _d, _m, _p) in zip(ps, ps[1:]):
       self.assertEqual(b, c)  # Contiguous, no gaps.
-    late = rule_periods(at(2026, 11, 11, 15, 0))  # Starting inside a version keeps that version's rules.
+    late = rule_periods(at(2026, 11, 11, 15, 0), path=none)  # Starting inside a version keeps its rules.
     self.assertEqual(late[0][2], RULE_VERSIONS[2][1])
-    self.assertEqual(late[-1][3], {})
+    # Current rules after the switch, with the parameters that were live at the switch (no back-fill).
+    nv = OLD_PARAMS["nova-nightorb"]
+    self.assertEqual(late[-1][3], {"alpha-orb": OLD_PARAMS["alpha-orb"], "sigma-vwap": OLD_PARAMS["sigma-vwap"],
+                                   "nova-nightorb": nv, "nova-us": nv})
 
   def test_old_versions_disable_later_rules(self):
     from futures_ai.replay import RULE_VERSIONS, sim_specs
@@ -1482,3 +1488,45 @@ class NightRegimeEngineSafetyTest(unittest.TestCase):
       self.assertTrue(tm.NIGHT_STATE.get("start"))
     finally:
       tm.NIGHT_STATE.clear()
+
+
+class ParamHistoryReplayTest(unittest.TestCase):
+
+  def test_weekly_switch_splits_periods_without_backfill(self):
+    import tempfile
+    from pathlib import Path
+    from futures_ai.replay import record_param_switch, rule_periods
+    with tempfile.TemporaryDirectory() as d:
+      f = Path(d) / "pv.json"
+      record_param_switch("sigma-vwap", {"pull_atr": 0.5, "sl_atr": 2.5, "tp_mult": 4.0, "trail_atr": None},
+                          ts="2026-11-21T22:00:00+08:00", path=f)
+      per = rule_periods(at(2026, 11, 16, 8, 45), path=f)
+      by_start = {a.isoformat(): ov for a, _b, _lab, ov in per}
+      pre = by_start["2026-11-16T08:45:00+08:00"]
+      self.assertEqual(pre["sigma-vwap"]["sl_atr"], 2.0)
+      self.assertEqual(pre["alpha-orb"]["sl_cap"], 120)
+      sw = by_start["2026-11-18T13:46:00+08:00"]
+      self.assertEqual(sw["sigma-vwap"]["sl_atr"], 2.0)  # Parameters live at the switch (not the newest).
+      self.assertNotIn("night_eff", sw["sigma-vwap"])  # New rules (from the current spec) apply after the switch.
+      wk = by_start["2026-11-21T22:00:00+08:00"]
+      self.assertEqual(wk["sigma-vwap"]["sl_atr"], 2.5)
+      self.assertEqual(per[-1][1], None)
+
+  def test_nova_switch_not_backfilled(self):
+    import tempfile
+    from pathlib import Path
+    from futures_ai.replay import record_param_switch, rule_periods, sim_specs
+    from futures_ai.shadows import old_strategies
+    with tempfile.TemporaryDirectory() as d:
+      f = Path(d) / "pv.json"
+      record_param_switch("nova-nightorb", {"range_min": 30, "window": 600, "sl_frac": 1.0, "tp_mult": 4.0},
+                          ts="2026-11-21T22:00:00+08:00", path=f)
+      per = {a.isoformat(): ov for a, _b, _l, ov in rule_periods(at(2026, 11, 16, 8, 45), path=f)}
+      for k in ("2026-11-16T08:45:00+08:00", "2026-11-18T13:46:00+08:00"):
+        self.assertEqual(per[k]["nova-nightorb"]["tp_mult"], 3.0)
+        self.assertEqual(per[k]["nova-us"]["tp_mult"], 3.0)
+      self.assertEqual(per["2026-11-21T22:00:00+08:00"]["nova-nightorb"]["tp_mult"], 4.0)
+      self.assertEqual(per["2026-11-21T22:00:00+08:00"]["nova-us"]["tp_mult"], 4.0)
+    self.assertEqual(sim_specs(legacy=True)["nova-nightorb"][1]["tp_mult"], 3.0)
+    nova_old = [s for s in old_strategies() if s.id == "nova-nightorb"][0]
+    self.assertEqual((nova_old.range_min, nova_old.window, nova_old.sl_frac, nova_old.tp_mult), (30, 600, 1.0, 3.0))

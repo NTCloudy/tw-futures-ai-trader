@@ -67,6 +67,7 @@ SWITCH_TS = "2026-11-18T13:46:00+08:00"  # Engine restart that put the new versi
 OLD_PARAMS = {
     "alpha-orb": {"range_bars": 3, "sl_frac": 0.75, "tp_mult": 3.0},
     "sigma-vwap": {"pull_atr": 0.5, "sl_atr": 2.0, "tp_mult": 4.0, "trail_atr": None},
+    "nova-nightorb": {"range_min": 30, "window": 600, "sl_frac": 1.0, "tp_mult": 3.0},
     "lessons": {"alpha-orb": {"rev_cool": 30},
                 "sigma-vwap": {"min_er": 0.3, "max_vwap_pts": 200, "rev_cool": 30, "max_sl": 2}},
 }

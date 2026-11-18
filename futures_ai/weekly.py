@@ -217,6 +217,8 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       if kw != {k: cur[live_id].get(k) for k in kw}:
         live_params[live_id] = kw
         changes[live_id] = kw
+        from .replay import record_param_switch
+        record_param_switch(live_id, kw)  # Replay "當時規則" must not back-fill these parameters.
         ledger.set_state(f"strategy_since:{live_id}", datetime.now(TPE).isoformat(timespec="seconds"))
         switched = True
     if switched:
@@ -245,6 +247,9 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     if r["switch"] and auto_adopt and not frozen:
       live_params[ai] = r["latest"]
       changes[ai] = r["latest"]
+      if ai == "nova-nightorb":
+        from .replay import record_param_switch
+        record_param_switch(ai, r["latest"])
       ledger.set_state(f"strategy_since:{ai}", datetime.now(TPE).isoformat(timespec="seconds"))
       lines.append(f"{head} → ✅ 已換成新參數 {r['latest']}")
     elif r["switch"]:
