@@ -191,13 +191,16 @@ def be05_lines(live: Ledger, shadow: Ledger | None = None, now=None) -> list[str
   ka = {r["entry_ts"][:16]: r["points"] for r in a}
   kb = {r["entry_ts"][:16]: r["points"] for r in b}
   n_diff = sum(1 for k in set(ka) | set(kb) if ka.get(k) != kb.get(k))
+  # Root differences: same entry minute, different exit. After one, later re-entries may drift apart and be
+  # counted in n_diff too, so the decision uses the root count.
+  n_root = sum(1 for k in set(ka) & set(kb) if ka[k] != kb[k])
   out = ["", f"🧪 Omega 提早保本影子（{BE05_START[5:10].replace('-', '/')} 起，第 {n_days} 個交易日，"
-             f"兩版結果不同 {n_diff}/{BE05_MIN_DIFF} 筆）",
+             f"源頭差異 {n_root}/{BE05_MIN_DIFF} 次、結果不同共 {n_diff} 筆）",
          f"實盤（保本 0.7）：{row(a)}", f"影子（保本 0.5）：{row(b)}",
          "註：兩版只在浮盈 600～840 點後回頭時才不同；只比較起始日之後的新進場單。"]
-  if n_diff >= BE05_MIN_DIFF or n_days >= BE05_DAYS:
+  if n_root >= BE05_MIN_DIFF or n_days >= BE05_DAYS:
     out.append("→ 比較已足夠（差異滿 5 筆或滿 40 個交易日），請決定是否改用（回測不建議：一年約少賺 34k、回撤較大）")
-  elif n_days >= 10 and n_diff == 0:
+  elif n_days >= 10 and n_root == 0:
     out.append("→ 已 10 個交易日但兩版尚無差異，繼續觀察")
   return out
 

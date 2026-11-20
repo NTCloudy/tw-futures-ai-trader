@@ -1754,6 +1754,6 @@ class Be05ShadowTest(unittest.TestCase):
                        "'S', 1, '2026-11-21T10:00:00+08:00', 1, '2026-11-21T22:00:00+08:00', 1, ?, 0, 0, ?, 'SL')",
                        (ai, pts, pnl))
     txt = "\n".join(be05_lines(live, sh, at(2026, 11, 24, 9, 0)))
-    self.assertIn("兩版結果不同 1/5 筆", txt)
+    self.assertIn("源頭差異 1/5 次、結果不同共 1 筆", txt)
     self.assertIn("實盤（保本 0.7）：-5,990（賺 0／打平 0／賠 1）", txt)
     self.assertIn("影子（保本 0.5）：-30（賺 0／打平 1／賠 0）", txt)
