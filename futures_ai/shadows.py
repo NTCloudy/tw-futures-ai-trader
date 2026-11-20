@@ -154,7 +154,7 @@ def red_light_lines(live: Ledger, now=None, expect_hist: list | None = None) -> 
 # -34k/year, DD 18.6k->25.3k. Paper only. The two versions differ only when a trade's open profit reaches 600-840 pts
 # and then turns back (rare), so the comparison runs until BE05_MIN_DIFF trades differ or BE05_DAYS trading days.
 BE05_ID = "be05-omega-swing"
-BE05_START = "2026-11-20T13:46:00+08:00"  # Engine restart that added the shadow (updated to the actual time).
+BE05_START = "2026-11-20T13:47:19+08:00"  # Engine restart that added the shadow (updated to the actual time).
 BE05_DAYS = 40
 BE05_MIN_DIFF = 5
 
