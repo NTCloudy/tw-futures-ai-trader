@@ -148,6 +148,60 @@ def red_light_lines(live: Ledger, now=None, expect_hist: list | None = None) -> 
   return out
 
 
+# ---- Omega early-breakeven shadow (user decision 2026-11-20, not recommended by the backtest) ----
+# Same live Omega, but the stop moves to breakeven (+6) once the open profit reaches 0.5 x the initial stop
+# (~600 pts) instead of 0.7 x (~840 pts). One-year backtest: wins 49->46, breakeven 8->20, losses 26->20,
+# -34k/year, DD 18.6k->25.3k. Paper only. The two versions differ only when a trade's open profit reaches 600-840 pts
+# and then turns back (rare), so the comparison runs until BE05_MIN_DIFF trades differ or BE05_DAYS trading days.
+BE05_ID = "be05-omega-swing"
+BE05_START = "2026-11-20T13:46:00+08:00"  # Engine restart that added the shadow (updated to the actual time).
+BE05_DAYS = 40
+BE05_MIN_DIFF = 5
+
+
+def build_be05_omega(cfg: dict, ledger: Ledger) -> list[AiTrader]:
+  from .strategies import build_strategies
+  s = [x for x in build_strategies() if x.id == "omega-swing"][0]
+  s.base_id, s.id, s.name = s.id, BE05_ID, f"{s.name}（提早保本 0.5 影子）"
+  s.be_r = 0.5
+  return [AiTrader(cfg, s, LocalPaperBroker(cfg), ledger)]
+
+
+def be05_lines(live: Ledger, shadow: Ledger | None = None, now=None) -> list[str]:
+  """Weekly report: live Omega vs the early-breakeven shadow since BE05_START (win / breakeven / loss)."""
+  from datetime import datetime
+  from .calendar import TPE, is_business_day
+  now = now or datetime.now(TPE)
+  start = datetime.fromisoformat(BE05_START)
+  if now < start:
+    return []
+  sh = shadow or shadow_ledger()
+  d, n_days = start.date(), 0
+  while d <= now.date():
+    n_days += is_business_day(d)
+    d = d.fromordinal(d.toordinal() + 1)
+
+  def row(rows):
+    pts = [r["points"] for r in rows]
+    w = sum(p > 10 for p in pts); b = sum(-10 <= p <= 10 for p in pts); l = sum(p < -10 for p in pts)
+    return f"{sum(r['pnl_twd'] for r in rows):+,.0f}（賺 {w}／打平 {b}／賠 {l}）"
+  a = live.rows("SELECT entry_ts, points, pnl_twd FROM trades WHERE ai='omega-swing' AND entry_ts>=?", (BE05_START,))
+  b = sh.rows("SELECT entry_ts, points, pnl_twd FROM trades WHERE ai=? AND entry_ts>=?", (BE05_ID, BE05_START))
+  # A differing outcome: same entry minute with a different result, or a trade only one side has.
+  ka = {r["entry_ts"][:16]: r["points"] for r in a}
+  kb = {r["entry_ts"][:16]: r["points"] for r in b}
+  n_diff = sum(1 for k in set(ka) | set(kb) if ka.get(k) != kb.get(k))
+  out = ["", f"🧪 Omega 提早保本影子（{BE05_START[5:10].replace('-', '/')} 起，第 {n_days} 個交易日，"
+             f"兩版結果不同 {n_diff}/{BE05_MIN_DIFF} 筆）",
+         f"實盤（保本 0.7）：{row(a)}", f"影子（保本 0.5）：{row(b)}",
+         "註：兩版只在浮盈 600～840 點後回頭時才不同；只比較起始日之後的新進場單。"]
+  if n_diff >= BE05_MIN_DIFF or n_days >= BE05_DAYS:
+    out.append("→ 比較已足夠（差異滿 5 筆或滿 40 個交易日），請決定是否改用（回測不建議：一年約少賺 34k、回撤較大）")
+  elif n_days >= 10 and n_diff == 0:
+    out.append("→ 已 10 個交易日但兩版尚無差異，繼續觀察")
+  return out
+
+
 PROT_IDS = ("alpha-orb", "sigma-vwap", "nova-nightorb")
 PROT_START = "2026-11-16T08:45:00+08:00"  # 10-trading-day comparison: 11/16 day session .. 11/27 night session.
 PROT_DAYS = 10
@@ -212,4 +266,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   cfg = copy.deepcopy(cfg)
   cfg["mode"] = "local_paper"
   return (build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger) + build_protected_twins(cfg, ledger)
-          + build_old_twins(cfg, ledger))
+          + build_old_twins(cfg, ledger) + build_be05_omega(cfg, ledger))

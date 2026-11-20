@@ -1714,3 +1714,46 @@ class NewsOffLineTest(unittest.TestCase):
     led = Ledger(":memory:")
     r = NewsRadar(led, 10, None)
     self.assertIsNone(r.notifier)
+
+
+class Be05ShadowTest(unittest.TestCase):
+
+  def test_shadow_built_and_isolated(self):
+    from futures_ai.shadows import BE05_ID, build_shadows
+    from futures_ai.strategies import build_strategies
+    c = cfg()
+    led = Ledger(":memory:")
+    sh = {t.ai: t for t in build_shadows(c, led)}
+    self.assertIn(BE05_ID, sh)
+    self.assertEqual(sh[BE05_ID].s.be_r, 0.5)
+    self.assertEqual(sh[BE05_ID].broker.name, "local_paper")
+    self.assertTrue(getattr(sh[BE05_ID].s, "hold_overnight", False))
+    live = [s for s in build_strategies() if s.id == "omega-swing"][0]
+    self.assertEqual(live.be_r, 0.7)  # Live Omega untouched.
+
+  def test_breakeven_moves_at_half_initial_stop(self):
+    from futures_ai.shadows import BE05_ID, build_shadows
+    c = cfg()
+    led = Ledger(":memory:")
+    tr = {t.ai: t for t in build_shadows(c, led)}[BE05_ID]
+    tr.s.h60 = []  # No ATR: trailing keeps the stored distance.
+    tr.pos = {"side": "S", "qty": 1, "entry_price": 39000, "entry_ts": "2026-11-20T10:00:00+08:00", "contract": "TMFL6",
+              "trading_day": "2026-11-20", "session_key": "2026-11-20-day", "sl": 40200, "tp": 34000, "sl_oid": 0,
+              "tp_oid": 0, "entry_cost": 20, "reason": "t", "regime": "trend", "mode": "native", "mfe": 0.0, "mae": 0.0,
+              "trail": 1200, "init_sl_pts": 1200.0}
+    tr.on_price(at(2026, 11, 20, 10, 30), "2026-11-20", "TMFL6", {"last": 38400, "bid": 38399, "ask": 38400,
+                                                                  "hi": 38400, "lo": 38400}, 100, False)
+    self.assertEqual(tr.pos["sl"], 38994)  # 600 pts profit = 0.5 x 1200 -> stop to entry - 6 (short).
+
+  def test_weekly_lines(self):
+    from futures_ai.shadows import BE05_ID, be05_lines
+    live, sh = Ledger(":memory:"), Ledger(":memory:")
+    for led, ai, pts, pnl in ((live, "omega-swing", -595, -5990), (sh, BE05_ID, 0, -30)):
+      led.conn.execute("INSERT INTO trades (ai, trading_day, contract, side, qty, entry_ts, entry_price, exit_ts, "
+                       "exit_price, points, gross_twd, cost_twd, pnl_twd, exit_kind) VALUES (?, '2026-11-21', 'TMF', "
+                       "'S', 1, '2026-11-21T10:00:00+08:00', 1, '2026-11-21T22:00:00+08:00', 1, ?, 0, 0, ?, 'SL')",
+                       (ai, pts, pnl))
+    txt = "\n".join(be05_lines(live, sh, at(2026, 11, 24, 9, 0)))
+    self.assertIn("兩版結果不同 1/5 筆", txt)
+    self.assertIn("實盤（保本 0.7）：-5,990（賺 0／打平 0／賠 1）", txt)
+    self.assertIn("影子（保本 0.5）：-30（賺 0／打平 1／賠 0）", txt)

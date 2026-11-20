@@ -304,8 +304,9 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
   except Exception as exc:
     lines.append(f"\n🧪 受保護出場影子比對失敗：{exc}")
   try:
-    from .shadows import red_light_lines, version_compare_lines
+    from .shadows import be05_lines, red_light_lines, version_compare_lines
     lines += version_compare_lines(ledger)
+    lines += be05_lines(ledger)
     lines += red_light_lines(ledger, expect_hist=ledger.get_state("expect_hist", []))
   except Exception as exc:
     lines.append(f"\n🆚 新舊版比對失敗：{exc}")
