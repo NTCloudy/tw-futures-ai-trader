@@ -122,6 +122,58 @@ SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "allday-sigma-
                 "allday-nova-nightorb": "Nova（不限時段版）", "nova-us": "Nova（只在美股開盤 1h 版）"}
 
 
+def line_brief(now: datetime, live_lines: list[str], lesson_lines: list[str], cmp_lines: list[str],
+               red_lines: list[str], trial_lines: list[str], changes: dict, stock_lines: list[str] | None = None,
+               all_lines: list[str] | None = None) -> str:
+  """Short LINE version of the weekly report (user 2026-11-21: 「檢討內容盡量簡短」). The full report is still
+  saved to data/weekly_report.json."""
+  import re
+  out = [f"【微台 AI 週報】{now:%m/%d}"]
+  pnl = [(m.group(1), int(m.group(2).replace(",", ""))) for m in
+         (re.match(r"^(\w+)｜([+-][\d,]+)｜", ln) for ln in live_lines) if m]
+  if pnl:
+    out.append("本週：" + "｜".join(f"{n} {v:+,}" for n, v in sorted(pnl, key=lambda t: -t[1]))
+               + f"（合計 {sum(v for _, v in pnl):+,}）")
+  cmp = []
+  for ln in cmp_lines:
+    m = re.match(r"^(\w+)｜([+-][\d,]+)（(\d+) 筆）｜([+-][\d,]+)（(\d+) 筆）", ln)
+    if m and (m.group(3) != "0" or m.group(5) != "0"):
+      cmp.append(f"{m.group(1)} {m.group(2)} vs {m.group(4)}")
+  if cmp:
+    out.append("新版 vs 舊版：" + "｜".join(cmp))
+  stk = []
+  for ln in stock_lines or []:
+    m = re.match(r"^(?:📌 )?(.+?)：([+-][\d,]+)（", ln)
+    if m:
+      stk.append(f"{m.group(1).replace('你（不動）', '你不動')} {m.group(2)}")
+  if stk:
+    out.append("美股 AI（USD）：" + "｜".join(stk))
+  par = {k: v for k, v in changes.items() if k != "lessons"}
+  out.append("參數：" + ("、".join(f"{NAMES.get(k, EXPECT_NAMES.get(k, k))} 已更新" for k in par) if par else "維持不變"))
+  les = []
+  for ln in lesson_lines:
+    m = re.match(r"🔍 (\w+) 反覆出現「(.+?)」→ 試「(.+?)」.*開始實戰驗證", ln)
+    if m:
+      les.append(f"{m.group(1)} 試行「{m.group(3)}」10 天")
+    m = re.match(r"🧹 (\w+) 每月規則健檢：(拿掉「.+?」).*開始實戰驗證", ln)
+    if m:
+      les.append(f"{m.group(1)} 試行{m.group(2)}")
+    m = re.match(r"🧪 (\w+) 驗證中(.+?)：.*→ (✅ 正式採用|❌ 實戰沒有比較好，淘汰)", ln)
+    if m:
+      les.append(f"{m.group(1)} {'採用' if '✅' in m.group(3) else '淘汰'}{m.group(2)}")
+  out.append("經驗規則：" + ("；".join(les) if les else "本週沒有新變化"))
+  reds = [ln for ln in red_lines if "🔴" in ln]
+  out.append("紅燈：" + ("；".join(reds) if reds else "無"))
+  ask = [ln.lstrip("→ ").strip() for ln in trial_lines if ln.startswith("→")]
+  if reds or ask:
+    out.append("👉 需要你決定：" + "；".join(ask + (["紅燈 AI 要不要停用"] if reds else [])))
+  fails = sum(1 for ln in (all_lines or []) if "失敗" in ln)
+  if fails:
+    out.append(f"⚠️ 本週有 {fails} 項計算失敗，細節在完整週報")
+  out.append("（完整週報已存檔，要看細節可以問我）")
+  return "\n".join(out)
+
+
 def live_summary(ledger: Ledger, now: datetime | None = None, days: int = 7) -> list[str]:
   """This week's P&L per AI (realized, NT$): whole week, and only trades entered within 1 h / 2 h after
   the US cash open (DST-aware); then the top three AIs of the week."""
@@ -206,7 +258,8 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
       stock_week = ["", "— 本週股票 AI 損益 —", *stock_week[1:]]
   except Exception as exc:
     stock_week = ["", f"股票週報讀取失敗：{exc}"]
-  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_summary(ledger), *replay_lines, *stock_week, "",
+  live_lines = live_summary(ledger)
+  lines = [f"【微台 AI 每週報告】{datetime.now(TPE):%m/%d}", *live_lines, *replay_lines, *stock_week, "",
            "— 訓練（技術細節）—",
            f"資料 {rep['days'][0]} ～ {rep['days'][1]}（{len(days)} 個交易日）"]
   changes = {}
@@ -284,10 +337,12 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
   hist.append({ai: round(oos / (n_win * dp) * 20) for ai, (oos, n_win, dp) in expect.items() if n_win})
   ledger.set_state("expect_hist", hist[-8:])
   # Losing-trade review -> recurring lessons -> backtested + forward-validated rules (lessons.py).
+  lesson_lines: list[str] = []
   try:
     from . import lessons
     lr = lessons.run(cfg, ledger, sessions, adopt=auto_adopt and not frozen)
     lines += lr["lines"]
+    lesson_lines = lr["lines"]
     if lr["changed"]:
       changes["lessons"] = True
   except Exception as exc:
@@ -298,27 +353,34 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
     lines.append(f"\n🩺 策略健康度計算失敗：{exc}")
 
   lines += shadow_summary(ledger=ledger)
+  cmp_lines, red_lines, trial_lines = [], [], []
   try:
     from .shadows import protected_shadow_lines
-    lines += protected_shadow_lines(ledger)
+    trial_lines += protected_shadow_lines(ledger)
+    lines += trial_lines
   except Exception as exc:
     lines.append(f"\n🧪 受保護出場影子比對失敗：{exc}")
   try:
     from .shadows import be05_lines, red_light_lines, version_compare_lines
-    lines += version_compare_lines(ledger)
-    lines += be05_lines(ledger)
-    lines += red_light_lines(ledger, expect_hist=ledger.get_state("expect_hist", []))
+    cmp_lines = version_compare_lines(ledger)
+    be = be05_lines(ledger)
+    red_lines = red_light_lines(ledger, expect_hist=ledger.get_state("expect_hist", []))
+    trial_lines += be
+    lines += cmp_lines + be + red_lines
   except Exception as exc:
     lines.append(f"\n🆚 新舊版比對失敗：{exc}")
 
-  report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes, "text": "\n".join(lines)}
+  brief = line_brief(datetime.now(TPE), live_lines, lesson_lines, cmp_lines, red_lines,
+                     trial_lines, changes, stock_lines=stock_week, all_lines=lines)
+  report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes,
+            "text": "\n".join(lines), "line": brief}
   (ROOT / "data" / "weekly_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
   ledger.log("每週訓練完成" + (f"，更新參數：{', '.join(changes)}" if changes else "，參數維持不變"), level="WARN")
   ledger.conn.close()
   cred = load_cred()
   if cred:
     try:
-      push(cred, report["text"][:4900])
+      push(cred, brief)  # Short version only (user request 2026-11-21); the full text is in weekly_report.json.
     except Exception as exc:
       print(f"LINE push failed: {exc}")
   if restart and changes:

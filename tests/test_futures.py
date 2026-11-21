@@ -1757,3 +1757,43 @@ class Be05ShadowTest(unittest.TestCase):
     self.assertIn("源頭差異 1/5 次、結果不同共 1 筆", txt)
     self.assertIn("實盤（保本 0.7）：-5,990（賺 0／打平 0／賠 1）", txt)
     self.assertIn("影子（保本 0.5）：-30（賺 0／打平 1／賠 0）", txt)
+
+
+class WeeklyBriefTest(unittest.TestCase):
+  """User 2026-11-21: weekly LINE message must be short."""
+
+  def test_brief_from_this_weeks_report(self):
+    from futures_ai.weekly import line_brief
+    live = ["📊 本週收益（模擬，NT$）", "AI｜本週｜美股開盤後1h｜後2h", "Alpha｜-2,500｜-2,500｜-2,500",
+            "Sigma｜-1,800｜-1,550｜-1,550", "Nova｜-12,400｜-4,650｜-7,750", "Omega｜+6,390｜+0｜+0"]
+    les = ["🔍 Alpha 反覆出現「停損後 30 分鐘內回到進場價」→ 試「停損上限 200 點」：一年 +1,500 → 回測通過，開始實戰驗證 10 天（新行情）才決定是否採用",
+           "🔍 Nova 反覆出現「開盤急著進場」→ 試「開盤 45 分鐘內不進場」：一年 -10,156 → 回測沒變好，不採用"]
+    cmp = ["", "🆚 新版實盤 vs 舊版影子", "AI｜新版（實盤）｜舊版（影子）", "Alpha｜+0（0 筆）｜+0（0 筆）",
+           "Sigma｜-1,550（1 筆）｜-10,946（7 筆）", "Nova｜+0（0 筆）｜-8,088（12 筆）"]
+    red = ["", "🚦 停用紅燈", "Alpha：+0（紅線 −8,622）🟢", "Sigma：-1,550（紅線 −18,036）🟢"]
+    trials = ["🧪 受保護出場影子比對（11/16 起，第 5/10 個交易日）"]
+    stock = ["", "— 本週股票 AI 損益 —", "🇺🇸 美股（你的持倉，USD）｜至 11/19", "Alpha：-505（-0.7%）｜累計 -791",
+             "Sigma：-582（-0.9%）｜累計 -868", "📌 你（不動）：-1,046（-1.5%）｜累計 -1,331"]
+    txt = line_brief(at(2026, 11, 21, 10, 7), live, les, cmp, red, trials, {}, stock_lines=stock,
+                     all_lines=live + les)
+    self.assertIn("本週：Omega +6,390｜Sigma -1,800｜Alpha -2,500｜Nova -12,400（合計 -10,310）", txt)
+    self.assertIn("新版 vs 舊版：Sigma -1,550 vs -10,946｜Nova +0 vs -8,088", txt)
+    self.assertIn("參數：維持不變", txt)
+    self.assertIn("經驗規則：Alpha 試行「停損上限 200 點」10 天", txt)
+    self.assertIn("紅燈：無", txt)
+    self.assertNotIn("需要你決定", txt)
+    self.assertIn("美股 AI（USD）：Alpha -505｜Sigma -582｜你不動 -1,046", txt)
+    self.assertNotIn("計算失敗", txt)
+    self.assertLessEqual(len(txt.splitlines()), 9)
+    self.assertLess(len(txt), 400)
+
+  def test_brief_asks_when_a_decision_is_due(self):
+    from futures_ai.weekly import line_brief
+    txt = line_brief(at(2026, 11, 28, 10, 0), [], [], [], ["Nova：-13,000（紅線 −12,352）🔴 建議停用，請決定（虧損超過紅線）"],
+                     ["→ 已滿 10 個交易日，請決定是否把「受保護出場不算停損」正式上線（config protected_not_stop）"],
+                     {"sigma-vwap": {"sl_atr": 2.5}},
+                     all_lines=["\n📚 虧損檢討失敗：boom", "\n🩺 策略健康度計算失敗：x"])
+    self.assertIn("參數：Sigma 趨勢回測 已更新", txt)
+    self.assertIn("紅燈：Nova：-13,000", txt)
+    self.assertIn("👉 需要你決定：已滿 10 個交易日", txt)
+    self.assertIn("⚠️ 本週有 2 項計算失敗", txt)
