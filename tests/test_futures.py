@@ -1797,3 +1797,21 @@ class WeeklyBriefTest(unittest.TestCase):
     self.assertIn("紅燈：Nova：-13,000", txt)
     self.assertIn("👉 需要你決定：已滿 10 個交易日", txt)
     self.assertIn("⚠️ 本週有 2 項計算失敗", txt)
+
+
+class LiveChecklistTest(unittest.TestCase):
+  """User 2026-11-24: ask all real-money questions at once before going live."""
+
+  def test_live_mode_refuses_without_checklist_ack(self):
+    from futures_ai.brokers import make_broker
+    from futures_ai.live_checklist import ITEMS, LIVE_CHECKLIST_VERSION
+    c = cfg(mode="sinopac_live", broker_ai="omega-swing", i_understand_real_money=True)
+    with self.assertRaises(SystemExit) as ctx:
+      make_broker(c, "omega-swing")
+    self.assertIn("緊急停止的範圍", str(ctx.exception))
+    self.assertGreaterEqual(len(ITEMS), 8)
+    c2 = cfg(mode="sinopac_live", broker_ai="omega-swing", i_understand_real_money=True,
+             live_checklist_ack="old-version")
+    with self.assertRaises(SystemExit):
+      make_broker(c2, "omega-swing")
+    self.assertEqual(make_broker(cfg(), "omega-swing").name, "local_paper")  # Paper mode unaffected.

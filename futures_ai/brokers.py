@@ -285,6 +285,10 @@ def make_broker(cfg: dict, ai_id: str):
   if mode in ("sinopac_sim", "sinopac_live") and ai_id == cfg["broker_ai"]:
     if mode == "sinopac_live" and not cfg.get("i_understand_real_money"):
       raise SystemExit("sinopac_live 需要在 config 設定 i_understand_real_money: true")
+    from .live_checklist import LIVE_CHECKLIST_VERSION, checklist_text
+    if mode == "sinopac_live" and cfg.get("live_checklist_ack") != LIVE_CHECKLIST_VERSION:
+      raise SystemExit("上真倉前要先跟使用者一次確認完清單，再設定 live_checklist_ack: "
+                       f"\"{LIVE_CHECKLIST_VERSION}\"\n" + checklist_text())
     if mode == "sinopac_live" and (cfg.get("learning_mode") or not cfg.get("enforce_daily_loss", True)):
       raise SystemExit("真實帳戶必須恢復所有風控：請設定 learning_mode: false、enforce_daily_loss: true")
     return ShioajiBroker(cfg, simulation=(mode == "sinopac_sim"))
