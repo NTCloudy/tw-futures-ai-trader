@@ -1809,7 +1809,8 @@ class LiveChecklistTest(unittest.TestCase):
     with self.assertRaises(SystemExit) as ctx:
       make_broker(c, "omega-swing")
     self.assertIn("緊急停止的範圍", str(ctx.exception))
-    self.assertGreaterEqual(len(ITEMS), 8)
+    self.assertGreaterEqual(len(ITEMS), 12)
+    self.assertIn("停機時部位沒有保護", [t for t, _ in ITEMS])
     c2 = cfg(mode="sinopac_live", broker_ai="omega-swing", i_understand_real_money=True,
              live_checklist_ack="old-version")
     with self.assertRaises(SystemExit):
