@@ -6,7 +6,7 @@ live_checklist_ack to LIVE_CHECKLIST_VERSION, i.e. after the user has answered t
 Bump the version whenever an item is added or changed.
 """
 
-LIVE_CHECKLIST_VERSION = "2026-11-24-b"
+LIVE_CHECKLIST_VERSION = "2026-11-25"
 
 ITEMS = [
     ("哪個 AI 上真倉",
@@ -44,6 +44,10 @@ ITEMS = [
     ("實測校正",
      "上真倉後同時跑一個 Omega 模擬對照組，比較真倉與模擬的成交價和滑價；累積 30 筆後更新回測用的滑價"
      "（sim_sl_slip_pts）與手續費（commission_per_side_twd 目前是估計值，用第一張對帳單更新）。"),
+    ("鎖漲跌停後第一盤的突破",
+     "前一盤鎖漲跌停時，「前 10 根高／低點」就是漲跌停價（人為上限），隔一盤解除後一站上就算突破。"
+     "11/24 實例：Omega 追多虧 −11,240。樣本只有 1 次，無法驗證是延續還是反轉；目前照常交易。"
+     "真倉時要照常，還是遇到這種情況先手動暫停？（同時在找更多歷史鎖漲跌停的例子研究）"),
 ]
 
 
