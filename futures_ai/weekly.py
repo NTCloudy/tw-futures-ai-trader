@@ -124,7 +124,7 @@ SHADOW_NAMES = {"allday-alpha-orb": "Alpha（不限時段版）", "allday-sigma-
 
 def line_brief(now: datetime, live_lines: list[str], lesson_lines: list[str], cmp_lines: list[str],
                red_lines: list[str], trial_lines: list[str], changes: dict, stock_lines: list[str] | None = None,
-               all_lines: list[str] | None = None) -> str:
+               all_lines: list[str] | None = None, ai_lines: dict | None = None) -> str:
   """Short LINE version of the weekly report (user 2026-11-21: 「檢討內容盡量簡短」). The full report is still
   saved to data/weekly_report.json."""
   import re
@@ -134,6 +134,8 @@ def line_brief(now: datetime, live_lines: list[str], lesson_lines: list[str], cm
   if pnl:
     out.append("本週：" + "｜".join(f"{n} {v:+,}" for n, v in sorted(pnl, key=lambda t: -t[1]))
                + f"（合計 {sum(v for _, v in pnl):+,}）")
+  for v in (ai_lines or {}).values():  # Each AI's own weekly self-review, one line each (selfreview.py).
+    out.append(v)
   cmp = []
   for ln in cmp_lines:
     m = re.match(r"^(\w+)｜([+-][\d,]+)（(\d+) 筆）｜([+-][\d,]+)（(\d+) 筆）", ln)
@@ -370,8 +372,15 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
   except Exception as exc:
     lines.append(f"\n🆚 新舊版比對失敗：{exc}")
 
+  ai_brief = {}
+  try:  # Read-only: never affects parameter switches or lessons.
+    from . import selfreview
+    sr_lines, ai_brief = selfreview.build(cfg, ledger, sessions, lesson_lines)
+    lines += sr_lines
+  except Exception as exc:
+    lines.append(f"\n🪞 各 AI 自我復盤失敗：{exc}")
   brief = line_brief(datetime.now(TPE), live_lines, lesson_lines, cmp_lines, red_lines,
-                     trial_lines, changes, stock_lines=stock_week, all_lines=lines)
+                     trial_lines, changes, stock_lines=stock_week, all_lines=lines, ai_lines=ai_brief)
   report = {"at": datetime.now(TPE).isoformat(timespec="seconds"), "wfo": rep, "changes": changes,
             "text": "\n".join(lines), "line": brief}
   (ROOT / "data" / "weekly_report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")

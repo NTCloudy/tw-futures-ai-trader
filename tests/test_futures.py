@@ -1816,3 +1816,79 @@ class LiveChecklistTest(unittest.TestCase):
     with self.assertRaises(SystemExit):
       make_broker(c2, "omega-swing")
     self.assertEqual(make_broker(cfg(), "omega-swing").name, "local_paper")  # Paper mode unaffected.
+
+
+class SelfReviewTest(unittest.TestCase):
+  """User 2026-11-27: each AI reviews what it did wrong this week (selfreview.py)."""
+
+  def test_binomial(self):
+    from futures_ai.selfreview import binom_cdf
+    self.assertLess(binom_cdf(3, 27, 0.36), 0.005)  # Nova 3/27 vs 36%: clearly worse than expected.
+    self.assertGreater(binom_cdf(13, 52, 0.32), 0.05)
+
+  def test_tags(self):
+    from futures_ai.lessons import MarketCtx
+    from futures_ai.selfreview import tag_trades
+    ctx = MarketCtx([])
+    T = lambda *a: at(*a)
+    tr = [dict(side="B", e=T(2026, 11, 10, 16, 5), x=T(2026, 11, 10, 17, 0), ep=100, xp=-51, net=-1550, kind="SL"),
+          dict(side="S", e=T(2026, 11, 10, 20, 45), x=T(2026, 11, 10, 21, 30), ep=100, xp=251, net=-1550, kind="SL")]
+    tag_trades(tr, "nova-nightorb", ctx, {}, [])
+    self.assertEqual([t["tag"] for t in tr], ["whipsaw", "whipsaw"])
+    om = [dict(side="S", e=T(2026, 11, 21, 2, 55), x=T(2026, 11, 23, 8, 45, 12), ep=34691, xp=34963, net=-2758,
+               kind="SL"),
+          dict(side="B", e=T(2026, 11, 24, 16, 4), x=T(2026, 11, 24, 18, 50), ep=40642, xp=39522, net=-11240, kind="SL",
+               reason="60 分K 收盤 40808 突破前 10 根高點 40324，EMA20 39271 > EMA60 38460")]
+    locked = {at(2026, 11, 24, 8, 45).isoformat(): {40324.0}}
+    starts = [at(2026, 11, 24, 8, 45), at(2026, 11, 24, 15, 0)]
+    tag_trades(om, "omega-swing", ctx, locked, starts)
+    self.assertEqual([t["tag"] for t in om], ["gap_stop", "limit_breakout"])
+
+  def test_build_and_brief(self):
+    from unittest import mock
+    from futures_ai import selfreview
+    from futures_ai.weekly import line_brief
+    live, sh = Ledger(":memory:"), Ledger(":memory:")
+    def add(led, ai, side, e, x, ep, xp, pnl, kind="SL", reason=""):
+      led.conn.execute("INSERT INTO trades (ai, trading_day, contract, side, qty, entry_ts, entry_price, exit_ts, "
+                       "exit_price, points, gross_twd, cost_twd, pnl_twd, exit_kind, entry_reason) VALUES "
+                       "(?, '2026-11-26', 'TMF', ?, 1, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)",
+                       (ai, side, e, ep, x, xp, (xp - ep) * (1 if side == "B" else -1), pnl, kind, reason))
+    for i in range(3):
+      add(live, "nova-nightorb", "B" if i % 2 == 0 else "S", f"2026-11-26T15:4{i}:00+08:00", f"2026-11-26T16:0{i}:00+08:00",
+          100, -51 if i % 2 == 0 else 251, -1550)
+    add(sh, "old-nova-nightorb", "B", "2026-11-25T16:10:00+08:00", "2026-11-25T17:00:00+08:00", 100, 549, 4450, "TP")
+    bt = [dict(e=at(2026, 6, 1, 16, 0), x=at(2026, 6, 1, 17, 0), side="B", ep=100, xp=-51, net=-1550, kind="SL")] * 6 + \
+         [dict(e=at(2026, 6, 2, 16, 0), x=at(2026, 6, 2, 17, 0), side="B", ep=100, xp=549, net=4450, kind="TP")] * 4
+    with mock.patch.object(selfreview, "backtest_trades", return_value=[dict(t) for t in bt]):
+      lines, brief = selfreview.build(cfg(), live, [], [], at(2026, 11, 27, 10, 0), sh)
+    txt = "\n".join(lines)
+    self.assertIn("【Nova】本週 3 筆 -4,650", txt)
+    self.assertIn("樣本不足", txt)
+    self.assertIn("同一盤兩邊都假突破 3 筆", txt)
+    self.assertIn("新版比舊版 -9,100", brief["nova-nightorb"])
+    self.assertIn("夜盤過濾：避開 +0／錯過 +4,450", txt)
+    b = line_brief(at(2026, 11, 28, 10, 0), [], [], [], [], [], {}, ai_lines=brief)
+    self.assertIn("Nova：本週 3 筆 -4,650｜比預期：樣本不足｜主要問題：同一盤兩邊都假突破 3 筆", b)
+
+
+  def test_alpha_same_entry_different_result(self):
+    """11/27 week: live long survived with cap 160 (+1,520); the old version stopped (-1,250) then re-entered."""
+    from unittest import mock
+    from futures_ai import selfreview
+    live, sh = Ledger(":memory:"), Ledger(":memory:")
+    def add(led, ai, e, x, pts, pnl, kind):
+      led.conn.execute("INSERT INTO trades (ai, trading_day, contract, side, qty, entry_ts, entry_price, exit_ts, "
+                       "exit_price, points, gross_twd, cost_twd, pnl_twd, exit_kind) VALUES "
+                       "(?, '2026-11-25', 'TMF', 'B', 1, ?, 100, ?, ?, ?, 0, 0, ?, ?)", (ai, e, x, 100 + pts, pts, pnl, kind))
+    add(live, "alpha-orb", "2026-11-25T22:35:00+08:00", "2026-11-26T04:59:00+08:00", 156, 1520, "SESSION_END")
+    add(sh, "old-alpha-orb", "2026-11-25T22:35:00+08:00", "2026-11-25T22:50:00+08:00", -121, -1250, "SL")
+    add(sh, "old-alpha-orb", "2026-11-25T23:00:00+08:00", "2026-11-26T04:59:00+08:00", 156, 1520, "SESSION_END")
+    add(sh, "old-sigma-vwap", "2026-11-23T15:30:00+08:00", "2026-11-23T20:18:00+08:00", 5, 12, "SL")  # breakeven
+    with mock.patch.object(selfreview, "backtest_trades", return_value=[]):
+      lines, brief = selfreview.build(cfg(), live, [], [], at(2026, 11, 27, 10, 0), sh)
+    txt = "\n".join(lines)
+    self.assertIn("新版 +1,520 vs 舊版 +270（+1,250）", txt)
+    self.assertIn("同一筆結果不同（停損上限 160）+2,770", txt)
+    self.assertIn("只有舊版做的單：避開 +0／錯過 +1,520", txt)
+    self.assertNotIn("錯過 +12", txt)  # Breakeven exits are not "missed".

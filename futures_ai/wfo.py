@@ -368,6 +368,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
   pnl = peak = maxdd = 0.0
   trades = wins = 0
   tlog = []
+  tpx = []  # (entry price, exit price) parallel to tlog (record=True); used by the weekly self-review.
   day_pnl: dict[date, float] = {}
   locked_days: set[date] = set()
   for s in sessions:
@@ -435,6 +436,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
           net = (exit_px - entry) * d * pv - cost_in - side_cost(cfg, exit_px)
           if record:
             tlog.append((pos[7] if len(pos) > 7 else None, x.end, side, net, kind))
+            tpx.append((entry, exit_px))
           pnl += net
           trades += 1
           wins += net > 0
@@ -551,7 +553,7 @@ def simulate(cfg: dict, ai: str, p: dict, sessions: list[Session], record: bool 
       pos = (side, entry, round(entry - d * sl_pts), round(entry + d * tp_pts), side_cost(cfg, entry), trail, abs(sl_pts), x.end)
       entries += 1
       gb_peak = 0.0
-  return {"pnl": pnl, "trades": trades, "wins": wins, "maxdd": maxdd, "log": tlog}
+  return {"pnl": pnl, "trades": trades, "wins": wins, "maxdd": maxdd, "log": tlog, "log_px": tpx}
 
 
 # ---------------------------------------------------------------- grids & walk-forward
