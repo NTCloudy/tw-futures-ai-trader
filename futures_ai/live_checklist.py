@@ -6,7 +6,7 @@ live_checklist_ack to LIVE_CHECKLIST_VERSION, i.e. after the user has answered t
 Bump the version whenever an item is added or changed.
 """
 
-LIVE_CHECKLIST_VERSION = "2026-11-25"
+LIVE_CHECKLIST_VERSION = "2026-11-28"
 
 ITEMS = [
     ("哪個 AI 上真倉",
@@ -48,6 +48,11 @@ ITEMS = [
      "前一盤鎖漲跌停時，「前 10 根高／低點」就是漲跌停價（人為上限），隔一盤解除後一站上就算突破。"
      "11/24 實例：Omega 追多虧 −11,240。樣本只有 1 次，無法驗證是延續還是反轉；目前照常交易。"
      "真倉時要照常，還是遇到這種情況先手動暫停？（同時在找更多歷史鎖漲跌停的例子研究）"),
+    ("Omega 單筆最大可承受虧損",
+     "Omega 移動停損＝4×ATR，目前另設上限 1,200 點（單筆約 −1.2 萬）。這個上限上線前沒有正確驗證過，"
+     "正在用「不設上限」影子對照（12/31 或滿 10 筆決定）。不設上限時，ATR 660 會是 2,640 點，約 −2.6 萬再加跳空"
+     "（一年回測最差一筆：上限 1,200 −12,380／不設上限 −15,282）。請決定你能接受的單筆最大虧損"
+     "（config omega_max_loss_twd），影子結論也要在這個範圍內才會改。"),
 ]
 
 

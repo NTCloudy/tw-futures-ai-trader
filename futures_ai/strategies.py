@@ -473,8 +473,9 @@ class SwingTrend:
         side, why = "B", "換倉後趨勢仍向上，重新做多"
       elif self.reentry_side == "S" and ef < es and self.direction == "both":
         side, why = "S", "換倉後趨勢仍向下，重新放空"
-      else:
-        self.reentry_side = None
+      # One use only, as in swing.simulate_swing (the backtest). Keeping the flag let the live engine re-enter
+      # again after the re-entry trade stopped out, skipping the ER / extension filters (11/17 09:45, 10:45).
+      self.reentry_side = None
     if side is None:
       if getattr(self, "min_er", None):
         cl10 = closes[-11:]

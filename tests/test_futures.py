@@ -582,6 +582,42 @@ class SwingHoldTest(unittest.TestCase):
     tr.on_price(at(2026, 10, 16, 13, 42), "2026-10-16", "TMFJ6", {"last": 44300, "bid": 44299, "ask": 44301}, 3, False)
     self.assertIsNone(tr.pos)  # stop (or margin guard) still protects it
 
+  def test_roll_reentry_used_once(self):
+    # Live 11/17: the post-roll re-entry flag stayed set after use, so the engine re-entered again (skipping the
+    # ER filter) after the re-entry trade stopped out. The backtest uses it once; live must match.
+    from futures_ai.strategies import SwingTrend
+    sw = SwingTrend()
+    t0 = at(2026, 11, 2, 8, 45)
+    h = []
+    for i in range(80):  # steady downtrend (EMA20 < EMA60) then a flat zig-zag: ER10 ~ 0, no fresh low
+      c = 45000 - 40 * i if i < 70 else 42240 + (60 if i % 2 else 0)
+      h.append(Bar(t0 + timedelta(hours=i), c, c + 30, c - 30, c, 1))
+    sw.h60 = h[:79]
+    sw.reentry_side = "S"
+    e = sw.decide([], 0, None)
+    self.assertEqual(e.side, "S")
+    self.assertIn("換倉後", e.reason)
+    self.assertIsNone(sw.reentry_side)
+    sw.h60 = h[:80]
+    self.assertIsNone(sw.decide([], 0, None))  # choppy, no breakout: no second re-entry
+
+  def test_dropped_reentry_not_rearmed_after_restart(self):
+    from futures_ai.strategies import SwingTrend
+    c = cfg()
+    led = Ledger(":memory:")
+    led.set_state("reentry:omega-swing", "S")
+    tr = AiTrader(c, SwingTrend(), LocalPaperBroker(c), led)
+    self.assertEqual(tr.s.reentry_side, "S")  # restored from the ledger
+    t0 = at(2026, 11, 2, 8, 45)
+    h = [Bar(t0 + timedelta(hours=i), 40000 + 10 * i, 40030 + 10 * i, 39970 + 10 * i, 40000 + 10 * i, 1)
+         for i in range(80)]  # uptrend: EMA20 > EMA60, so the short re-entry condition fails
+    tr.s.h60 = h
+    tr.on_bar(h[-1].end, "2026-11-05", "TMFL6", "2026-11-05-day", [h[-1]],
+              {"last": h[-1].c, "bid": h[-1].c - 1, "ask": h[-1].c + 1}, 200, True, False)
+    self.assertIsNone(tr.s.reentry_side)
+    self.assertIsNone(led.get_state("reentry:omega-swing"))
+    self.assertIsNone(AiTrader(c, SwingTrend(), LocalPaperBroker(c), led).s.reentry_side)  # restart: not re-armed
+
 
 class NovaTest(unittest.TestCase):
 
@@ -1757,6 +1793,47 @@ class Be05ShadowTest(unittest.TestCase):
     self.assertIn("源頭差異 1/5 次、結果不同共 1 筆", txt)
     self.assertIn("實盤（保本 0.7）：-5,990（賺 0／打平 0／賠 1）", txt)
     self.assertIn("影子（保本 0.5）：-30（賺 0／打平 1／賠 0）", txt)
+
+
+class OmegaCapShadowTest(unittest.TestCase):
+
+  def test_shadows_built(self):
+    from futures_ai.shadows import LEGACY_OMEGA_ID, NOCAP_OMEGA_ID, build_shadows
+    from futures_ai.strategies import build_strategies
+    c = cfg()
+    sh = {t.ai: t for t in build_shadows(c, Ledger(":memory:"))}
+    self.assertIsNone(sh[NOCAP_OMEGA_ID].s.max_sl_pts)
+    self.assertEqual(sh[NOCAP_OMEGA_ID].s.min_er, 0.20)
+    lg = sh[LEGACY_OMEGA_ID].s
+    self.assertEqual((lg.min_er, lg.be_r, lg.max_ext_atr, lg.max_sl_pts), (None, None, None, None))
+    self.assertEqual(sh[LEGACY_OMEGA_ID].broker.name, "local_paper")
+    live = [s for s in build_strategies() if s.id == "omega-swing"][0]
+    self.assertEqual(live.max_sl_pts, 1200)  # Live Omega untouched.
+
+  def _ledgers(self, live_pnls, nocap_pnls):
+    from futures_ai.shadows import NOCAP_OMEGA_ID
+    live, sh = Ledger(":memory:"), Ledger(":memory:")
+    for led, ai, pnls in ((live, "omega-swing", live_pnls), (sh, NOCAP_OMEGA_ID, nocap_pnls)):
+      for i, pnl in enumerate(pnls):
+        led.conn.execute("INSERT INTO trades (ai, trading_day, contract, side, qty, entry_ts, entry_price, exit_ts, "
+                         "exit_price, points, gross_twd, cost_twd, pnl_twd, exit_kind) VALUES (?, '2026-12-01', 'TMF', "
+                         "'S', 1, ?, 1, ?, 1, 0, 0, 0, ?, 'SL')",
+                         (ai, f"2026-12-{i + 1:02d}T10:00:00+08:00", f"2026-12-{i + 1:02d}T12:00:00+08:00", pnl))
+    return live, sh
+
+  def test_decision_rule(self):
+    from futures_ai.shadows import omega_cap_lines
+    live, sh = self._ledgers([-1000] * 10, [500] * 9 + [-14000])
+    txt = "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0)))
+    self.assertIn("不設上限影子：-9,500（10 筆，最大單筆虧損 -14,000）", txt)
+    self.assertIn("沒有多賺", txt)  # -9,500 vs -10,000: +500 < 2,000
+    live, sh = self._ledgers([-1000] * 10, [3000] * 9 + [-14000])
+    self.assertIn("請先決定你能接受的 Omega 單筆最大虧損", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0))))
+    self.assertIn("超過你核准的 -12,000", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0), max_loss=12000)))
+    self.assertIn("建議改用", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0), max_loss=15000)))
+    live, sh = self._ledgers([-1000] * 3, [3000] * 3)
+    self.assertNotIn("→", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0))))  # too few, before 12/31
+    self.assertIn("→", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 31, 9, 0))))  # end date reached
 
 
 class WeeklyBriefTest(unittest.TestCase):

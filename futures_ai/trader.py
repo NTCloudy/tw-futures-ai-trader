@@ -508,6 +508,8 @@ class AiTrader:
       raw = self.s.decide(bars, n_ent, since, bars1)
     except TypeError:
       raw = self.s.decide(bars, n_ent, since)
+    if hasattr(self.s, "reentry_side") and self.s.reentry_side is None and self.ledger.get_state(f"reentry:{self.ai}"):
+      self.ledger.set_state(f"reentry:{self.ai}", None)  # Flag consumed or dropped: a restart must not re-arm it.
     if raw is None:
       return
     b1 = bars1 if bars1 else bars

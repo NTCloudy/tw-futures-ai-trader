@@ -205,6 +205,74 @@ def be05_lines(live: Ledger, shadow: Ledger | None = None, now=None) -> list[str
   return out
 
 
+# ---- Omega stop-cap shadows (v2 + user review 2026-11-28) ----
+# The 1,200-pt trailing-stop cap went live on 11/10 without passing the adoption bar (the lessons test compared
+# cap vs cap). The one-year result flips with one more week of data (bootstrap 61-63%, below 80%), and since 11/11
+# the whole difference comes from one trade (11/19 short). So it is not changed now; two forward shadows run instead:
+#   legacy-omega-swing : rules before the 11/08 upgrade (replay.OMEGA_LEGACY: no ER / breakeven / extension / cap)
+#   nocap-omega-swing  : live Omega without the 1,200-pt cap (pure 4 x ATR trail)
+# Decision rule, written down before any data: once both live Omega and nocap have >= OMEGA_CAP_MIN_N trades since
+# OMEGA_CAP_START, or on OMEGA_CAP_END (first one wins), switch only if nocap beats live by >= max(10% x |live|,
+# 2,000) over the same period AND nocap's worst single trade is within the user-approved limit
+# (config omega_max_loss_twd; until the user sets it, the report asks for it).
+LEGACY_OMEGA_ID = "legacy-omega-swing"
+NOCAP_OMEGA_ID = "nocap-omega-swing"
+OMEGA_CAP_START = "2026-11-28T10:31:10+08:00"  # Engine restart that added the shadows (updated to the actual time).
+OMEGA_CAP_END = "2026-12-31"
+OMEGA_CAP_MIN_N = 10
+
+
+def build_omega_cap_shadows(cfg: dict, ledger: Ledger) -> list[AiTrader]:
+  from .strategies import build_strategies
+  out = []
+  for sid, label, over in ((LEGACY_OMEGA_ID, "11/08 前舊規則影子",
+                            dict(min_er=None, be_r=None, max_ext_atr=None, max_sl_pts=None)),
+                           (NOCAP_OMEGA_ID, "不設停損上限影子", dict(max_sl_pts=None))):
+    s = [x for x in build_strategies() if x.id == "omega-swing"][0]
+    s.base_id, s.id, s.name = s.id, sid, f"{s.name}（{label}）"
+    for k, v in over.items():
+      setattr(s, k, v)
+    out.append(AiTrader(cfg, s, LocalPaperBroker(cfg), ledger))
+  return out
+
+
+def omega_cap_lines(live: Ledger, shadow: Ledger | None = None, now=None, max_loss: float | None = None) -> list[str]:
+  """Weekly report: live Omega (cap 1,200) vs nocap and legacy shadows since OMEGA_CAP_START, with the decision."""
+  from datetime import date, datetime
+  from .calendar import TPE
+  now = now or datetime.now(TPE)
+  if now < datetime.fromisoformat(OMEGA_CAP_START):
+    return []
+  sh = shadow or shadow_ledger()
+  q = "SELECT pnl_twd FROM trades WHERE ai=? AND entry_ts>=?"
+  rows = {"live": [r["pnl_twd"] for r in live.rows(q, ("omega-swing", OMEGA_CAP_START))],
+          "nocap": [r["pnl_twd"] for r in sh.rows(q, (NOCAP_OMEGA_ID, OMEGA_CAP_START))],
+          "legacy": [r["pnl_twd"] for r in sh.rows(q, (LEGACY_OMEGA_ID, OMEGA_CAP_START))]}
+
+  def row(v):
+    return f"{sum(v):+,.0f}（{len(v)} 筆，最大單筆虧損 {min(v + [0]):+,.0f}）"
+  out = ["", f"🧪 Omega 停損上限影子（{OMEGA_CAP_START[5:10].replace('-', '/')} 起；"
+             f"兩邊各滿 {OMEGA_CAP_MIN_N} 筆或到 {OMEGA_CAP_END[5:].replace('-', '/')} 決定）",
+         f"實盤（上限 1,200）：{row(rows['live'])}", f"不設上限影子：{row(rows['nocap'])}",
+         f"11/08 前舊規則影子：{row(rows['legacy'])}"]
+  done = min(len(rows["live"]), len(rows["nocap"])) >= OMEGA_CAP_MIN_N or now.date() >= date.fromisoformat(OMEGA_CAP_END)
+  if not done:
+    return out
+  cur, alt = sum(rows["live"]), sum(rows["nocap"])
+  need = max(0.10 * abs(cur), 2000)
+  worst = min(rows["nocap"] + [0])
+  if alt - cur < need:
+    out.append(f"→ 不設上限沒有多賺 {need:,.0f} 以上（差 {alt - cur:+,.0f}），維持 1,200")
+  elif max_loss is None:
+    out.append(f"→ 不設上限多賺 {alt - cur:+,.0f}（門檻 {need:,.0f}）；最大單筆虧損 {worst:+,.0f}，"
+               "請先決定你能接受的 Omega 單筆最大虧損，才能改")
+  elif worst < -abs(max_loss):
+    out.append(f"→ 不設上限多賺 {alt - cur:+,.0f}，但最大單筆虧損 {worst:+,.0f} 超過你核准的 {-abs(max_loss):,.0f}，維持 1,200")
+  else:
+    out.append(f"→ 不設上限多賺 {alt - cur:+,.0f}（門檻 {need:,.0f}），最大單筆虧損 {worst:+,.0f} 在你核准範圍內：建議改用，請拍板")
+  return out
+
+
 PROT_IDS = ("alpha-orb", "sigma-vwap", "nova-nightorb")
 PROT_START = "2026-11-16T08:45:00+08:00"  # 10-trading-day comparison: 11/16 day session .. 11/27 night session.
 PROT_DAYS = 10
@@ -269,4 +337,4 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   cfg = copy.deepcopy(cfg)
   cfg["mode"] = "local_paper"
   return (build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger) + build_protected_twins(cfg, ledger)
-          + build_old_twins(cfg, ledger) + build_be05_omega(cfg, ledger))
+          + build_old_twins(cfg, ledger) + build_be05_omega(cfg, ledger) + build_omega_cap_shadows(cfg, ledger))
