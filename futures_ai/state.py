@@ -149,7 +149,7 @@ def build_state(cfg: dict, ledger, now: datetime | None = None) -> dict:
   for t in trades:
     t["ai_name"] = names[t["ai"]].name if t["ai"] in names else t["ai"]
     t["exit_kind_zh"] = KIND_ZH.get(t["exit_kind"], t["exit_kind"])
-  events = ledger.rows("SELECT * FROM events ORDER BY id DESC LIMIT 40")
+  events = ledger.rows("SELECT * FROM events WHERE level != 'SKIP' ORDER BY id DESC LIMIT 40")  # SKIP: diagnostics only
   # Per trading day x session history (日盤 / 夜盤) for every AI.
   hist: dict[tuple, dict] = {}
   for t in ledger.rows("SELECT ai, trading_day, entry_ts, exit_ts, pnl_twd FROM trades ORDER BY id"):

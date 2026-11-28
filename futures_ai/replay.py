@@ -11,7 +11,7 @@ Run: python3 -m futures_ai replay   (cron: after each session). Output: data/rep
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from .calendar import TPE
@@ -206,10 +206,40 @@ def _match(live: list[dict], sim: list[dict], match_min: int = MATCH_MIN) -> tup
   return both, live_only, sim_only
 
 
+SKIP_SINCE = "2026-11-28T10:37:49+08:00"  # SKIP log went live (engine restart; updated to the actual time).
+
+
+def skip_reason(led, ai: str, entry: datetime, match_min: int = MATCH_MIN, before_min: int = 70) -> str | None:
+  """Why the live engine did not take a backtest trade, from the SKIP log: a raw signal near the entry that was
+  blocked (or ordered but not filled), else the engine-wide or AI pause in force at that time, else no raw signal."""
+  if entry.isoformat() < SKIP_SINCE:
+    return None
+  lo = (entry - timedelta(minutes=before_min)).isoformat(timespec="seconds")
+  hi = (entry + timedelta(minutes=match_min)).isoformat(timespec="seconds")
+  at = entry.isoformat(timespec="seconds")
+  sig = led.rows("SELECT message FROM events WHERE ai=? AND level='SKIP' AND message LIKE '🔎%' AND ts>=? AND ts<=? "
+                 "ORDER BY id DESC LIMIT 1", (ai, lo, hi))
+  if sig:
+    return sig[0]["message"]
+  skipped = led.rows("SELECT message FROM events WHERE ai IS NULL AND level='SKIP' AND message LIKE '⏭%' AND ts>=? "
+                     "AND ts<=? ORDER BY id DESC LIMIT 1", (lo, hi))
+  if skipped:
+    return skipped[0]["message"]
+  for who in (None, ai):  # engine-wide pause first, then this AI's
+    g = led.rows("SELECT message FROM events WHERE " + ("ai IS NULL" if who is None else "ai=?") +
+                 " AND level='SKIP' AND (message LIKE '⏸%' OR message LIKE '▶%') AND ts<=? ORDER BY id DESC LIMIT 1",
+                 (at,) if who is None else (who, at))
+    if g and g[0]["message"].startswith("⏸"):
+      return g[0]["message"]
+  return "實盤沒有產生原始訊號（K 棒或計算與回測不同）"
+
+
 def _fmt(t: dict) -> dict:
   d = {"entry": t["entry"].strftime("%m/%d %H:%M"), "side": t["side"], "pnl": round(t["pnl"]), "kind": t["kind"]}
   if t.get("note"):
     d["note"] = t["note"]
+  if t.get("why"):
+    d["why"] = t["why"]
   return d
 
 
@@ -293,6 +323,8 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
       for st in so:
         if is_offline(st["entry"]):
           st["note"] = "engine_offline"
+        else:
+          st["why"] = skip_reason(shadow if ai == "nova-us" and shadow else ledger, ai, st["entry"])
       open_p = (shadow if ai == "nova-us" and shadow else ledger).get_state(f"pos:{ai}")
       out["ais"].append({"id": ai, "name": names.get(ai, ai), "live_n": len(lt), "sim_n": len(sim),
                          "sim_now_n": len(sim_now), "sim_now_pnl": round(sum(t[3] for t in sim_now)),
@@ -317,6 +349,8 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
       for st in so:
         if is_offline(st["entry"]):
           st["note"] = "engine_offline"
+        else:
+          st["why"] = skip_reason(ledger, "omega-swing", st["entry"], match_min=60)
       open_p = ledger.get_state("pos:omega-swing")
       open_s = rs.get("open_pos")
       out["ais"].append({"id": "omega-swing", "name": names.get("omega-swing", "Omega"), "live_n": len(lt),

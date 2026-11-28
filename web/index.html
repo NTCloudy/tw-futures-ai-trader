@@ -307,7 +307,7 @@ function render(s) {
     }).join('') || '<tr><td class="mute">對照組剛建立，下一筆交易後開始累積</td></tr>');
   const rp = s.replay;
   const rpSide = x => x === 'B' ? '多' : '空';
-  const tl = arr => arr.map(t => `${t.entry} ${rpSide(t.side)} ${nt(t.pnl)}${t.note === 'engine_offline' ? '（引擎離線）' : ''}`).join('<br>') || '–';
+  const tl = arr => arr.map(t => `${t.entry} ${rpSide(t.side)} ${nt(t.pnl)}${t.note === 'engine_offline' ? '（引擎離線）' : ''}${t.why ? '（' + t.why.slice(0, 40) + '）' : ''}`).join('<br>') || '–';
   document.getElementById('replayTbl').innerHTML = !rp ? '<tr><td class="mute">每盤收盤後自動產生</td></tr>' :
     '<tr><th>AI</th><th>即時 筆數／損益</th><th>回測（當時規則）筆數／損益</th><th>回測（現行規則·事後套用）</th><th>同一筆</th><th>只有即時有</th><th>只有回測有</th></tr>' +
     rp.ais.map(a => {

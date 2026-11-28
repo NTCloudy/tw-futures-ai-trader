@@ -98,6 +98,74 @@ class FakeStrategy:
     return self.entry if n == 0 else None
 
 
+class SkipLogTest(unittest.TestCase):
+  """v2 spec 2026-11-28: raw signals and on_bar pauses are written as SKIP events (never notified)."""
+
+  def setUp(self):
+    self.cfg = cfg()
+    self.ledger = Ledger(":memory:")
+    self.tr = AiTrader(self.cfg, FakeStrategy(Entry("B", 40, 80, "test")), LocalPaperBroker(self.cfg), self.ledger)
+    self.bars = bars_from([(47000, 47030, 46970, 47000)] * 20)
+
+  def skips(self):
+    return [r["message"] for r in self.ledger.rows("SELECT message FROM events WHERE level='SKIP' ORDER BY id")]
+
+  def bar(self, m, fresh=True):
+    self.tr.on_bar(at(2026, 10, 16, 9, m), "2026-10-16", "TMFJ6", "2026-10-16-day", self.bars,
+                   {"last": 47000, "bid": 46999, "ask": 47000}, 200, fresh, False)
+
+  def test_raw_signal_ordered_then_pause_logged_once(self):
+    self.bar(10)
+    self.assertEqual(self.skips(), ["🔎 原始訊號 做多 @ 47000｜已下單"])
+    self.bar(15)
+    self.bar(20)  # still in position: no second pause event
+    self.assertEqual(self.skips()[1:], ["⏸ 暫停判斷進場：持有部位中"])
+
+  def test_blocked_signal_logged_with_reason(self):
+    from futures_ai import trader as trader_mod
+    with mock.patch.dict(trader_mod.RISK_STATE, {"fomc_window": True}):
+      self.bar(10)
+    self.assertIsNone(self.tr.pos)
+    self.assertEqual(len(self.skips()), 1)
+    self.assertTrue(self.skips()[0].startswith("🔎 原始訊號 做多 @ 47000｜被擋：🏦 聯準會"))
+
+  def test_entry_cap_pause_and_resume(self):
+    self.cfg["max_entries_per_session"] = 0
+    self.bar(10)
+    self.bar(15)
+    self.cfg["max_entries_per_session"] = 5
+    self.tr.s.entry = None
+    self.bar(20)
+    self.assertEqual(self.skips(), ["⏸ 暫停判斷進場：本盤已進場 0 次（上限 0）", "▶ 恢復判斷進場"])
+
+  def test_replay_skip_reason(self):
+    from futures_ai import replay
+    led = Ledger(":memory:")
+    e = datetime(2026, 12, 1, 9, 31, tzinfo=TPE)
+    with mock.patch.object(replay, "SKIP_SINCE", "2026-11-30T00:00:00+08:00"):
+      self.assertEqual(replay.skip_reason(led, "sigma-vwap", e), "實盤沒有產生原始訊號（K 棒或計算與回測不同）")
+      led.log("⏸ 暫停判斷進場：有未成交的進場掛單", "sigma-vwap", "SKIP", datetime(2026, 12, 1, 9, 0, tzinfo=TPE))
+      self.assertEqual(replay.skip_reason(led, "sigma-vwap", e), "⏸ 暫停判斷進場：有未成交的進場掛單")
+      led.log("⏸ 行情延遲，不判斷進場", None, "SKIP", datetime(2026, 12, 1, 9, 5, tzinfo=TPE))
+      self.assertEqual(replay.skip_reason(led, "sigma-vwap", e), "⏸ 行情延遲，不判斷進場")
+      led.log("🔎 原始訊號 放空 @ 40000｜被擋：x", "sigma-vwap", "SKIP", datetime(2026, 12, 1, 9, 30, tzinfo=TPE))
+      self.assertEqual(replay.skip_reason(led, "sigma-vwap", e), "🔎 原始訊號 放空 @ 40000｜被擋：x")
+      self.assertIsNone(replay.skip_reason(led, "sigma-vwap", datetime(2026, 11, 29, 9, 0, tzinfo=TPE)))
+
+  def test_engine_gate_logged_on_change(self):
+    eng = Engine.__new__(Engine)
+    eng.ledger = self.ledger
+    for why in (None, "行情延遲，不判斷進場", "行情延遲，不判斷進場", None, None):
+      eng._skip_gate(at(2026, 10, 16, 9, 0), why)
+    self.assertEqual(self.skips(), ["⏸ 行情延遲，不判斷進場", "▶ 行情恢復，繼續判斷進場"])
+
+  def test_skip_events_not_notified_or_shown(self):
+    import inspect
+    from futures_ai import notify, state
+    self.assertNotIn("SKIP", inspect.getsource(notify))
+    self.assertIn("level != 'SKIP'", inspect.getsource(state))
+
+
 class OcoBracketTest(unittest.TestCase):
 
   def setUp(self):

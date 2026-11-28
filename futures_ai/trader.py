@@ -63,6 +63,7 @@ class AiTrader:
     self.pv = cfg["point_value"]
     self.qty = cfg["qty"]
     self.pending: dict[str, dict] = {}  # broker_order_id -> {"oid", "kind", "entry"}
+    self._gate: str | None = None  # Last logged reason why on_bar did not evaluate entries (SKIP log, see _gate_log).
     self.learning = bool(cfg.get("learning_mode"))
     # Protected-exit mode (see is_protected_exit): off for live AIs until the user approves; on for the
     # "prot-" shadow twins of the 10-trading-day comparison.
@@ -476,21 +477,34 @@ class AiTrader:
           return f"📚 經驗規則：剛停損，{rules['rev_cool']} 分鐘內不反手"
     return None
 
+  def _gate_log(self, ts: datetime, why: str | None) -> None:
+    """SKIP log (v2 spec 2026-11-28): why entries were not evaluated, written only when the reason changes, so a
+    backtest trade the live engine did not take can be explained afterwards (replay sim_only). Never notified."""
+    if why == self._gate:
+      return
+    self._gate = why
+    self.ledger.log(f"⏸ 暫停判斷進場：{why}" if why else "▶ 恢復判斷進場", self.ai, "SKIP", ts)
+
   def on_bar(self, ts: datetime, td: str, code: str, session_key: str, bars: list[Bar], quote: dict,
              minutes_to_close: float, fresh: bool, kill: bool, bars1: list[Bar] | None = None) -> None:
     if not kill:
       self._expire_limits(ts)
-    if self.pos or self.pending or kill or not fresh or minutes_to_close <= 0:
+    gate = ("緊急停止中" if kill else "持有部位中" if self.pos else "有未成交的進場掛單" if self.pending
+            else "行情沒有更新" if not fresh else "已收盤" if minutes_to_close <= 0 else None)
+    if gate:
+      self._gate_log(ts, gate)
       return
     hold = getattr(self.s, "hold_overnight", False)
     locked = self.cfg.get("enforce_daily_loss", True) and not hold and self.locked_day() == td
     no_entry = self.cfg["no_entry_minutes_before_close"]
     if locked or (minutes_to_close <= no_entry and not hold):
+      self._gate_log(ts, "已達每日虧損上限" if locked else f"收盤前 {no_entry:g} 分鐘不進新單")
       return
     hours = getattr(self.s, "hours", None)
     if hours and bars:
       from .calendar import tod_bucket
       if tod_bucket(bars[-1].end) not in hours:
+        self._gate_log(ts, f"不在設定的進場時段（{tod_bucket(bars[-1].end)}）")
         return
     last_exit = self.ledger.get_state(f"last_exit:{self.ai}")
     since = None
@@ -503,7 +517,9 @@ class AiTrader:
     cap = min(cap_s, self.cfg["max_entries_per_session"]) if cap_s else self.cfg["max_entries_per_session"]
     n_ent = self.entries(session_key)
     if n_ent >= cap:
+      self._gate_log(ts, f"本盤已進場 {n_ent} 次（上限 {cap}）")
       return
+    self._gate_log(ts, None)
     try:
       raw = self.s.decide(bars, n_ent, since, bars1)
     except TypeError:
@@ -515,9 +531,14 @@ class AiTrader:
     b1 = bars1 if bars1 else bars
     sig, ctx = self.brain.adjust(raw, b1)
     why = ctx["why"] if sig is None else self._filter(sig, b1)
+    px = bars[-1].c if bars else quote.get("last")
+    raw_txt = f"🔎 原始訊號 {'做多' if raw.side == 'B' else '放空'} @ {px:.0f}" if px else \
+        f"🔎 原始訊號 {'做多' if raw.side == 'B' else '放空'}"
     if why:
       self.ledger.set_state(f"skip:{self.ai}", {"ts": ts.isoformat(timespec="seconds"), "why": why})
+      self.ledger.log(f"{raw_txt}｜被擋：{why}", self.ai, "SKIP", ts)
       return
+    self.ledger.log(f"{raw_txt}｜已下單", self.ai, "SKIP", ts)
     exp_base = bars[-1].end if (bars and abs((ts - bars[-1].end).total_seconds()) <= 300) else ts
     if getattr(self.s, "fixed_bracket", False):
       tp_pts, reason = sig.tp_pts, sig.reason

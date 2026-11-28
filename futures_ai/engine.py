@@ -177,7 +177,14 @@ class Engine:
       for tr in self.traders + self.shadows:
         if hasattr(tr.s, "bars1"):
           tr.s.bars1 = bars1_done
+      if bars5[-1].end != self.last_bar_end:
+        self._skip_gate(now, "緊急停止中，不判斷進場" if kill else "行情延遲，不判斷進場" if not fresh else None)
       if bars5[-1].end != self.last_bar_end and fresh and not kill:
+        last = self.last_bar_end
+        if last is not None and bars5[0].end <= last and bars5[-1].end - last > timedelta(minutes=5):
+          n = round((bars5[-1].end - last).total_seconds() / 300) - 1
+          self.ledger.log(f"⏭ 跳過 {n} 根 5 分K（{last:%H:%M} → {bars5[-1].end:%H:%M}），中間沒有判斷進場",
+                          None, "SKIP", now)
         self.last_bar_end = bars5[-1].end
         for tr in self.traders:
           tr.on_bar(now, td, code, session_key, bars5, quote, minutes_to_close, fresh, kill)
@@ -191,6 +198,13 @@ class Engine:
 
     self._record_equity(now, snap.last)
     return "trading" if fresh else "stale"
+
+  def _skip_gate(self, now: datetime, why: str | None) -> None:
+    """SKIP log: engine-wide reason why a completed bar was not evaluated (logged only when it changes)."""
+    if why == getattr(self, "_skip_why", None):
+      return
+    self._skip_why = why
+    self.ledger.log(f"⏸ {why}" if why else "▶ 行情恢復，繼續判斷進場", None, "SKIP", now)
 
   def _update_night_regime(self, start: datetime) -> None:
     """Plan A (regime.py): once per night session, the efficiencies of the previous night sessions."""
