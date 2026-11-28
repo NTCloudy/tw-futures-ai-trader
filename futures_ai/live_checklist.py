@@ -6,7 +6,7 @@ live_checklist_ack to LIVE_CHECKLIST_VERSION, i.e. after the user has answered t
 Bump the version whenever an item is added or changed.
 """
 
-LIVE_CHECKLIST_VERSION = "2026-11-28-b"
+LIVE_CHECKLIST_VERSION = "2026-11-28-c"
 
 ITEMS = [
     ("哪個 AI 上真倉",
@@ -52,7 +52,10 @@ ITEMS = [
      "Omega 移動停損＝4×ATR，目前另設上限 1,200 點（單筆約 −1.2 萬）。這個上限上線前沒有正確驗證過，"
      "正在用「不設上限」影子對照（12/31 或滿 10 筆決定）。不設上限時，ATR 660 會是 2,640 點，約 −2.6 萬再加跳空"
      "（一年回測最差一筆：上限 1,200 −12,380／不設上限 −15,282）。請決定你能接受的單筆最大虧損"
-     "（config omega_max_loss_twd），影子結論也要在這個範圍內才會改。"),
+     "（config omega_max_loss_twd），影子結論也要在這個範圍內才會改。"
+     "【11/28 已回答：維持現在＝上限 1,200 點、單筆約 −1.2 萬，不含跳空；隔夜或週末跳空時單筆可能超過"
+     "（例：11/09 −16,610）。影子比較用「不比實盤最差一筆差」（omega_max_loss_twd=same_as_live）；"
+     "上真倉前請再確認或改成固定金額】"),
 ]
 
 

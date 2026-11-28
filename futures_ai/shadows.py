@@ -261,6 +261,8 @@ def omega_cap_lines(live: Ledger, shadow: Ledger | None = None, now=None, max_lo
   cur, alt = sum(rows["live"]), sum(rows["nocap"])
   need = max(0.10 * abs(cur), 2000)
   worst = min(rows["nocap"] + [0])
+  if max_loss == "same_as_live":  # User 2026-11-28 「維持現在」: no worse than live's own worst trade (+10%).
+    max_loss = round(max(abs(min(rows["live"] + [0])), 12000) * 1.1)
   if alt - cur < need:
     out.append(f"→ 不設上限沒有多賺 {need:,.0f} 以上（差 {alt - cur:+,.0f}），維持 1,200")
   elif max_loss is None:

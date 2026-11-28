@@ -44,6 +44,10 @@ DEFAULTS: dict = {
     # comparison was identical (4 protected exits), and on today's rules the one-year backtest does not regress
     # (Sigma +8.7k in both halves, Nova +2.2k, Alpha 0; drawdown unchanged). Switches live, simulator and weekly review.
     "protected_not_stop": True,
+    # Omega largest acceptable single-trade loss (user 2026-11-28: 「維持現在」). "same_as_live" = the no-cap shadow
+    # can only be proposed if its worst trade over the same period is no worse than live Omega's (1,200-pt cap)
+    # worst x 1.1 (at least 12,000 x 1.1). A fixed NT$ amount can be set later for real money.
+    "omega_max_loss_twd": "same_as_live",
     "roll_days_before": 1,
     "trade_night_session": True,
     "no_entry_minutes_before_close": 20,

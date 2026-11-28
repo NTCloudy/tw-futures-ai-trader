@@ -1908,6 +1908,15 @@ class OmegaCapShadowTest(unittest.TestCase):
                          (ai, f"2026-12-{i + 1:02d}T10:00:00+08:00", f"2026-12-{i + 1:02d}T12:00:00+08:00", pnl))
     return live, sh
 
+  def test_user_max_loss_default(self):
+    from futures_ai.shadows import omega_cap_lines
+    self.assertEqual(DEFAULTS["omega_max_loss_twd"], "same_as_live")  # user 2026-11-28: 「維持現在」
+    live, sh = self._ledgers([-1000] * 9 + [-12380], [3000] * 9 + [-13500])  # within 12,380 x 1.1 = 13,618
+    self.assertIn("建議改用", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0), max_loss="same_as_live")))
+    live, sh = self._ledgers([-1000] * 9 + [-12380], [3000] * 9 + [-15282])
+    self.assertIn("超過你核准的 -13,618", "\n".join(omega_cap_lines(live, sh, at(2026, 12, 20, 9, 0),
+                                                                   max_loss="same_as_live")))
+
   def test_decision_rule(self):
     from futures_ai.shadows import omega_cap_lines
     live, sh = self._ledgers([-1000] * 10, [500] * 9 + [-14000])
