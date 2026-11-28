@@ -800,6 +800,10 @@ class ReplayMatchTest(unittest.TestCase):
     self.assertIsNone(ps[-1][1])
     for (a, b, _l, _o), (c, _d, _m, _p) in zip(ps, ps[1:]):
       self.assertEqual(b, c)  # Contiguous, no gaps.
+    from futures_ai.replay import PROTECTED_ON
+    on = datetime.fromisoformat(PROTECTED_ON)
+    self.assertIn(on, [a for a, _b, _l, _o in ps])  # protected_not_stop switch is a period start
+    self.assertEqual([a >= on for a, _b, _l, _o in ps[-2:]], [False, True])
     late = rule_periods(at(2026, 11, 11, 15, 0), path=none)  # Starting inside a version keeps its rules.
     self.assertEqual(late[0][2], RULE_VERSIONS[2][1])
     # Current rules after the switch, with the parameters that were live at the switch (no back-fill).
@@ -821,12 +825,13 @@ class ReplayMatchTest(unittest.TestCase):
     self.assertIsNone(al["rev_cool"])
     self.assertNotIn("rev_cool", RULE_VERSIONS[2][2]["alpha-orb"])  # From 11/11 13:46 the lesson rules apply.
     # Before the 11/18 switch every version replays the old stop cap / no night filter / old Sigma stop.
-    for _ts, _lab, ov in RULE_VERSIONS[:-1]:
+    for _ts, _lab, ov in RULE_VERSIONS[:-2]:  # last two: 11/18 switch and protected_not_stop (no overrides)
       self.assertEqual(ov["alpha-orb"]["sl_cap"], 120)
       self.assertIsNone(ov["sigma-vwap"]["night_eff"])
       self.assertEqual(ov["sigma-vwap"]["sl_atr"], 2.0)
       self.assertIsNone(ov["nova-nightorb"]["night_eff"])
     self.assertEqual(RULE_VERSIONS[-1][2], {})
+    self.assertEqual(RULE_VERSIONS[-2][2], {})
     now = sim_specs()
     self.assertEqual(now["alpha-orb"][1]["sl_cap"], 160)
     self.assertEqual(now["sigma-vwap"][1]["night_eff"], (5, 0.40))
@@ -1452,10 +1457,9 @@ class PlanABSwitchTest(unittest.TestCase):
     sh = {t.ai: t for t in build_shadows(c, led)}
     for ai in ("alpha-orb", "sigma-vwap", "nova-nightorb"):
       self.assertIn(f"old-{ai}", sh)
-      self.assertIsNone(sh[f"prot-{ai}"].s.night_eff)  # The running protected-exit comparison keeps its rules.
-      self.assertTrue(sh[f"prot-{ai}"].protected_mode)
-      self.assertFalse(sh[f"old-{ai}"].protected_mode)
-    self.assertEqual(sh["prot-alpha-orb"].s.sl_cap, 120)
+      self.assertNotIn(f"prot-{ai}", sh)  # Protected-exit comparison ended 2026-11-28 (live since then).
+      self.assertEqual(sh[f"old-{ai}"].protected_mode, bool(c.get("protected_not_stop")))  # follows the config
+    self.assertTrue(DEFAULTS["protected_not_stop"])
     self.assertEqual(sh["old-alpha-orb"].s.sl_cap, 120)
 
   def test_alpha_stop_cap_160(self):
@@ -1660,6 +1664,20 @@ class SwitchGuardTest(unittest.TestCase):
 
 
 class LessonUpgradeTest(unittest.TestCase):
+
+  def test_new_lesson_needs_minimum_gain(self):
+    from futures_ai import lessons as L
+    base = {"pnl": 100000, "last60": 0, "q": [1, 1, 1, 1], "maxdd": 10000, "trades": 50}
+
+    def metrics(gain):
+      return lambda c, a, p, s, d: base if p.get("x") is None else dict(base, pnl=100000 + gain, q=[2, 2, 1, 1])
+    with mock.patch.object(L, "_metrics", side_effect=metrics(1500)):
+      bt = L.backtest({}, "a", {}, {"x": 1}, [], [], base)
+      self.assertFalse(bt["ok"]); self.assertTrue(bt["small"]); self.assertEqual(bt["need"], 2000)
+      self.assertTrue(L.backtest({}, "a", {}, {"x": 1}, [], [], base, require_min_gain=False)["ok"])
+    with mock.patch.object(L, "_metrics", side_effect=metrics(2000)):
+      self.assertTrue(L.backtest({}, "a", {}, {"x": 1}, [], [], base)["ok"])
+    self.assertEqual(L.min_gain(-300000), 6000)  # 2% of |base| when larger than 2,000
   """User request 2026-11-18: night_chop / noise_stop tags, monthly rule retirement, AI brain digest."""
 
   def _sessions(self):
@@ -1727,7 +1745,8 @@ class LessonUpgradeTest(unittest.TestCase):
     lines = []
     base = {"rev_cool": 30, "max_sl": 2, "min_er": 0.3}
     base_wo = {"min_er": 0.3}  # Without lessons: no rev_cool / max_sl; min_er is a base rule.
-    def fake_bt(c, sim_ai, b, rule, sessions, days, base_m):
+    def fake_bt(c, sim_ai, b, rule, sessions, days, base_m, require_min_gain=True):
+      self.assertFalse(require_min_gain)  # retirement uses no minimum improvement
       good = rule == {"max_sl": None}
       return {"ok": good, "gain": 5000 if good else -3000, "gain60": 100, "qwin": 4, "qimp": 3, "dd": 10, "base_dd": 10,
               "trades": 1, "base_trades": 1}

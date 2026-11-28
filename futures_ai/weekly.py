@@ -356,12 +356,7 @@ def run_weekly(cfg: dict, train_days: int = 40, test_days: int = 20, restart: bo
 
   lines += shadow_summary(ledger=ledger)
   cmp_lines, red_lines, trial_lines = [], [], []
-  try:
-    from .shadows import protected_shadow_lines
-    trial_lines += protected_shadow_lines(ledger)
-    lines += trial_lines
-  except Exception as exc:
-    lines.append(f"\n🧪 受保護出場影子比對失敗：{exc}")
+  # The protected-exit shadow comparison ended 2026-11-28 (protected_not_stop is live).
   try:
     from .shadows import be05_lines, omega_cap_lines, red_light_lines, version_compare_lines
     cmp_lines = version_compare_lines(ledger)

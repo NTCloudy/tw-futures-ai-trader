@@ -307,15 +307,28 @@ def _metrics(cfg, sim_ai, p, sessions, days) -> dict:
           "last60": last60_pnl, "q": q_pnls}
 
 
-def backtest(cfg, sim_ai, base, rule, sessions, days, base_m=None) -> dict:
+# Minimum one-year improvement for a NEW lesson (user + v2, 2026-11-28; same spirit as weekly.SWITCH_MARGIN):
+# max(NT$2,000, 2% of the base). Candidates that win by less tend to change nothing in the forward trial
+# (Alpha stop cap 200: +1,500 in the backtest, identical live). Not applied to the monthly retirement check.
+LESSON_MIN_GAIN = (0.02, 2000.0)
+
+
+def min_gain(base_pnl: float) -> float:
+  return max(LESSON_MIN_GAIN[1], LESSON_MIN_GAIN[0] * abs(base_pnl))
+
+
+def backtest(cfg, sim_ai, base, rule, sessions, days, base_m=None, require_min_gain: bool = True) -> dict:
   b = base_m or _metrics(cfg, sim_ai, base, sessions, days)
   x = _metrics(cfg, sim_ai, {**base, **rule}, sessions, days)
   q_no_regress = sum(1 for a, c in zip(x["q"], b["q"]) if a >= c)
   q_improve = sum(1 for a, c in zip(x["q"], b["q"]) if a > c)
-  ok = (x["pnl"] > b["pnl"] and x["last60"] >= b["last60"]
-        and q_no_regress >= 3 and q_improve >= 2
-        and x["maxdd"] <= b["maxdd"] * 1.1 + 1)
-  return {"ok": ok, "gain": round(x["pnl"] - b["pnl"]), "gain60": round(x["last60"] - b["last60"]),
+  need = min_gain(b["pnl"]) if require_min_gain else 0.0
+  rest = (x["last60"] >= b["last60"] and q_no_regress >= 3 and q_improve >= 2
+          and x["maxdd"] <= b["maxdd"] * 1.1 + 1)
+  ok = x["pnl"] > b["pnl"] and x["pnl"] - b["pnl"] >= need and rest
+  small = rest and 0 < x["pnl"] - b["pnl"] < need  # Better, but by less than the minimum improvement.
+  return {"ok": ok, "small": small, "need": round(need),
+          "gain": round(x["pnl"] - b["pnl"]), "gain60": round(x["last60"] - b["last60"]),
           "qwin": q_no_regress, "qimp": q_improve,
           "dd": round(x["maxdd"]), "base_dd": round(b["maxdd"]), "trades": x["trades"], "base_trades": b["trades"]}
 
@@ -390,6 +403,9 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
       diff_n = abs(len(rb.get("log", [])) - len(rx.get("log", [])))
       what = trial.get("label") or f"「{rule_zh(trial['rule'])}」"
       head = f"🧪 {NAMES[ai]} 驗證中{what}：{n_days}/{TRIAL_DAYS} 天，套用 {x:+,.0f} vs 不套用 {b:+,.0f}"
+      from .replay import PROTECTED_ON
+      if c.get("protected_not_stop") and trial["since"] < PROTECTED_ON:
+        head += "（11/28 起改用受保護出場的定義，兩邊整段都照新定義重算）"
       if n_days < TRIAL_DAYS:
         lines.append(head)
         continue
@@ -439,7 +455,8 @@ def run(cfg: dict, ledger: Ledger, sessions: list, now: datetime | None = None, 
         if bt["ok"] and (best is None or bt["gain"] > best[2]["gain"]):
           best = (tag, rule, bt, txt)
         elif not bt["ok"]:
-          lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt} → 回測沒變好，不採用")
+          why = f"改善不到門檻 {bt['need']:,}，不採用" if bt["small"] else "回測沒變好，不採用"
+          lines.append(f"🔍 {NAMES[ai]} 反覆出現「{TAG_ZH[tag]}」→ 試「{rule_zh(rule)}」：{txt} → {why}")
     if best:
       tag, rule, bt, txt = best
       eval_since = datetime.fromisoformat("2026-10-19T08:45:00+08:00")
@@ -498,7 +515,7 @@ def _retire_check(c, ai, sim_ai, base, base_wo, have, sessions, days, st, base_s
     rule = {k: fallback}
     if any(j["ai"] == ai and j.get("retire") and j["rule"] == rule and j["at"] >= cutoff for j in st["rejected"]):
       continue
-    bt = backtest(c, sim_ai, base, rule, sessions, days, base_m)
+    bt = backtest(c, sim_ai, base, rule, sessions, days, base_m, require_min_gain=False)
     txt = (f"一年 {bt['gain']:+,}、近60天 {bt['gain60']:+,}、四季不退步 {bt['qwin']}/4（進步 {bt['qimp']}/4）、"
            f"回撤 {bt['dd']:,}（原 {bt['base_dd']:,}）")
     label = f"拿掉「{rule_zh({k: v})}」"
@@ -601,7 +618,8 @@ def propose(cfg: dict, ai: str, rule: dict, sessions: list | None = None, now: d
            f"四季不退步 {bt['qwin']}/4（進步 {bt['qimp']}/4）、回撤 {bt['dd']:,}（原 {bt['base_dd']:,}）",
            f"   保守預期（一年回測 ×0.7）：{exp:+,.0f}／年"]
   if not bt["ok"]:
-    return {"ok": False, "lines": lines + ["   → ❌ 回測沒變好，不進入驗證"]}
+    why = f"改善不到門檻 {bt['need']:,}" if bt["small"] else "回測沒變好"
+    return {"ok": False, "lines": lines + [f"   → ❌ {why}，不進入驗證"]}
   n_days, rb, rx = _eval_live(dict(cfg), sim_ai, base, rule, sessions,
                               datetime.fromisoformat("2026-10-19T08:45:00+08:00"))
   if n_days >= TRIAL_DAYS and rx["pnl"] < rb["pnl"]:

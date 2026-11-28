@@ -105,6 +105,10 @@ _NOVA_V3 = dict(limit_atr=0.0, max_vwap_pts=None, max_sl=None)
 _PRE_ALPHA = dict(sl_cap=120, range_bars=3, sl_frac=0.75, tp_mult=3.0)
 _PRE_SIGMA = dict(night_eff=None, pull_atr=0.5, sl_atr=2.0, tp_mult=4.0, trail_atr=None)
 _PRE_NOVA = dict(night_eff=None, range_min=30, window=600, sl_frac=1.0, tp_mult=3.0)
+# protected_not_stop went live (engine restart; updated to the actual time). It is also a RULE_VERSIONS cut, so the
+# periods starting at/after it replay with protected exits and earlier ones without (no back-fill).
+PROTECTED_ON = "2026-11-28T14:49:29+08:00"
+
 RULE_VERSIONS = [
     ("2026-11-08T00:03:52+08:00", "共識升級 f8482a5",
      {"alpha-orb": dict(_ALPHA_V1, **_PRE_ALPHA), "sigma-vwap": dict(_SIGMA_V1, **_PRE_SIGMA),
@@ -122,6 +126,7 @@ RULE_VERSIONS = [
     ("2026-11-12T13:47:05+08:00", "Nova B+C 485129c",
      {"alpha-orb": _PRE_ALPHA, "sigma-vwap": _PRE_SIGMA, "nova-nightorb": _PRE_NOVA, "nova-us": _PRE_NOVA}),
     ("2026-11-18T13:46:55+08:00", "A2/A+B/A 夜盤盤勢過濾＋Alpha 停損上限 160", {}),
+    (PROTECTED_ON, "受保護出場不算停損上線", {}),
 ]
 
 
@@ -255,7 +260,7 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
   ledger = Ledger(cfg["db_path"])
   shadow = Ledger(str(ROOT / "data" / "shadow.db")) if (ROOT / "data" / "shadow.db").exists() else None
   try:
-    c_pre = dict(cfg, max_entries_per_session=999, enforce_daily_loss=False)
+    c_pre = dict(cfg, max_entries_per_session=999, enforce_daily_loss=False, protected_not_stop=False)
     c_post = dict(cfg)
     out = {"generated_at": datetime.now(TPE).isoformat(timespec="seconds"), "since": t0.strftime("%m/%d %H:%M"),
            "sessions": len(live_sessions), "ais": []}
@@ -313,7 +318,9 @@ def run_replay(cfg: dict, since: str = EVAL_START) -> dict:
         if ov is None:
           logs += wfo.simulate(c_pre, sim_ai, p_pre, sess, record=True).get("log", [])
         else:
-          logs += wfo.simulate(c_post, sim_ai, {**p_post, **ov.get(ai, {})}, sess, record=True).get("log", [])
+          prot = bool(c_post.get("protected_not_stop")) and a.isoformat() >= PROTECTED_ON
+          c_per = dict(c_post, protected_not_stop=prot)
+          logs += wfo.simulate(c_per, sim_ai, {**p_post, **ov.get(ai, {})}, sess, record=True).get("log", [])
       sim = [{"entry": e, "side": side, "pnl": net, "kind": kind} for e, _x, side, net, kind in logs if e and e >= t0]
       # 回測（現行規則·事後套用）: today's rules over the whole period, including rules written after the losses.
       r_now = wfo.simulate(c_post, sim_ai, p_post, live_sessions, record=True) if live_sessions else {"log": []}

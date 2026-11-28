@@ -6,7 +6,7 @@ live_checklist_ack to LIVE_CHECKLIST_VERSION, i.e. after the user has answered t
 Bump the version whenever an item is added or changed.
 """
 
-LIVE_CHECKLIST_VERSION = "2026-11-28"
+LIVE_CHECKLIST_VERSION = "2026-11-28-b"
 
 ITEMS = [
     ("哪個 AI 上真倉",
@@ -22,7 +22,7 @@ ITEMS = [
      "獲利集中（一年前 5 筆大單約占一半）、1,200 點停損上限短期會被洗出場（例：11/19）、"
      "隔夜／週末跳空擋不住（例：11/18）、Omega 不受每日虧損上限限制（波段單可留倉）。"),
     ("進行中試驗的結論",
-     "上線當時，受保護出場不算停損（protected_not_stop）、Omega 提早保本影子（be05）、"
+     "受保護出場不算停損（protected_not_stop）已於 11/28 上線；上線當時，Omega 提早保本影子（be05）、Omega 停損上限影子、"
      "Alpha 停損上限 200 試行等，有結果的要先決定採不採用，再上線。"),
     ("真倉通知",
      "目前 LINE 只推 Omega 進場訊號；真倉時要不要加推「成交、停損移動、出場」通知？"),

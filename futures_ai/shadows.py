@@ -336,5 +336,7 @@ def build_shadows(cfg: dict, ledger: Ledger | None = None) -> list[AiTrader]:
   ledger = ledger or shadow_ledger()
   cfg = copy.deepcopy(cfg)
   cfg["mode"] = "local_paper"
-  return (build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger) + build_protected_twins(cfg, ledger)
+  # prot-* twins ended 2026-11-28: protected_not_stop is live (the old- twins follow the config, so the new vs
+  # old comparison stays like for like).
+  return (build_allday_twins(cfg, ledger) + build_nova_us_shadow(cfg, ledger)
           + build_old_twins(cfg, ledger) + build_be05_omega(cfg, ledger) + build_omega_cap_shadows(cfg, ledger))
